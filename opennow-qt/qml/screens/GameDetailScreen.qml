@@ -186,6 +186,7 @@ FocusScope {
         width: parent.width - x
         height: parent.height
         source: heroSource.resolvedUrl
+        onStatusChanged: heroSource.reportImageStatus(status, source)
         fillMode: Image.PreserveAspectCrop
         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
         asynchronous: true
@@ -233,8 +234,10 @@ FocusScope {
             font.letterSpacing: 1.8
         }
         Text {
+            objectName: "consoleGameDetailTitle"
             width: parent.width
             text: String(root.game.title || "")
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             maximumLineCount: 2
             elide: Text.ElideRight

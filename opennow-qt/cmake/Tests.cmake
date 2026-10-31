@@ -9,8 +9,14 @@ if(BUILD_TESTING)
     if(WIN32)
         target_link_libraries(opennow-windowtheme-tests PRIVATE dwmapi)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_libraries(opennow-windowtheme-tests PRIVATE PkgConfig::WAYLAND_CLIENT)
-        target_compile_definitions(opennow-windowtheme-tests PRIVATE OPENNOW_WAYLAND_DECORATIONS)
+        find_package(Qt6WaylandCompositor QUIET)
+        if(TARGET Qt6::WaylandCompositor)
+            qt_add_executable(opennow-windowtheme-compositor tests/windowtheme_compositor.cpp)
+            target_link_libraries(opennow-windowtheme-compositor PRIVATE Qt6::WaylandCompositor)
+            add_dependencies(opennow-windowtheme-tests opennow-windowtheme-compositor)
+            target_compile_definitions(opennow-windowtheme-tests PRIVATE
+                OPENNOW_WINDOWTHEME_COMPOSITOR="$<TARGET_FILE:opennow-windowtheme-compositor>")
+        endif()
     endif()
     add_test(NAME opennow-windowtheme-tests COMMAND opennow-windowtheme-tests -o -,txt)
     set_tests_properties(opennow-windowtheme-tests PROPERTIES
@@ -380,6 +386,19 @@ if(BUILD_TESTING)
     target_include_directories(opennow-streampresenttimings-tests PRIVATE src)
     target_link_libraries(opennow-streampresenttimings-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-streampresenttimings-tests COMMAND opennow-streampresenttimings-tests -o -,txt)
+    qt_add_executable(opennow-streampresentation-tests tests/tst_streampresentation.cpp)
+    target_include_directories(opennow-streampresentation-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentation-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentation-tests COMMAND opennow-streampresentation-tests -o -,txt)
+    qt_add_executable(opennow-streampresentationfeedback-tests tests/tst_streampresentationfeedback.cpp)
+    target_include_directories(opennow-streampresentationfeedback-tests PRIVATE src)
+    target_link_libraries(opennow-streampresentationfeedback-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-streampresentationfeedback-tests
+        COMMAND opennow-streampresentationfeedback-tests -o -,txt)
+    qt_add_executable(opennow-senderpacing-tests tests/tst_senderpacing.cpp)
+    target_include_directories(opennow-senderpacing-tests PRIVATE src)
+    target_link_libraries(opennow-senderpacing-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-senderpacing-tests COMMAND opennow-senderpacing-tests -o -,txt)
     qt_add_executable(opennow-fsrupscaler-tests tests/tst_fsrupscaler.cpp)
     target_include_directories(opennow-fsrupscaler-tests PRIVATE src)
     target_link_libraries(opennow-fsrupscaler-tests PRIVATE Qt6::Test Qt6::Gui Qt6::GuiPrivate)
@@ -744,6 +763,21 @@ if(BUILD_TESTING)
         PREFIX "/acceptance" BASE tests FILES tests/StreamStatsAcceptance.qml)
     qt_add_resources(opennow-qt "stream-stats-v2-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/StreamStatsV2Acceptance.qml)
+    qt_add_resources(opennow-qt "flight-stats-status-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/FlightStatsStatusAcceptance.qml)
+    foreach(mode compact expanded)
+        foreach(window_mode windowed fullscreen)
+            set(flight_stats_args --smoke-test --allow-multiple-instances --desktop --route stream
+                --smoke-flight-stats-status --smoke-stats-${mode} --reduced-motion)
+            if(window_mode STREQUAL "fullscreen")
+                list(APPEND flight_stats_args --fullscreen)
+            endif()
+            add_test(NAME qml-flight-stats-status-${mode}-${window_mode}
+                COMMAND opennow-qt ${flight_stats_args})
+            set_tests_properties(qml-flight-stats-status-${mode}-${window_mode} PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+        endforeach()
+    endforeach()
     foreach(mode compact expanded degraded scaled)
         add_test(NAME qml-stream-stats-v2-${mode}
             COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
@@ -814,6 +848,21 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --reduced-motion)
     set_tests_properties(qml-stream-recovery PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    qt_add_resources(opennow-qt "stream-transition-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamTransitionAcceptance.qml)
+    qt_add_resources(opennow-qt "pointer-lock-hint-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/PointerLockHintAcceptance.qml)
+    foreach(surface desktop console)
+        set(pointer_lock_surface_args)
+        if(surface STREQUAL "desktop")
+            list(APPEND pointer_lock_surface_args --desktop)
+        endif()
+        add_test(NAME qml-pointer-lock-hint-${surface}
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${pointer_lock_surface_args}
+                --route stream --smoke-pointer-lock --reduced-motion)
+        set_tests_properties(qml-pointer-lock-hint-${surface} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
+    endforeach()
     add_test(NAME qml-stream-recovery-fullscreen
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route settings-streaming --smoke-stream-recovery --smoke-stream-recovery-fullscreen --reduced-motion)
@@ -833,6 +882,70 @@ if(BUILD_TESTING)
             set_tests_properties("qml-bug-report-notice-${width}-${scale}" PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
         endforeach()
+    endforeach()
+    qt_add_resources(opennow-qt "stream-end-notice-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/StreamEndNoticeAcceptance.qml)
+    foreach(size_pair "960;540" "1600;900")
+        list(GET size_pair 0 stream_end_width)
+        list(GET size_pair 1 stream_end_height)
+        add_test(NAME "qml-stream-end-notice-${stream_end_width}x${stream_end_height}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+                --route home --smoke-stream-end-notice-check --reduced-motion
+                --smoke-width ${stream_end_width} --smoke-height ${stream_end_height})
+        set_tests_properties("qml-stream-end-notice-${stream_end_width}x${stream_end_height}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
+    qt_add_resources(opennow-qt "console-stream-end-notice-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ConsoleStreamEndNoticeAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewAcceptance.qml)
+    qt_add_resources(opennow-qt "clock-skew-overlap-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/ClockSkewOverlapAcceptance.qml)
+    foreach(order update-first clock-first)
+        foreach(mode windowed fullscreen)
+            set(clock_overlap_args --smoke-test --allow-multiple-instances --console --route home
+                --smoke-clock-skew-overlap-check ${order} --reduced-motion)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND clock_overlap_args --clock-overlap-fullscreen)
+            endif()
+            add_test(NAME "qml-clock-skew-overlap-${order}-${mode}" COMMAND opennow-qt ${clock_overlap_args})
+            set_tests_properties("qml-clock-skew-overlap-${order}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 25)
+        endforeach()
+    endforeach()
+    qt_add_resources(opennow-qt "titlebar-keyboard-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/WindowTitleBarAcceptance.qml)
+    qt_add_resources(opennow-qt "literal-game-title-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/LiteralGameTitleAcceptance.qml)
+    foreach(sink game-detail console-choice console-choice-description desktop-exit desktop-menu desktop-starting)
+        set(title_surface --desktop)
+        if(sink MATCHES "^(game-detail|console-choice|console-choice-description)$")
+            set(title_surface --console)
+        endif()
+        add_test(NAME "qml-literal-game-title-${sink}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances ${title_surface}
+                --route home --smoke-literal-game-title-check ${sink} --reduced-motion)
+        set_tests_properties("qml-literal-game-title-${sink}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
+    foreach(surface desktop console)
+        foreach(check clock-skew titlebar-keyboard)
+            add_test(NAME "qml-${check}-${surface}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances --${surface}
+                    --route home --smoke-${check}-check --reduced-motion)
+            set_tests_properties("qml-${check}-${surface}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+        endforeach()
+    endforeach()
+    foreach(size_pair "1280;720" "1920;1080")
+        list(GET size_pair 0 console_end_width)
+        list(GET size_pair 1 console_end_height)
+        add_test(NAME "qml-console-stream-end-notice-${console_end_width}x${console_end_height}"
+            COMMAND opennow-qt --smoke-test --allow-multiple-instances --console
+                --route game-detail --smoke-console-stream-end-notice-check --reduced-motion
+                --smoke-width ${console_end_width} --smoke-height ${console_end_height})
+        set_tests_properties("qml-console-stream-end-notice-${console_end_width}x${console_end_height}" PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     endforeach()
     qt_add_resources(opennow-qt "queue-drop-acceptance"
         PREFIX "/acceptance" BASE tests FILES tests/QueueDropsAcceptance.qml)
@@ -909,6 +1022,13 @@ if(BUILD_TESTING)
             --overlay desktop-stream-stats-expanded
             --smoke-width 960 --smoke-height 540 --reduced-motion)
     set_tests_properties("qml-stream-toast-pending-stats-overlay" PROPERTIES
+        ENVIRONMENT "${color_format_environment}" TIMEOUT 30)
+    add_test(NAME "qml-stream-toast-overflow-queue"
+        COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
+            --route stream --smoke-stream-toast-pending --toast-overflow-queue
+            --overlay desktop-stream-stats-expanded
+            --smoke-width 960 --smoke-height 540 --reduced-motion)
+    set_tests_properties("qml-stream-toast-overflow-queue" PROPERTIES
         ENVIRONMENT "${color_format_environment}" TIMEOUT 30)
     foreach(minimum_fixture color-format hdr-downgrade)
         add_test(NAME "qml-${minimum_fixture}-minimum-stats-overlay"
@@ -1067,8 +1187,13 @@ if(BUILD_TESTING)
             src/streaming/rendering/LinuxVulkanGraphics.h)
         target_include_directories(opennow-linuxvulkangraphics-tests PRIVATE src)
         target_link_libraries(opennow-linuxvulkangraphics-tests PRIVATE
-            Qt6::Test Qt6::GuiPrivate Qt6::Quick opennow-streamer-ffi Vulkan::Vulkan)
+            Qt6::Test Qt6::GuiPrivate Qt6::QuickPrivate opennow-streamer-ffi Vulkan::Vulkan)
         add_dependencies(opennow-linuxvulkangraphics-tests opennow-streamer-ffi-build)
+        if(TARGET opennow-windowtheme-compositor)
+            add_dependencies(opennow-linuxvulkangraphics-tests opennow-windowtheme-compositor)
+            target_compile_definitions(opennow-linuxvulkangraphics-tests PRIVATE
+                OPENNOW_WINDOWTHEME_COMPOSITOR="$<TARGET_FILE:opennow-windowtheme-compositor>")
+        endif()
         add_test(NAME opennow-linuxvulkangraphics-tests
             COMMAND opennow-linuxvulkangraphics-tests -o -,txt)
         set_tests_properties(opennow-linuxvulkangraphics-tests PROPERTIES
@@ -1078,6 +1203,23 @@ if(BUILD_TESTING)
              COMMAND opennow-streamvideo-tests -o -,txt)
     set_tests_properties(opennow-streamvideo-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    qt_add_executable(opennow-windowsmoveloop-tests tests/tst_windowswindowmoveloop.cpp)
+    target_link_libraries(opennow-windowsmoveloop-tests PRIVATE opennow-platform-input Qt6::Test)
+    add_test(NAME opennow-windowsmoveloop-tests COMMAND opennow-windowsmoveloop-tests -o -,txt
+        -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/windows-move-loop-results.xml,junitxml")
+    if(WIN32)
+        add_test(NAME opennow-windowsmoveloop-native-tests
+            COMMAND opennow-streamvideo-tests nativeWindowMoveLoopOwnsTheCursorUntilItExits -o -,txt
+            -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-stream-item-move-loop-results.xml,junitxml")
+        set_tests_properties(opennow-windowsmoveloop-native-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_QUICK_BACKEND=software"
+            RUN_SERIAL TRUE TIMEOUT 30 LABELS "ci-unit")
+        set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=windows" RUN_SERIAL TRUE TIMEOUT 30)
+    else()
+        set_tests_properties(opennow-windowsmoveloop-tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+    endif()
 
     qt_add_executable(opennow-waylandpointer-tests tests/tst_waylandpointercapture.cpp)
     target_link_libraries(opennow-waylandpointer-tests PRIVATE opennow-platform-input Qt6::Test)
@@ -1102,11 +1244,19 @@ if(BUILD_TESTING)
     )
     target_include_directories(opennow-nativestreamruntime-tests PRIVATE src)
     target_link_libraries(opennow-nativestreamruntime-tests PRIVATE
-        Qt6::Test Qt6::Core opennow-streamer-ffi)
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
     add_dependencies(opennow-nativestreamruntime-tests opennow-streamer-ffi-build)
     add_test(NAME opennow-nativestreamruntime-tests
              COMMAND opennow-nativestreamruntime-tests -o -,txt)
-    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 8)
+    set_tests_properties(opennow-nativestreamruntime-tests PROPERTIES TIMEOUT 15)
+    qt_add_executable(opennow-nativepresentation-tests
+        tests/tst_nativepresentation.cpp ${OPENNOW_STREAM_RUNTIME_SOURCES})
+    target_include_directories(opennow-nativepresentation-tests PRIVATE src)
+    target_link_libraries(opennow-nativepresentation-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui opennow-streamer-ffi)
+    add_dependencies(opennow-nativepresentation-tests opennow-streamer-ffi-build)
+    add_test(NAME opennow-nativepresentation-tests COMMAND opennow-nativepresentation-tests -o -,txt)
+    set_tests_properties(opennow-nativepresentation-tests PROPERTIES TIMEOUT 8)
 
     if(UNIX AND NOT APPLE)
         qt_add_executable(opennow-sonychain-tests
@@ -1152,11 +1302,17 @@ if(BUILD_TESTING)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${OPENNOW_STREAMER_FFI_RUNTIME}"
                 "$<TARGET_FILE_DIR:opennow-nativestreamruntime-tests>/"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENNOW_STREAMER_FFI_RUNTIME}"
+                "$<TARGET_FILE_DIR:opennow-nativepresentation-tests>/"
             DEPENDS opennow-streamer-ffi-build
             COMMENT "Deploying the embedded streamer runtime for CTest")
         foreach(test_target IN ITEMS
                 opennow-streamvideo-tests
-                opennow-nativestreamruntime-tests)
+                opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests)
             add_dependencies(${test_target} opennow-streamer-ffi-test-runtime)
             set_property(TARGET ${test_target} APPEND PROPERTY BUILD_RPATH "@loader_path")
         endforeach()
@@ -1205,6 +1361,7 @@ if(BUILD_TESTING)
 
     qt_add_executable(opennow-controllerinput-tests
         tests/tst_controllerinput.cpp
+        tests/SdlJoystickTestSession.h
         src/input/ControllerInput.cpp
         src/input/ControllerInput.h
         src/input/SdlDeviceClaim.h
@@ -1250,6 +1407,7 @@ if(BUILD_TESTING)
     )
     qt_add_executable(opennow-controllersources-tests
         tests/tst_controllersources.cpp
+        tests/SdlJoystickTestSession.h
         src/input/ControllerInput.cpp
         src/input/ControllerInput.h
         src/input/SdlDeviceClaim.h
@@ -1286,6 +1444,18 @@ if(BUILD_TESTING)
             target_link_libraries(${target} PRIVATE opennow-generic-hid)
         endif()
     endforeach()
+    if(APPLE)
+        set_tests_properties(
+            opennow-consolelaunchinput-tests
+            opennow-generichidinput-tests
+            opennow-controllerinput-tests
+            opennow-controllernavigation-tests
+            opennow-controllertuning-tests
+            opennow-controllersources-tests
+            opennow-controllermetadata-tests
+            PROPERTIES RESOURCE_LOCK macos-controller-discovery
+        )
+    endif()
     set(OPENNOW_CI_UNIT_TEST_TARGETS
         opennow-generichidinput-tests
         opennow-windowtheme-tests
@@ -1307,6 +1477,9 @@ if(BUILD_TESTING)
         opennow-theme-tests
         opennow-framepacer-tests
         opennow-streampresenttimings-tests
+        opennow-streampresentation-tests
+        opennow-streampresentationfeedback-tests
+        opennow-senderpacing-tests
         opennow-frameinterpolator-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests
@@ -1314,6 +1487,7 @@ if(BUILD_TESTING)
         opennow-qt-tests
         opennow-coreclient-tests
         opennow-waylandpointer-tests
+        opennow-windowsmoveloop-tests
         opennow-macpointer-tests
         opennow-embedded-orchestration-tests
         opennow-singleinstance-tests
@@ -1336,6 +1510,7 @@ if(BUILD_TESTING)
     set_tests_properties(${OPENNOW_CI_UNIT_TEST_TARGETS} PROPERTIES LABELS "ci-unit")
 
     if(WIN32)
+        add_dependencies(opennow-ci-unit-tests opennow-streamvideo-tests)
         add_dependencies(opennow-nativeframegeneration-tests opennow-streamer-ffi-test-runtime)
         # Qt's executable helper defaults to the GUI subsystem on Windows. Keep
         # test runners as console programs so CTest captures QtTest failures.
@@ -1360,8 +1535,13 @@ if(BUILD_TESTING)
             opennow-qt-tests
             opennow-coreclient-tests
             opennow-streamvideo-tests
+            opennow-windowsmoveloop-tests
             opennow-waylandpointer-tests
             opennow-nativestreamruntime-tests
+            opennow-nativepresentation-tests
+            opennow-streampresentation-tests
+            opennow-streampresentationfeedback-tests
+            opennow-senderpacing-tests
             opennow-nativeframegeneration-tests
             opennow-embedded-orchestration-tests
             opennow-singleinstance-tests
@@ -1422,8 +1602,13 @@ if(BUILD_TESTING)
                 opennow-qt-tests
                 opennow-coreclient-tests
                 opennow-streamvideo-tests
+                opennow-windowsmoveloop-tests
                 opennow-waylandpointer-tests
                 opennow-nativestreamruntime-tests
+                opennow-nativepresentation-tests
+                opennow-streampresentation-tests
+                opennow-streampresentationfeedback-tests
+                opennow-senderpacing-tests
                 opennow-nativeframegeneration-tests
                 opennow-embedded-orchestration-tests
                 opennow-singleinstance-tests
@@ -1644,8 +1829,32 @@ if(BUILD_TESTING)
         set_tests_properties("qml-${surface}-input-capture-error" PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT ${OPENNOW_QT_SMOKE_TIMEOUT})
     endforeach()
+    qt_add_resources(opennow-qt "session-quit-acceptance"
+        PREFIX "/acceptance" BASE tests FILES tests/SessionQuitAcceptance.qml)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        foreach(surface desktop console)
+            foreach(mode windowed fullscreen)
+                add_test(NAME "qml-requested-quit-${surface}-${mode}"
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_session_quit.py"
+                        "$<TARGET_FILE:opennow-qt>" ${surface} ${mode})
+                set_tests_properties("qml-requested-quit-${surface}-${mode}" PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+            endforeach()
+        endforeach()
+    endif()
     foreach(surface desktop console)
         foreach(mode windowed fullscreen)
+            set(post_end_mode_args)
+            if(mode STREQUAL "fullscreen")
+                list(APPEND post_end_mode_args --fullscreen)
+            endif()
+            add_test(NAME "qml-post-end-close-${surface}-${mode}"
+                COMMAND opennow-qt --smoke-test --allow-multiple-instances
+                    --${surface} --route home --smoke-stream-exit --smoke-exit-post-end
+                    ${post_end_mode_args} --reduced-motion)
+            set_tests_properties("qml-post-end-close-${surface}-${mode}" PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 10)
             foreach(route stream inserting home)
                 add_test(NAME "qml-window-close-${surface}-${mode}-${route}"
                     COMMAND opennow-qt --smoke-test --allow-multiple-instances

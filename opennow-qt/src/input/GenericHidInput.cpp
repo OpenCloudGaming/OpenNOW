@@ -2,9 +2,6 @@
 
 #include <QElapsedTimer>
 #include <QCryptographicHash>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QMutexLocker>
 #include <QTimer>
 
@@ -15,10 +12,10 @@
 #include <utility>
 
 #ifdef Q_OS_LINUX
+#include "input/platform/LinuxHidIdentity.h"
 #include <fcntl.h>
 #include <linux/hidraw.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #ifdef Q_OS_WIN
@@ -97,32 +94,8 @@ struct DeviceIdentity {
 DeviceIdentity deviceIdentity(const GenericHidBackend::Device &device)
 {
 #ifdef Q_OS_LINUX
-    const auto deviceClass = device.path.startsWith("/dev/hidraw") ? QStringLiteral("hidraw")
-        : device.path.startsWith("/dev/input/event") ? QStringLiteral("input") : QString{};
-    if (deviceClass.isEmpty()) return {};
-    auto current = QFileInfo(QStringLiteral("/sys/class/%1/%2/device").arg(deviceClass)
-                                .arg(QFileInfo(QString::fromLocal8Bit(device.path)).fileName())).canonicalFilePath();
-    if (current.isEmpty()) return {};
-    const auto instancePath = current.toUtf8();
-    struct stat instance{};
-    if (::stat(instancePath.constData(), &instance) != 0 || !S_ISDIR(instance.st_mode) || !instance.st_ino) return {};
-    const auto instanceKey = instancePath + char(0) + QByteArray::number(quint64(instance.st_dev), 16)
-        + ':' + QByteArray::number(quint64(instance.st_ino), 16);
-    while (!current.isEmpty() && current != QStringLiteral("/")) {
-        QFile vendor(current + QStringLiteral("/idVendor"));
-        QFile product(current + QStringLiteral("/idProduct"));
-        if (vendor.open(QIODevice::ReadOnly) && product.open(QIODevice::ReadOnly)) {
-            if (vendor.readAll().trimmed().toUShort(nullptr, 16) != device.vendor
-                || product.readAll().trimmed().toUShort(nullptr, 16) != device.product) return {};
-            if (!device.serial.isEmpty()) {
-                QFile serial(current + QStringLiteral("/serial"));
-                if (!serial.open(QIODevice::ReadOnly)
-                    || QString::fromUtf8(serial.readAll().trimmed()) != device.serial) return {};
-            }
-            return {current.toUtf8(), instanceKey};
-        }
-        current = QFileInfo(current).dir().absolutePath();
-    }
+    const auto identity = LinuxHidIdentity::resolve(device);
+    return {identity.physicalKey, identity.instanceKey};
 #elif defined(Q_OS_WIN)
     const GUID hidGuid = {0x4d1e55b2, 0xf16f, 0x11cf, {0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
     const auto set = SetupDiGetClassDevsW(&hidGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -480,6 +453,7 @@ GenericHidInput::Batch GenericHidInput::drain(int limit)
     Batch batch;
     batch.inventoryChanged = std::exchange(m_inventoryChanged, false);
     batch.diagnostics = std::exchange(m_diagnostics, {});
+    batch.scanGeneration = m_scanGeneration;
     if (m_droppedDiagnostics)
         batch.diagnostics.append(QStringLiteral("generic-hid %1 diagnostics dropped").arg(std::exchange(m_droppedDiagnostics, 0)));
     for (const auto &lane : m_lanes) if (lane.claim.incarnation) batch.claims.append(lane.claim);
@@ -787,6 +761,7 @@ void GenericHidInput::run()
             std::sort(inventory.begin(), inventory.end(), [](const auto &a, const auto &b) { return a.deviceId < b.deviceId; });
             QMutexLocker lock(&m_mutex);
             if (m_forwardingEpoch != forwardingEpoch) for (auto &entry : inventory) entry.incarnation = 0;
+            ++m_scanGeneration;
             if (inventory != m_devices) {
                 m_devices = std::move(inventory);
                 markInventoryChangedLocked();

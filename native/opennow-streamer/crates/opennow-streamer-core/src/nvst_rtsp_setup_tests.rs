@@ -76,6 +76,7 @@ fn scripted_setup_with_retry(
         socket,
         cseq: 2,
         buffer: String::new(),
+        startup: None,
     };
     let result = client.setup_video_with_retry(
         "streamid=video/0",
@@ -295,6 +296,7 @@ fn rtsp_request_deadline_bounds_a_partial_response() {
         socket,
         cseq: 0,
         buffer: String::new(),
+        startup: None,
     };
     let start = Instant::now();
     let result = client.request_with_timeout(

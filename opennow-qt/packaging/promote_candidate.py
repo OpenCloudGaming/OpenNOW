@@ -24,7 +24,9 @@ def validate_provenance(run, run_id, repository, commit):
 
 
 def assemble(source, destination, version, commit, public_key):
-    assets = expected_packages(version, commit, "stable") | {f"OpenNOW-Qt-{version}-Darwin-arm64.zip"}
+    assets = expected_packages(version, commit, "stable") | {
+        f"OpenNOW-Qt-{version}-Darwin-{arch}.zip" for arch in ("x64", "arm64")
+    }
     expected = assets | {name + ".manifest.json" for name in assets}
     files = {}
     paths = {}
@@ -65,6 +67,10 @@ def assemble(source, destination, version, commit, public_key):
         asset_info = [{"name": name, "size": (staged / name).stat().st_size,
                        "sha256": digest(staged / name)} for name in sorted(assets)]
         verify_manifests(staged, version, asset_info, public_key)
+        candidate_only = f"OpenNOW-Qt-{version}-Darwin-x64.zip"
+        for name in (candidate_only, candidate_only + ".manifest.json"):
+            (staged / name).unlink()
+        asset_info = [asset for asset in asset_info if asset["name"] != candidate_only]
         metadata = {"version": version, "sourceCommit": commit,
                     "platformSigning": "macos-developer-id", "windowsSigningMode": lines[3].split("=", 1)[1],
                     "updates": "signed-manifest", "assets": asset_info}

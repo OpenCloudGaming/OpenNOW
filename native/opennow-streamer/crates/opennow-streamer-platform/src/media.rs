@@ -869,6 +869,8 @@ pub enum MediaFeedback {
     VideoFrameAccepted {
         frame_index: Option<u32>,
         timestamp: u64,
+        clock_rate_hz: u32,
+        accepted_at: Instant,
         bytes: u32,
         keyframe: bool,
     },
@@ -1089,7 +1091,7 @@ impl MediaSession {
             ) {
                 Ok(session) => return Ok(session),
                 Err(reason) => {
-                    if stream.codec != MediaVideoCodec::H264 {
+                    if crate::HARDWARE_ONLY || stream.codec != MediaVideoCodec::H264 {
                         return Err(format!(
                             "Linux {} decoder startup failed: {reason}",
                             stream.codec.label().to_ascii_uppercase()
@@ -1101,6 +1103,9 @@ impl MediaSession {
                     });
                 }
             }
+        }
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
         }
         if !use_windows_backend && stream.codec != MediaVideoCodec::H264 {
             return Err(format!(
@@ -2100,6 +2105,7 @@ impl MediaSession {
         if let Some(worker) = self.embedded_host_worker.take() {
             let _ = worker.join();
         }
+        self.sink.shared.output.clear();
         // Clear after all publishers stop, so a late decoder callback cannot
         // republish the previous session's surface into the next session.
         if let Some(frames) = &self.embedded_frames {
@@ -2113,6 +2119,7 @@ struct EmbeddedD3d11State {
     format: opennow_streamer_platform_windows::VideoFormat,
     submission: Arc<Mutex<EmbeddedD3d11Submission>>,
     producer: Option<(crate::GraphicsContext, crate::D3d11FrameProducer)>,
+    selected: Vec<Weak<Mutex<Option<crate::D3d11Frame>>>>,
     frame_ready: Arc<dyn Fn() + Send + Sync>,
     keyframe_required: bool,
     first_frame_recorded: bool,
@@ -2191,6 +2198,7 @@ impl EmbeddedD3d11State {
             },
             submission,
             producer: None,
+            selected: Vec::new(),
             frame_ready: Arc::new(|| {}),
             keyframe_required: false,
             first_frame_recorded: false,
@@ -2203,6 +2211,12 @@ impl EmbeddedD3d11State {
     }
 
     fn reset(&mut self) {
+        for frame in self.selected.drain(..).filter_map(|frame| frame.upgrade()) {
+            frame
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        }
         detach_d3d11_producer(&self.submission, &mut self.producer);
         self.keyframe_required = false;
     }
@@ -2215,12 +2229,10 @@ impl EmbeddedD3d11State {
         succeeded && !std::mem::replace(&mut self.first_frame_recorded, true)
     }
 
-    fn record(
+    fn acquire(
         &mut self,
         context: crate::GraphicsContext,
-        command: crate::GraphicsRecordCommand,
-    ) -> Result<(crate::GraphicsRecordedFrame, Option<MediaFeedback>), crate::GraphicsFrameError>
-    {
+    ) -> Result<crate::D3d11Frame, crate::GraphicsFrameError> {
         use opennow_streamer_platform_windows::{
             AdoptedD3d11Context, D3d11FrameProducer, WindowsDecoderMode,
         };
@@ -2239,10 +2251,7 @@ impl EmbeddedD3d11State {
         {
             let replacing_context = self.producer.is_some();
             if replacing_context {
-                // Frames submitted through the old Qt device cannot be replayed on the new one.
-                // Switch the submit path back to its bounded pre-context queue before adopting
-                // the replacement device, then request one clean prediction chain.
-                detach_d3d11_producer(&self.submission, &mut self.producer);
+                self.reset();
                 self.keyframe_required = true;
             }
             let (producer, submitter) = unsafe {
@@ -2278,10 +2287,21 @@ impl EmbeddedD3d11State {
                 _ => {}
             }
         }
-        let frame = producer
+        producer
             .acquire_latest()
             .map_err(|error| error.to_string())?
-            .ok_or(crate::GraphicsFrameError::NotReady)?;
+            .ok_or(crate::GraphicsFrameError::NotReady)
+    }
+
+    fn record(
+        &mut self,
+        frame: &crate::D3d11Frame,
+        context: crate::GraphicsContext,
+        command: crate::GraphicsRecordCommand,
+    ) -> Result<(crate::GraphicsRecordedFrame, Option<MediaFeedback>), crate::GraphicsFrameError>
+    {
+        use opennow_streamer_platform_windows::AdoptedD3d11Context;
+
         let actual_format = frame.format();
         let recorded = unsafe {
             frame.record(
@@ -2568,11 +2588,36 @@ impl EmbeddedD3d11FrameNotifier {
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Clone)]
 struct PendingD3d11Frame {
     state: Arc<Mutex<EmbeddedD3d11State>>,
     shared: Arc<SharedPipeline>,
     mid: String,
     info: crate::GraphicsFrameInfo,
+}
+
+#[cfg(target_os = "windows")]
+struct SelectedD3d11Frame {
+    pending: PendingD3d11Frame,
+    frame: Arc<Mutex<Option<crate::D3d11Frame>>>,
+    info: crate::GraphicsFrameInfo,
+}
+
+#[cfg(target_os = "windows")]
+impl PendingD3d11Frame {
+    fn report_keyframe_required(&self, keyframe_required: bool) {
+        if keyframe_required {
+            invalidate_embedded_video(
+                &self.shared,
+                &self.mid,
+                "embedded D3D11 decoder lost references or graphics device",
+            );
+            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
+                media: "d3d11-decode",
+                count: 1,
+            });
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2595,39 +2640,95 @@ impl crate::GraphicsFrame for PendingD3d11Frame {
         Some(self.state.clone())
     }
 
+    fn acquire(
+        &self,
+        context: crate::GraphicsContext,
+    ) -> Result<Option<Arc<dyn crate::GraphicsFrame>>, crate::GraphicsFrameError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let result = state.acquire(context).map(|frame| {
+            let format = frame.format();
+            let info = crate::GraphicsFrameInfo {
+                width: format.width,
+                height: format.height,
+                sequence: self.info.sequence,
+                presentation_time_ns: frame.presentation_time_ns(),
+            };
+            let frame = Arc::new(Mutex::new(Some(frame)));
+            state.selected.retain(|frame| frame.strong_count() > 0);
+            state.selected.push(Arc::downgrade(&frame));
+            Some(Arc::new(SelectedD3d11Frame {
+                pending: self.clone(),
+                frame,
+                info,
+            }) as Arc<dyn crate::GraphicsFrame>)
+        });
+        let keyframe_required = state.take_keyframe_required();
+        drop(state);
+        self.report_keyframe_required(keyframe_required);
+        result
+    }
+
+    fn record(
+        &self,
+        _: crate::GraphicsContext,
+        _: crate::GraphicsRecordCommand,
+    ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
+        Err(crate::GraphicsFrameError::NotReady)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl crate::GraphicsFrame for SelectedD3d11Frame {
+    fn info(&self) -> crate::GraphicsFrameInfo {
+        self.info
+    }
+
+    fn render_resources(&self) -> Option<Arc<dyn crate::GraphicsRenderResources>> {
+        Some(self.pending.state.clone())
+    }
+
     fn record(
         &self,
         context: crate::GraphicsContext,
         command: crate::GraphicsRecordCommand,
     ) -> Result<crate::GraphicsRecordedFrame, crate::GraphicsFrameError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self
+            .pending
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let frame = self
+            .frame
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or(crate::GraphicsFrameError::NotReady)?;
+        let selected = Arc::downgrade(&self.frame);
+        state.selected.retain(|frame| !frame.ptr_eq(&selected));
         let mut color_change = None;
-        let result = state.record(context, command).map(|(frame, change)| {
-            color_change = change;
-            frame
-        });
+        let result = state
+            .record(&frame, context, command)
+            .map(|(frame, change)| {
+                color_change = change;
+                frame
+            });
+        drop(frame);
         let first_frame = state.take_first_recorded_frame(result.is_ok());
         let keyframe_required = state.take_keyframe_required();
         drop(state);
         if first_frame {
-            let _ = self.shared.feedback.send(MediaFeedback::PlaybackStarted {
-                backend: "D3D11/Qt",
-            });
+            let _ = self
+                .pending
+                .shared
+                .feedback
+                .send(MediaFeedback::PlaybackStarted {
+                    backend: "D3D11/Qt",
+                });
         }
         if let Some(change) = color_change {
-            let _ = self.shared.feedback.send(change);
+            let _ = self.pending.shared.feedback.send(change);
         }
-        if keyframe_required {
-            invalidate_embedded_video(
-                &self.shared,
-                &self.mid,
-                "embedded D3D11 decoder lost references or graphics device",
-            );
-            let _ = self.shared.feedback.send(MediaFeedback::QueueDropped {
-                media: "d3d11-decode",
-                count: 1,
-            });
-        }
+        self.pending.report_keyframe_required(keyframe_required);
         result
     }
 }
@@ -2673,16 +2774,19 @@ impl MediaControl {
             .close(RecordingCompletion::Cut { reason });
     }
 
-    pub fn update_cursor(&self, bytes: Vec<u8>) {
-        let _ = self.host_commands.send(HostCommand::Cursor(bytes));
+    pub fn update_cursor(&self, start_id: String, bytes: Vec<u8>) {
+        let _ = self
+            .host_commands
+            .send(HostCommand::Cursor(crate::CursorUpdate { start_id, bytes }));
     }
 
     pub fn stop(&self) {
-        if self.shared.stopped.swap(true, Ordering::AcqRel) {
-            return;
-        }
+        let already_stopped = self.shared.stopped.swap(true, Ordering::AcqRel);
         self.shared.video.close();
         self.shared.audio.close();
+        if already_stopped {
+            return;
+        }
         self.cut_recording(RecordingCutReason::Interrupted);
         self.shared.replay_tap.stop();
         self.shared.output.stop_microphone();
@@ -2903,6 +3007,9 @@ struct H264Decoder {
 
 impl H264Decoder {
     fn new() -> Result<Self, String> {
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         OpenH264Decoder::with_api_config(
             OpenH264API::from_source(),
             DecoderConfig::new().debug(false),
@@ -3719,9 +3826,10 @@ fn trigger_linux_fallback(
     host_commands: &Sender<HostCommand>,
     reason: String,
 ) {
-    if shared.linux_codec != MediaVideoCodec::H264 {
+    if crate::HARDWARE_ONLY || shared.linux_codec != MediaVideoCodec::H264 {
         shared.stopped.store(true, Ordering::Release);
         shared.video.close();
+        shared.audio.close();
         let _ = shared.feedback.send(MediaFeedback::DecoderError {
             codec: shared.linux_codec.label(),
             message: reason,
@@ -4494,6 +4602,8 @@ fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
         frame_index: frame.frame_index,
         timestamp: frame.timestamp,
+        clock_rate_hz: frame.clock_rate_hz,
+        accepted_at: Instant::now(),
         bytes: u32::try_from(frame.data.len()).unwrap_or(u32::MAX),
         keyframe: frame.keyframe,
     });
@@ -4582,6 +4692,19 @@ fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
 
 #[cfg(test)]
 mod tests {
+    fn software_decoder_forbidden() -> bool {
+        if !crate::HARDWARE_ONLY {
+            return false;
+        }
+        assert!(H264Decoder::new().err().unwrap().contains("hardware-only"));
+        true
+    }
+
+    #[test]
+    fn hardware_only_openh264_constructor_cannot_bypass_decoder_policy() {
+        assert_eq!(H264Decoder::new().is_err(), crate::HARDWARE_ONLY);
+    }
+
     use super::*;
 
     #[cfg(target_os = "macos")]
@@ -4769,6 +4892,46 @@ mod tests {
                 None,
             );
             assert!(result.err().is_some_and(|error| error.contains(expected)));
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "hardware-only"))]
+    #[test]
+    fn hardware_only_embedded_startup_rejects_no_decoder_and_software_before_workers() {
+        use opennow_streamer_platform_linux::DecoderPreference;
+        for (path, expected) in [
+            (LinuxVideoPath::Software, "requires a native NV12 decoder"),
+            (
+                LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly),
+                "hardware-only",
+            ),
+        ] {
+            let (feedback, feedback_receiver) = std::sync::mpsc::channel();
+            let (commands, command_receiver) = std::sync::mpsc::channel();
+            let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+            let result = MediaSession::spawn_embedded_linux(
+                Arc::new(OutputBuffers::new()),
+                feedback,
+                commands,
+                MediaSessionConfig {
+                    stream: MediaStreamConfig::default(),
+                    audio_device: &opennow_streamer_protocol::AudioOutputDevice::default(),
+                },
+                frames.clone(),
+                LinuxVideoSelection {
+                    path,
+                    use_vulkan_output: true,
+                    fallback_reason: None,
+                },
+                None,
+            );
+            let error = result
+                .err()
+                .expect("startup must fail before creating workers");
+            assert!(error.contains(expected), "{path:?}: {error}");
+            assert!(feedback_receiver.try_recv().is_err());
+            assert!(command_receiver.try_recv().is_err());
+            assert_eq!(frames.published_frames(), 0);
         }
     }
 
@@ -5285,6 +5448,9 @@ mod tests {
 
     #[test]
     fn decodes_a_synthetic_h264_keyframe() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let width = 32;
         let height = 32;
         let mut rgb = vec![0_u8; width * height * 3];
@@ -5308,6 +5474,9 @@ mod tests {
 
     #[test]
     fn software_recovery_replays_parameter_sets_for_an_idr_only_access_unit() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5409,8 +5578,38 @@ mod tests {
         (shared, receiver)
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hardware_only_standalone_recovery_never_starts_openh264_or_sdl() {
+        let (shared, feedback) = software_test_pipeline();
+        shared
+            .linux_software_fallback
+            .store(false, Ordering::Release);
+        let (commands, host) = std::sync::mpsc::channel();
+        trigger_linux_fallback(&shared, &commands, "hardware decoder lost".to_owned());
+        if crate::HARDWARE_ONLY {
+            assert!(shared.stopped.load(Ordering::Acquire));
+            assert!(!shared.linux_software_fallback.load(Ordering::Acquire));
+            assert!(host.try_recv().is_err());
+            assert!(matches!(
+                feedback.try_recv(),
+                Ok(MediaFeedback::DecoderError { .. })
+            ));
+        } else {
+            assert!(!shared.stopped.load(Ordering::Acquire));
+            assert!(shared.linux_software_fallback.load(Ordering::Acquire));
+            assert!(matches!(
+                host.try_recv(),
+                Ok(HostCommand::FallbackLinux { .. })
+            ));
+        }
+    }
+
     #[test]
     fn software_handoff_decodes_the_pending_h264_keyframe() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let width = 32;
         let height = 32;
         let rgb = vec![96_u8; width * height * 3];
@@ -5444,6 +5643,9 @@ mod tests {
 
     #[test]
     fn software_worker_recovers_an_idr_without_repeated_parameter_sets() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5492,6 +5694,9 @@ mod tests {
 
     #[test]
     fn software_worker_does_not_decode_a_discontinuous_delta_frame() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let mut encoder = Encoder::new().unwrap();
@@ -5529,6 +5734,9 @@ mod tests {
 
     #[test]
     fn software_worker_requests_once_until_a_keyframe_decodes() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let rgb = vec![96_u8; 32 * 32 * 3];
         let yuv = YUVBuffer::from_rgb_source(RgbSliceU8::new(&rgb, (32, 32)));
         let valid_keyframe: Arc<[u8]> = Encoder::new()
@@ -5592,6 +5800,9 @@ mod tests {
 
     #[test]
     fn software_worker_accepts_a_buffered_keyframe_before_output() {
+        if software_decoder_forbidden() {
+            return;
+        }
         let (shared, feedback) = software_test_pipeline();
         shared.keyframe_requested.store(true, Ordering::Release);
         let mut decoder = H264Decoder::new().unwrap();
@@ -5678,6 +5889,155 @@ mod tests {
         assert!(concealed.iter().all(|sample| sample.is_finite()));
     }
 
+    fn audio_test_session(
+        shared: Arc<SharedPipeline>,
+        host_commands: Sender<HostCommand>,
+    ) -> MediaSession {
+        let audio_shared = Arc::clone(&shared);
+        let decoder = OpusDecoder::new(2).unwrap();
+        let worker = thread::spawn(move || run_audio_decoder(audio_shared, decoder));
+        MediaSession {
+            sink: MediaSink { shared },
+            video_worker: None,
+            audio_worker: Some(worker),
+            #[cfg(target_os = "linux")]
+            linux_monitor: None,
+            embedded_host_worker: None,
+            #[cfg(target_os = "windows")]
+            embedded_d3d11: None,
+            embedded_frames: None,
+            host_commands,
+        }
+    }
+
+    #[test]
+    fn stop_clears_opus_pcm_published_after_the_initial_output_clear() {
+        use std::time::Duration;
+
+        let (shared, _feedback) = software_test_pipeline();
+        let output = Arc::clone(&shared.output);
+        let (arrived, before_push) = sync_channel(1);
+        let (release, continue_push) = sync_channel(1);
+        *output.audio_push_barrier.lock().unwrap() = Some((arrived, continue_push));
+        let (commands, host) = std::sync::mpsc::channel();
+        let mut session = audio_test_session(shared, commands);
+        let mut encoder =
+            OpusEncoder::new(OPUS_SAMPLE_RATE, Channels::Stereo, Application::Audio).unwrap();
+        let mut packet = vec![0; 4_000];
+        let length = encoder
+            .encode_float(&vec![0.25; 960 * 2], &mut packet)
+            .unwrap();
+        packet.truncate(length);
+        assert_eq!(
+            session.sink().push(EncodedFrame {
+                mid: "audio".to_owned(),
+                codec: MediaCodec::Opus { channels: 2 },
+                data: packet.into(),
+                frame_index: None,
+                timestamp: 0,
+                clock_rate_hz: OPUS_SAMPLE_RATE,
+                keyframe: false,
+                contiguous: true,
+                ssrc: None,
+            }),
+            PushOutcome::Queued
+        );
+        before_push.recv_timeout(Duration::from_secs(2)).unwrap();
+        let stopping = thread::spawn(move || {
+            session.stop_inner();
+            session
+        });
+        assert!(matches!(
+            host.recv_timeout(Duration::from_secs(2)).unwrap(),
+            HostCommand::Stop
+        ));
+        output.clear();
+        assert!(!output.audio_samples_pending());
+        release.send(()).unwrap();
+        let session = stopping.join().unwrap();
+        assert!(!output.audio_samples_pending());
+        drop(session);
+
+        let (mut replacement_shared, _feedback) = software_test_pipeline();
+        Arc::get_mut(&mut replacement_shared).unwrap().output = Arc::clone(&output);
+        let (commands, _host) = std::sync::mpsc::channel();
+        let replacement = audio_test_session(replacement_shared, commands);
+        assert!(!output.audio_samples_pending());
+        replacement.stop();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fatal_standalone_video_still_closes_audio_and_completes_stop() {
+        use std::time::Duration;
+
+        let (mut shared, feedback) = software_test_pipeline();
+        Arc::get_mut(&mut shared).unwrap().linux_codec = MediaVideoCodec::H265;
+        shared
+            .linux_software_fallback
+            .store(false, Ordering::Release);
+        let (commands, host) = std::sync::mpsc::channel();
+        let mut session = audio_test_session(Arc::clone(&shared), commands.clone());
+        trigger_linux_fallback(&shared, &commands, "fatal video failure".to_owned());
+        assert!(shared.stopped.load(Ordering::Acquire));
+        assert!(matches!(
+            feedback.try_recv(),
+            Ok(MediaFeedback::DecoderError { codec: "h265", .. })
+        ));
+        let (finished, stopped) = sync_channel(1);
+        let stopping = thread::spawn(move || {
+            session.stop_inner();
+            finished.send(()).unwrap();
+            session
+        });
+        let completed = stopped.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !completed {
+            shared.audio.close();
+            stopped.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let session = stopping.join().unwrap();
+        assert!(
+            completed,
+            "fatal video must not strand the Opus worker in pop"
+        );
+        assert!(host.try_recv().is_err());
+        session.control().stop();
+        assert!(shared.audio.pop().is_none());
+        assert!(shared.video.pop().is_none());
+    }
+
+    #[test]
+    fn stopped_control_closes_queues_without_repeating_runtime_side_effects() {
+        use std::time::Duration;
+
+        let (shared, _feedback) = software_test_pipeline();
+        let (commands, host) = std::sync::mpsc::channel();
+        let session = audio_test_session(Arc::clone(&shared), commands);
+        shared.stopped.store(true, Ordering::Release);
+        session.control().stop();
+        let (finished, closed) = sync_channel(1);
+        let audio = Arc::clone(&shared.audio);
+        let video = Arc::clone(&shared.video);
+        let waiter = thread::spawn(move || {
+            finished
+                .send(audio.pop().is_none() && video.pop().is_none())
+                .unwrap()
+        });
+        let result = closed.recv_timeout(Duration::from_secs(2));
+        if result.is_err() {
+            shared.audio.close();
+            shared.video.close();
+            closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        waiter.join().unwrap();
+        assert!(result.unwrap(), "terminal cleanup must close both queues");
+        shared.output.push_audio(&[0.25, -0.25]);
+        session.control().stop();
+        assert!(shared.output.audio_samples_pending());
+        assert!(host.try_recv().is_err());
+        session.stop();
+    }
+
     #[test]
     fn converts_rtp_video_timestamps_to_media_foundation_time() {
         assert_eq!(media_timestamp_100ns(0, 90_000), 0);
@@ -5723,8 +6083,12 @@ mod tests {
             },
             #[cfg(target_os = "linux")]
             Arc::new(AtomicBool::new(true)),
-        )
-        .expect("session");
+        );
+        if crate::HARDWARE_ONLY {
+            assert!(session.err().unwrap().contains("hardware-only"));
+            return;
+        }
+        let session = session.expect("session");
         let sink = session.sink();
         session.set_paused(true);
         assert_eq!(
@@ -5778,8 +6142,12 @@ mod tests {
             },
             #[cfg(target_os = "linux")]
             Arc::new(AtomicBool::new(true)),
-        )
-        .expect("session");
+        );
+        if crate::HARDWARE_ONLY {
+            assert!(session.err().unwrap().contains("hardware-only"));
+            return;
+        }
+        let session = session.expect("session");
         assert_eq!(
             session.sink().push(EncodedFrame {
                 mid: "video".to_owned(),

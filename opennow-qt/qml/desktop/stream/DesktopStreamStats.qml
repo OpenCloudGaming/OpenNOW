@@ -165,11 +165,13 @@ Item {
             for (const device of flightDevices.filter(device => device.status !== "active")) {
                 const types = {stick:qsTr("STICK"), throttle:qsTr("THROTTLE"), pedals:qsTr("PEDALS"), wheel:qsTr("WHEEL")}
                 const states = {ready:qsTr("ready"), declined:qsTr("declined"),
+                    "no-hid-path":qsTr("NO HID PATH"), "no-access":qsTr("NO PERMISSION"),
                     controller:qsTr("controller P%1").arg(device.player), ignored:qsTr("ignored")}
                 cards.push({key:"FlightDevice", label:types[device.type] || qsTr("STICK"), unit:"", value:null,
                     textValue:device.status === "declined" ? qsTr("IDLE") : String(states[device.status] || qsTr("ready")).toUpperCase(),
                     detail:device.name + " · " + String(states[device.status] || qsTr("ready")),
-                    ink:device.status === "declined" ? "#FF8A80" : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
+                    ink:["declined", "no-hid-path", "no-access"].includes(device.status) ? "#FF8A80"
+                        : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
             }
         }
         return cards.filter(item => shown(item.key === "Receive" ? "Bitrate" : item.key)

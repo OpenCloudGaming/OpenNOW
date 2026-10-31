@@ -2,7 +2,7 @@ import json
 import select
 import subprocess
 
-from verify_linux_package import verify_capabilities
+from verify_linux_package import verify_capabilities, verify_core_capabilities
 
 
 APP_ID = "io.github.opencloudgaming.OpenNOW"
@@ -15,7 +15,7 @@ def flatpak_command(command, *arguments):
 def verify_flatpak():
     probe = subprocess.run(
         flatpak_command("opennow-streamer"),
-        input='{"id":"package-probe","type":"hello","protocolVersion":7}\n'
+        input='{"id":"package-probe","type":"hello","protocolVersion":8}\n'
               '{"id":"package-shutdown","type":"shutdown"}\n',
         text=True, capture_output=True, check=True, timeout=45,
     )
@@ -27,6 +27,12 @@ def verify_flatpak():
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
     try:
+        core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
+                         '"params":{"protocolVersion":6}}\n')
+        core.stdin.flush()
+        if not select.select([core.stdout], [], [], 30)[0]:
+            raise TimeoutError("The installed Flatpak core handshake timed out")
+        verify_core_capabilities(json.loads(core.stdout.readline()))
         core.stdin.write('{"type":"request","id":"flatpak-updater","method":"updater.state.get","params":{}}\n')
         core.stdin.flush()
         if not select.select([core.stdout], [], [], 30)[0]:

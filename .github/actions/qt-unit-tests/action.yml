@@ -90,32 +90,6 @@ runs:
     - name: Limit Rust debug info
       shell: bash
       run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-      with:
-        shared-key: qt-checks-${{ inputs.label }}
-        cache-bin: false
-        cache-on-failure: true
-        save-if: ${{ github.event_name == 'push' }}
-        workspaces: |
-          native/opennow-core -> target
-          native/opennow-streamer -> target
-          native/opennow-core -> ../../build/opennow-qt-checks/rust-target
-    - name: Lint Rust
-      shell: bash
-      working-directory: ${{ env.OPENNOW_CHECKOUT }}
-      env:
-        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
-      run: |
-        cargo clippy --locked --manifest-path native/opennow-core/Cargo.toml --all-targets -- -D warnings
-        cargo clippy --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
-    - name: Build Rust tests
-      shell: bash
-      working-directory: ${{ env.OPENNOW_CHECKOUT }}
-      env:
-        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
-      run: |
-        cargo test --locked --no-run --manifest-path native/opennow-core/Cargo.toml
-        cargo test --locked --no-run --manifest-path native/opennow-streamer/Cargo.toml --workspace
     - name: Install Qt
       uses: jurplel/install-qt-action@v4
       with:
@@ -140,28 +114,31 @@ runs:
         version: release-3.2.20
         target-arch: ${{ inputs.target-arch }}
         parallel: ${{ inputs.parallel }}
+    - name: Cache complete Rust build state
+      uses: ./.github/actions/rust-build-cache
+      with:
+        shared-key: qt-checks-${{ inputs.label }}
+        workspaces: |
+          native/opennow-core -> target
+          native/opennow-streamer -> target
+          native/opennow-core -> ../../build/opennow-qt-checks/rust-target
     - name: Check QML syntax
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       run: find opennow-qt/qml -name '*.qml' -print0 | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
-    - name: Compile Qt unit tests only
+    - name: Lint Rust
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       env:
-        BUILD_PARALLEL: ${{ inputs.parallel }}
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
+      run: python .github/scripts/run-native-checks.py lint --parallel "$CARGO_BUILD_JOBS"
+    - name: Build Rust and Qt tests concurrently
+      shell: bash
+      working-directory: ${{ env.OPENNOW_CHECKOUT }}
+      env:
+        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
         TARGET_ARCH: ${{ inputs.target-arch }}
-      run: |
-        args=()
-        if [[ "$RUNNER_OS" == Windows ]]; then
-          args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
-        elif [[ "$RUNNER_OS" == macOS ]]; then
-          args+=("-DCMAKE_OSX_ARCHITECTURES=$TARGET_ARCH" "-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET")
-        fi
-        cmake -S opennow-qt -B build/opennow-qt-checks -G Ninja \
-          -DCMAKE_BUILD_TYPE=Debug \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" "${args[@]}"
-        cmake --build build/opennow-qt-checks --target opennow-ci-unit-tests --parallel "$BUILD_PARALLEL"
+      run: python .github/scripts/run-native-checks.py build --parallel "$CARGO_BUILD_JOBS"
     - name: Finish Windows Media Foundation installation
       if: runner.os == 'Windows'
       shell: pwsh
@@ -173,31 +150,17 @@ runs:
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
       env:
         CARGO_BUILD_JOBS: ${{ inputs.parallel }}
-      run: |
-        cargo test --locked --manifest-path native/opennow-core/Cargo.toml
-        cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml --workspace
-    - name: Test signed update helper integration
-      shell: bash
-      working-directory: ${{ env.OPENNOW_CHECKOUT }}
-      env:
-        CARGO_BUILD_JOBS: ${{ inputs.parallel }}
-        OPENNOW_UPDATE_TEST_TARGET_DIR: ${{ env.OPENNOW_CHECKOUT }}/native/opennow-core/target
-      run: |
-        if [[ "$RUNNER_OS" == Windows ]]; then
-          python opennow-qt/tests/run_update_helper_integration.py
-        else
-          python3 opennow-qt/tests/run_update_helper_integration.py
-        fi
-    - name: Run Qt unit tests
-      shell: bash
-      working-directory: ${{ env.OPENNOW_CHECKOUT }}
-      env:
-        BUILD_PARALLEL: ${{ inputs.parallel }}
-      run: |
-        trap 'status=$?; if (( status != 0 )); then
-          for log in build/opennow-qt-checks/Testing/Temporary/LastTestsFailed.log build/opennow-qt-checks/Testing/Temporary/LastTest.log; do
-            if [[ -f "$log" ]]; then echo "::group::$log"; cat "$log"; echo "::endgroup::"; fi
-          done
-        fi; exit "$status"' EXIT
-        ctest --test-dir build/opennow-qt-checks --output-on-failure --no-tests=error \
-          -L ci-unit --parallel "$BUILD_PARALLEL" --output-junit qt-unit-tests.xml
+      run: python .github/scripts/run-native-checks.py test --parallel "$CARGO_BUILD_JOBS"
+    - name: Upload native check diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: native-check-diagnostics-${{ inputs.label }}
+        path: |
+          build/ci-native-logs
+          build/opennow-qt-checks/qt-unit-tests.xml
+          build/opennow-qt-checks/Testing/Temporary
+          native/opennow-core/target/cargo-timings
+          native/opennow-streamer/target/cargo-timings
+        if-no-files-found: ignore
+        retention-days: 7

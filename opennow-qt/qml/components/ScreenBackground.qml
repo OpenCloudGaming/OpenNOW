@@ -23,6 +23,7 @@ Rectangle {
     Image {
         anchors.fill: parent
         source: artworkSource.resolvedUrl
+        onStatusChanged: artworkSource.reportImageStatus(status, source)
         fillMode: Image.PreserveAspectCrop
         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
         asynchronous: true

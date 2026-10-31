@@ -48,9 +48,8 @@ use str0m::{
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, FRAME_ACK_PAYLOAD_LEN, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT,
-    QOS_REPORT_INTERVAL, QosPacketSnapshot, QosReport, frame_ack, frame_invalidation_range,
-    frame_pacing_report, idr_request, nack_v2,
+    FRAME_ACK_PAYLOAD_LEN, MAX_NACK_PACKET_COUNT, QOS_REPORT_INTERVAL, QosPacketSnapshot,
+    QosReport, frame_ack, frame_invalidation_range, frame_pacing_report, idr_request, nack_v2,
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
 use super::nvst_haptics::NvstHaptics;
@@ -65,7 +64,8 @@ use super::nvst_input_delivery::{NvstInputDelivery, NvstInputDeliveryError};
 pub use super::nvst_invalidation::NvstFrameType;
 use super::nvst_invalidation::{FrameInvalidation, FrameInvalidationFeedback};
 use super::{
-    EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
+    EncodedMediaFrame, MediaConsumer, SenderFrameTiming, TransportError, deliver_media_frame,
+    install_crypto,
 };
 use opennow_streamer_hid::generic::{GenericError, GenericOutbound, GenericSession};
 use opennow_streamer_hid::generic_runtime::{GenericIngress, GenericRuntime};
@@ -626,6 +626,7 @@ impl RecentNetworkMetrics {
 pub struct NvstFeedbackState {
     pub(crate) idle_warning_active: AtomicBool,
     frame_pacing_enabled: AtomicBool,
+    presentation: Mutex<Arc<crate::presentation_timing::PresentationTimingState>>,
     pub haptics: crate::NvstHaptics,
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
@@ -660,6 +661,9 @@ impl Default for NvstFeedbackState {
         Self {
             idle_warning_active: AtomicBool::new(false),
             frame_pacing_enabled: AtomicBool::new(true),
+            presentation: Mutex::new(Arc::new(
+                crate::presentation_timing::PresentationTimingState::default(),
+            )),
             haptics: crate::NvstHaptics::default(),
             video_ssrc: AtomicU32::new(0),
             highest_sequence: AtomicU32::new(0),
@@ -689,6 +693,38 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    pub fn bind_presentation(
+        &self,
+        presentation: Arc<crate::presentation_timing::PresentationTimingState>,
+    ) {
+        *self.presentation.lock().unwrap_or_else(|e| e.into_inner()) = presentation;
+    }
+
+    pub fn presentation(&self) -> Arc<crate::presentation_timing::PresentationTimingState> {
+        Arc::clone(&self.presentation.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub fn pacing_feedback_mode(&self) -> u32 {
+        u32::from(self.frame_pacing_enabled.load(Ordering::Acquire))
+    }
+
+    pub fn activate_presentation(
+        &self,
+        generation: u64,
+        fps: u32,
+        cloud_gsync: bool,
+        windows_pts: bool,
+    ) {
+        let presentation = self.presentation.lock().unwrap_or_else(|e| e.into_inner());
+        presentation.activate(
+            generation,
+            fps,
+            cloud_gsync,
+            self.pacing_feedback_mode(),
+            windows_pts,
+        );
+    }
+
     fn receive_server_control(
         &self,
         bytes: &[u8],
@@ -713,6 +749,9 @@ impl NvstFeedbackState {
                     if stream_index == 0 {
                         self.frame_pacing_enabled
                             .store(mode == FramePacingFeedbackMode::Interval, Ordering::Release);
+                        self.presentation().set_feedback_mode(u32::from(
+                            mode == FramePacingFeedbackMode::Interval,
+                        ));
                     } else {
                         diagnostics.invalid_stream = diagnostics.invalid_stream.saturating_add(1);
                     }
@@ -1363,6 +1402,7 @@ pub struct NvstVideoConfig {
     rtcp_on_sctp: bool,
     qos_timings_v5: bool,
     frame_pacing_feedback: bool,
+    presentation_estimator: Option<crate::presentation_timing::PresentationEstimatorConfig>,
     max_control_report_bytes: usize,
     hid_device_mask: u32,
     /// Dedicated NATT-only video (Mjolnir) socket port in the official two-socket
@@ -1381,7 +1421,6 @@ pub struct NvstVideoConfig {
     max_access_unit_bytes: usize,
     timeout: Duration,
     startup_timeout: Duration,
-    frame_time_us: u32,
     /// Negotiated `x-nv-video[0].packetSize`; FEC shards are this plus 16 RTP bytes.
     video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
@@ -1426,7 +1465,6 @@ impl fmt::Debug for NvstVideoConfig {
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
             .field("startup_timeout", &self.startup_timeout)
-            .field("frame_time_us", &self.frame_time_us)
             .field("video_packet_size", &self.video_packet_size)
             .finish()
     }
@@ -1806,6 +1844,9 @@ impl NvstVideoConfig {
             rtcp_on_sctp,
             qos_timings_v5,
             frame_pacing_feedback,
+            presentation_estimator: object
+                .get("presentationEstimator")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
             max_control_report_bytes,
             mjolnir_udp_port,
             unified_socket,
@@ -1819,9 +1860,11 @@ impl NvstVideoConfig {
             max_access_unit_bytes,
             timeout,
             startup_timeout,
-            frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
-            feedback: Arc::new(NvstFeedbackState::default()),
+            feedback: Arc::new(NvstFeedbackState {
+                frame_pacing_enabled: AtomicBool::new(frame_pacing_feedback),
+                ..NvstFeedbackState::default()
+            }),
         })
     }
 
@@ -1832,6 +1875,14 @@ impl NvstVideoConfig {
     /// Shared feedback plane (RTCP-over-SCTP state) for this session.
     pub fn feedback(&self) -> SharedNvstFeedback {
         self.feedback.clone()
+    }
+
+    pub fn bind_presentation(
+        &self,
+        presentation: Arc<crate::presentation_timing::PresentationTimingState>,
+    ) {
+        presentation.configure_estimator(self.presentation_estimator.clone());
+        self.feedback.bind_presentation(presentation);
     }
 
     pub fn video_peer(&self) -> SocketAddr {
@@ -2155,6 +2206,7 @@ pub struct EncodedVideoAccessUnit {
     pub first_stream_packet_index: u32,
     /// GameStream frame-header frame type; `None` when the stream carries no frame header.
     pub frame_type: Option<NvstFrameType>,
+    pub sender_timing: Option<SenderFrameTiming>,
     pub keyframe: bool,
     pub contiguous: bool,
     pub bytes: Vec<u8>,
@@ -2277,6 +2329,7 @@ pub enum NvstDropReason {
     Unsupported(NvstUnsupportedFeature),
     AwaitingStartOfFrame,
     FrameDiscontinuity,
+    MalformedFrameHeader,
     MissingAnnexBStartCode,
     InvalidLastPacketPayloadLength {
         reported: usize,
@@ -3230,9 +3283,6 @@ struct VideoAccessUnitAssembler {
     codec: NvstVideoCodec,
     current_frame: Option<u32>,
     first_stream_packet_index: Option<u32>,
-    frame_type: Option<NvstFrameType>,
-    last_packet_payload_length: Option<usize>,
-    expected_access_unit_length: Option<usize>,
     invalid_av1_length_logged: bool,
     first_start_payload_logged: bool,
     first_access_unit_logged: bool,
@@ -3258,15 +3308,102 @@ impl GsFrameHeader {
     }
 }
 
+const MAX_SENDER_EXTENSION_BYTES: usize = 1024;
+const MAX_ASSEMBLED_FRAME_PREFIX_BYTES: usize = u8::MAX as usize + 4 + MAX_SENDER_EXTENSION_BYTES;
+
+struct AssembledVideoPayload<'a> {
+    bytes: &'a [u8],
+    frame_type: Option<NvstFrameType>,
+    sender_timing: Option<SenderFrameTiming>,
+    expected_access_unit_length: Option<usize>,
+}
+
+fn assembled_video_payload(
+    codec: NvstVideoCodec,
+    payload: &[u8],
+) -> Result<AssembledVideoPayload<'_>, NvstDropReason> {
+    let invalid = NvstDropReason::MalformedFrameHeader;
+    if let [version, header_size, ..] = payload
+        && version & 0x7f == 1
+        && *header_size != 0
+    {
+        let header_size = usize::from(*header_size);
+        if header_size < 8 || payload.len() < header_size {
+            return Err(NvstDropReason::MissingAnnexBStartCode);
+        }
+        let mut timing = SenderFrameTiming {
+            capture_time_us: u32::from_le_bytes(payload[4..8].try_into().expect("header checked")),
+            ..SenderFrameTiming::default()
+        };
+        let mut expected_access_unit_length = None;
+        let mut codec_offset = header_size;
+        if version & 0x80 != 0 {
+            let length = payload
+                .get(header_size..header_size + 4)
+                .ok_or(invalid.clone())?;
+            let length = u32::from_le_bytes(length.try_into().expect("length checked")) as usize;
+            if length > MAX_SENDER_EXTENSION_BYTES {
+                return Err(invalid);
+            }
+            codec_offset += 4 + length;
+            let mut extensions = payload
+                .get(header_size + 4..codec_offset)
+                .ok_or(invalid.clone())?;
+            while !extensions.is_empty() {
+                let header = extensions.get(..4).ok_or(invalid.clone())?;
+                let tag = u16::from_le_bytes([header[0], header[1]]);
+                let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
+                let value = extensions.get(4..4 + length).ok_or(invalid.clone())?;
+                match tag {
+                    0x200 => timing.sender_paced = Some(*value.first().ok_or(invalid.clone())?),
+                    0x201 => {
+                        let time = value.get(..8).ok_or(invalid.clone())?;
+                        timing.presentation_time_us = Some(u64::from_le_bytes(
+                            time.try_into().expect("timestamp length checked"),
+                        ));
+                    }
+                    0x202 => {
+                        let length = value.get(..4).ok_or(invalid.clone())?;
+                        expected_access_unit_length = Some(u32::from_le_bytes(
+                            length.try_into().expect("AU length checked"),
+                        ) as usize);
+                    }
+                    _ => {}
+                }
+                extensions = &extensions[4 + length..];
+            }
+        }
+        let bytes = &payload[codec_offset..];
+        if bytes.is_empty() {
+            return Err(invalid);
+        }
+        return Ok(AssembledVideoPayload {
+            bytes,
+            frame_type: Some(NvstFrameType::from_wire(payload[3] & 0x0f)),
+            sender_timing: Some(timing),
+            expected_access_unit_length,
+        });
+    }
+    let bytes =
+        video_picture_payload(codec, payload).ok_or(NvstDropReason::MissingAnnexBStartCode)?;
+    if bytes.is_empty() {
+        return Err(NvstDropReason::MissingAnnexBStartCode);
+    }
+    Ok(AssembledVideoPayload {
+        bytes,
+        frame_type: GsFrameHeader::parse(payload, payload.len() - bytes.len())
+            .map(|header| header.frame_type),
+        sender_timing: None,
+        expected_access_unit_length: None,
+    })
+}
+
 impl VideoAccessUnitAssembler {
     fn new(codec: NvstVideoCodec, max_access_unit_bytes: usize) -> Self {
         Self {
             codec,
             current_frame: None,
             first_stream_packet_index: None,
-            frame_type: None,
-            last_packet_payload_length: None,
-            expected_access_unit_length: None,
             invalid_av1_length_logged: false,
             first_start_payload_logged: false,
             first_access_unit_logged: false,
@@ -3278,9 +3415,6 @@ impl VideoAccessUnitAssembler {
     fn reset(&mut self) {
         self.current_frame = None;
         self.first_stream_packet_index = None;
-        self.frame_type = None;
-        self.last_packet_payload_length = None;
-        self.expected_access_unit_length = None;
         self.bytes.clear();
     }
 
@@ -3295,42 +3429,8 @@ impl VideoAccessUnitAssembler {
                 NvstUnsupportedFeature::FecRepair,
             ));
         }
-        let mut frame_header_size = 0;
-        let mut picture_payload = payload;
         if header.is_start_of_frame() {
             self.reset();
-            picture_payload = video_picture_payload(self.codec, payload)
-                .ok_or(NvstDropReason::MissingAnnexBStartCode)?;
-            frame_header_size = payload.len() - picture_payload.len();
-            self.frame_type =
-                GsFrameHeader::parse(payload, frame_header_size).map(|header| header.frame_type);
-            if !self.first_start_payload_logged {
-                self.first_start_payload_logged = true;
-                eprintln!(
-                    "NVST first {} start payload: frame={} bytes={} frameHeader={} raw={}",
-                    self.codec.label(),
-                    header.frame_index,
-                    payload.len(),
-                    frame_header_size,
-                    diagnostic_hex(payload, 64),
-                );
-            }
-            if self.codec == NvstVideoCodec::Av1 {
-                match payload.first() {
-                    Some(0x01) => {
-                        self.last_packet_payload_length = payload
-                            .get(4..6)
-                            .map(|length| usize::from(u16::from_le_bytes([length[0], length[1]])));
-                    }
-                    Some(0x81) => {
-                        self.expected_access_unit_length = payload.get(16..20).map(|length| {
-                            u32::from_le_bytes([length[0], length[1], length[2], length[3]])
-                                as usize
-                        });
-                    }
-                    _ => {}
-                }
-            }
             self.current_frame = Some(header.frame_index);
             self.first_stream_packet_index = Some(header.stream_packet_index);
         } else if self.current_frame != Some(header.frame_index) {
@@ -3338,46 +3438,80 @@ impl VideoAccessUnitAssembler {
             return Err(NvstDropReason::AwaitingStartOfFrame);
         }
 
-        // GFN pads the final packet to its FEC block size. AVC/HEVC Annex B
-        // decoders tolerate those trailing zeroes, while AV1 decoders require
-        // exact access units. The short header's bytes 4..6 describe the final
-        // packet; the cloud 0x81 header instead advertises the complete AV1
-        // access-unit size in bytes 16..20 and is handled after assembly below.
-        if self.codec == NvstVideoCodec::Av1
-            && header.is_end_of_frame()
-            && let Some(reported) = self.last_packet_payload_length
-        {
-            let exact_payload_length = reported.checked_sub(frame_header_size);
-            if let Some(exact_payload_length) = exact_payload_length
-                && exact_payload_length > 0
-                && exact_payload_length <= picture_payload.len()
-            {
-                picture_payload = &picture_payload[..exact_payload_length];
-            } else if !self.invalid_av1_length_logged {
-                self.invalid_av1_length_logged = true;
-                eprintln!(
-                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={frame_header_size} available={}",
-                    picture_payload.len()
-                );
-            }
+        let mut raw_limit = self
+            .max_access_unit_bytes
+            .saturating_add(MAX_ASSEMBLED_FRAME_PREFIX_BYTES);
+        if self.codec == NvstVideoCodec::Av1 && header.is_end_of_frame() {
+            raw_limit = raw_limit.saturating_add(MAX_NVST_VIDEO_PACKET_SIZE);
         }
-
-        let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
-        if picture_payload.len() > remaining {
+        let remaining = raw_limit.saturating_sub(self.bytes.len());
+        if payload.len() > remaining {
             self.reset();
             return Err(NvstDropReason::AccessUnitTooLarge {
                 limit: self.max_access_unit_bytes,
             });
         }
-        self.bytes.extend_from_slice(picture_payload);
+        let final_packet_start = self.bytes.len();
+        self.bytes.extend_from_slice(payload);
         if !header.is_end_of_frame() {
             return Ok(None);
         }
 
         let mut bytes = std::mem::take(&mut self.bytes);
-        if self.codec == NvstVideoCodec::Av1
-            && let Some(reported) = self.expected_access_unit_length
-        {
+        let parsed = match assembled_video_payload(self.codec, &bytes) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                self.reset();
+                return Err(reason);
+            }
+        };
+        let frame_header_size = bytes.len() - parsed.bytes.len();
+        let frame_type = parsed.frame_type;
+        let sender_timing = parsed.sender_timing;
+        let expected_access_unit_length = parsed.expected_access_unit_length;
+        if !self.first_start_payload_logged {
+            self.first_start_payload_logged = true;
+            eprintln!(
+                "NVST first {} assembled payload: frame={} bytes={} frameHeader={} raw={}",
+                self.codec.label(),
+                header.frame_index,
+                bytes.len(),
+                frame_header_size,
+                diagnostic_hex(&bytes, 64),
+            );
+        }
+        let legacy_av1 = self.codec == NvstVideoCodec::Av1
+            && sender_timing.is_none()
+            && bytes.get(1) == Some(&0);
+        if legacy_av1 && bytes.first() == Some(&0x01) {
+            let reported = usize::from(u16::from_le_bytes([bytes[4], bytes[5]]));
+            let final_header_size = frame_header_size.saturating_sub(final_packet_start);
+            if reported > final_header_size && reported <= payload.len() {
+                bytes.truncate(final_packet_start + reported);
+            } else if !self.invalid_av1_length_logged {
+                self.invalid_av1_length_logged = true;
+                eprintln!(
+                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={final_header_size} available={}",
+                    payload.len().saturating_sub(final_header_size),
+                );
+            }
+        }
+        let expected_access_unit_length = if legacy_av1 && bytes.first() == Some(&0x81) {
+            Some(
+                u32::from_le_bytes(bytes[16..20].try_into().expect("legacy header checked"))
+                    as usize,
+            )
+        } else {
+            expected_access_unit_length.filter(|length| *length != 0)
+        };
+        bytes.drain(..frame_header_size);
+        if sender_timing.is_none() && bytes.len() > self.max_access_unit_bytes {
+            self.reset();
+            return Err(NvstDropReason::AccessUnitTooLarge {
+                limit: self.max_access_unit_bytes,
+            });
+        }
+        if let Some(reported) = expected_access_unit_length {
             if reported > 0 && reported <= bytes.len() {
                 bytes.truncate(reported);
             } else {
@@ -3390,6 +3524,12 @@ impl VideoAccessUnitAssembler {
                 });
             }
         }
+        if bytes.len() > self.max_access_unit_bytes {
+            self.reset();
+            return Err(NvstDropReason::AccessUnitTooLarge {
+                limit: self.max_access_unit_bytes,
+            });
+        }
         strip_trailing_access_unit_delimiter(self.codec, &mut bytes);
         if !self.first_access_unit_logged {
             self.first_access_unit_logged = true;
@@ -3398,7 +3538,7 @@ impl VideoAccessUnitAssembler {
                 self.codec.label(),
                 header.frame_index,
                 bytes.len(),
-                self.frame_type,
+                frame_type,
                 diagnostic_hex(&bytes, 64),
             );
         }
@@ -3412,11 +3552,12 @@ impl VideoAccessUnitAssembler {
             timestamp,
             frame_index: header.frame_index,
             first_stream_packet_index,
-            frame_type: self.frame_type,
+            frame_type,
+            sender_timing,
             keyframe: video_access_unit_is_keyframe(
                 self.codec,
                 &bytes,
-                self.frame_type == Some(NvstFrameType::I),
+                frame_type == Some(NvstFrameType::I),
             ),
             contiguous: true,
             bytes,
@@ -5149,6 +5290,10 @@ fn handle_stun_datagram(
     }
 }
 
+#[path = "nvst_commands.rs"]
+mod commands;
+use commands::{COMMANDS_PER_ITERATION, CommandReceiver, CommandSender, command_queue};
+
 enum UdpReceiverCommand {
     SendText {
         text: opennow_streamer_protocol::text_input::UnicodeText,
@@ -5161,13 +5306,13 @@ enum UdpReceiverCommand {
         bytes: Vec<u8>,
         reply: Option<mpsc::SyncSender<Result<(), TransportError>>>,
     },
-    Stop,
+    Stop(NvstStopCause),
 }
 
 /// Owns the bounded UDP receive worker. Frames go through the same bounded `MediaConsumer` used
 /// by WebRTC, so a slow decoder cannot make UDP receive unbounded.
 pub struct NvstUdpReceiverSession {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     join: Option<JoinHandle<()>>,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
@@ -5175,7 +5320,7 @@ pub struct NvstUdpReceiverSession {
 
 #[derive(Clone)]
 pub struct NvstUdpReceiverControl {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
 }
@@ -5233,7 +5378,9 @@ impl NvstUdpReceiverSession {
         if let Ok(mut queue) = self.microphone.lock() {
             queue.close();
         }
-        let _ = self.commands.send(UdpReceiverCommand::Stop);
+        let _ = self
+            .commands
+            .send(UdpReceiverCommand::Stop(NvstStopCause::Requested));
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -5310,8 +5457,8 @@ impl NvstUdpReceiverControl {
 
     /// Queues latency-sensitive locally captured input without waiting for the
     /// receive worker to round-trip an acknowledgement. Readiness is still
-    /// checked before enqueueing and the ordered command channel preserves the
-    /// exact keyboard/button/motion sequence.
+    /// checked before bounded admission. Motion may be dropped under pressure;
+    /// discrete input keeps its order or terminates the session on exhaustion.
     pub fn queue_input(
         &self,
         bytes: Vec<u8>,
@@ -5330,7 +5477,7 @@ impl NvstUdpReceiverControl {
             .lock()
             .map_err(|_| NvstUdpReceiverError::Closed)?
             .close();
-        self.send(UdpReceiverCommand::Stop)
+        self.send(UdpReceiverCommand::Stop(NvstStopCause::Requested))
     }
 
     fn send(&self, command: UdpReceiverCommand) -> Result<(), NvstUdpReceiverError> {
@@ -5345,7 +5492,9 @@ impl Drop for NvstUdpReceiverSession {
         if let Ok(mut queue) = self.microphone.lock() {
             queue.close();
         }
-        let _ = self.commands.send(UdpReceiverCommand::Stop);
+        let _ = self
+            .commands
+            .send(UdpReceiverCommand::Stop(NvstStopCause::Requested));
     }
 }
 
@@ -6156,7 +6305,7 @@ fn spawn_receiver_thread(
     socket
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
-    let (commands, receiver) = mpsc::channel();
+    let (commands, receiver) = command_queue();
     let input_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
     let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(
@@ -6397,6 +6546,7 @@ impl NvstAudioReceiver {
         let mut frames = Vec::with_capacity(missing_packets.min(MAX_REDUNDANT_AUDIO_BLOCKS) + 1);
         let mut append = |payload: Arc<[u8]>, timestamp: u32| {
             frames.push(EncodedMediaFrame {
+                sender_timing: None,
                 mid: track.mid.clone(),
                 codec: "opus".to_owned(),
                 payload,
@@ -7328,7 +7478,7 @@ fn store_sony_output(
 fn run_nvst_webrtc_bundle(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     setup: NvstWorkerSetup,
@@ -7364,7 +7514,6 @@ fn run_nvst_webrtc_bundle(
     let stun_credentials = config.stun_credentials.clone();
     let feedback = config.feedback();
     let audio_track = config.audio_track().cloned();
-    let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
@@ -7378,7 +7527,6 @@ fn run_nvst_webrtc_bundle(
     );
     let receive_destination = logical_ice_addr(physical_local, 1);
     let receive_source = logical_ice_addr(bundle_peer, 2);
-    let frame_pacing_feedback = config.frame_pacing_feedback;
     let max_control_report_bytes = config.max_control_report_bytes;
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
@@ -7406,7 +7554,6 @@ fn run_nvst_webrtc_bundle(
     let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
     let mut control_reports = ControlReportBatch::new(Instant::now(), max_control_report_bytes);
-    let mut last_frame_pacing_send = Instant::now() - FRAME_PACING_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
     let mut frame_pacing_reports_sent = 0_u64;
@@ -7432,7 +7579,6 @@ fn run_nvst_webrtc_bundle(
     let mut control_keepalive_at = next_control_keepalive(Instant::now());
     let mut control_keepalive_health = ControlKeepaliveHealth::default();
     let mut server_control_diagnostics = ServerControlDiagnostics::default();
-    let mut input_timeout_reported = false;
     let mut upstream_ready = upstream_ready;
     let mut upstream_allowed = upstream_ready.is_none();
     let mut pending_input_version = None;
@@ -7483,7 +7629,7 @@ fn run_nvst_webrtc_bundle(
                 version,
             );
         }
-        loop {
+        for _ in 0..COMMANDS_PER_ITERATION {
             match commands.try_recv() {
                 Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
                 Ok(UdpReceiverCommand::Resume) => {
@@ -7507,7 +7653,7 @@ fn run_nvst_webrtc_bundle(
                             && input_state.is_ready()
                             && let Some(channels) = input_channels
                         {
-                            channels.send_encoded(&mut rtc, message)
+                            input_state.send_encoded(channels, &mut rtc, message)
                         } else {
                             classify_nvst_unready_input(&mut rtc, input_channels, message)
                         };
@@ -7611,7 +7757,7 @@ fn run_nvst_webrtc_bundle(
                                         diagnostic_hex(&message.bytes, 128),
                                     );
                                 }
-                                channels.send_encoded(&mut rtc, message)
+                                input_state.send_encoded(channels, &mut rtc, message)
                             },
                         ) {
                             forward_optional(
@@ -7647,12 +7793,17 @@ fn run_nvst_webrtc_bundle(
                         }
                     }
                 }
-                command @ (Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected)) => {
-                    let cause = if command.is_ok() {
-                        NvstStopCause::Requested
-                    } else {
-                        NvstStopCause::ControllerClosed
+                command @ (Ok(UdpReceiverCommand::Stop(_)) | Err(TryRecvError::Disconnected)) => {
+                    let cause = match command {
+                        Ok(UdpReceiverCommand::Stop(cause)) => cause,
+                        _ => NvstStopCause::ControllerClosed,
                     };
+                    if matches!(cause, NvstStopCause::InputDeliveryFailed) {
+                        input_ready.store(false, Ordering::Release);
+                        let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
+                            "discrete input admission exhausted; stopping to prevent stuck input",
+                        ));
+                    }
                     opennow_streamer_protocol::log::log_async(
                         "INFO",
                         "nvst-bundle",
@@ -7673,7 +7824,7 @@ fn run_nvst_webrtc_bundle(
             && input_delivery
                 .flush(|message| {
                     let outcome = if input_state.is_ready() {
-                        channels.send_encoded(&mut rtc, message)
+                        input_state.send_encoded(channels, &mut rtc, message)
                     } else {
                         classify_nvst_unready_input(&mut rtc, Some(channels), message)
                     };
@@ -7778,14 +7929,16 @@ fn run_nvst_webrtc_bundle(
             );
             break 'bundle;
         }
-        if upstream_allowed
-            && !input_timeout_reported
-            && input_state.handshake_timed_out(sctp_started_at, now)
-        {
-            input_timeout_reported = true;
+        if upstream_allowed && input_state.handshake_timed_out(sctp_started_at, now) {
             let _ = event_sender.send(NvstReceiveEvent::InputUnavailable(
                 "input handshake timed out",
             ));
+            input_ready.store(false, Ordering::Release);
+            forward_optional(
+                &event_sender,
+                receiver.stop(NvstStopCause::InputDeliveryFailed),
+            );
+            break 'bundle;
         }
         let ping_interval = if dtls_ready {
             PING_INTERVAL_AFTER_CONNECTION
@@ -7878,21 +8031,6 @@ fn run_nvst_webrtc_bundle(
                 let Some(frame) = feedback.take_completed_frame() else {
                     break;
                 };
-                if frame_pacing_feedback
-                    && feedback.frame_pacing_enabled.load(Ordering::Acquire)
-                    && now.duration_since(last_frame_pacing_send) >= FRAME_PACING_INTERVAL
-                {
-                    // Packet-completion intervals are intentionally bursty and are not display
-                    // pacing error. Feeding that network jitter into the server PID made its
-                    // encoder cadence oscillate. Until a real vsync timestamp is available,
-                    // report a neutral error exactly as the unavailable ACK stage metrics do.
-                    let pacing =
-                        frame_pacing_report(frame.frame_number, frame_time_us, 0).encoded();
-                    if channels.send_partial_control(&mut rtc, &pacing) {
-                        frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
-                    }
-                    last_frame_pacing_send = now;
-                }
                 let ack = frame.command(transport_origin).encoded();
                 control_reports.append_ack(frame, &ack, now);
                 if !control_reports.fits(FRAME_ACK_RECORD_LEN) {
@@ -7900,6 +8038,13 @@ fn run_nvst_webrtc_bundle(
                         channels.send_partial_control(&mut rtc, bytes)
                     });
                 }
+            }
+            if writable
+                && feedback.presentation().send_due(now, |report| {
+                    channels.send_partial_control(&mut rtc, &frame_pacing_report(report).encoded())
+                })
+            {
+                frame_pacing_reports_sent = frame_pacing_reports_sent.saturating_add(1);
             }
             if writable
                 && control_reports.qos.is_none()
@@ -8363,17 +8508,20 @@ fn run_nvst_webrtc_bundle(
                             if id == channels.control_reliable {
                                 cursor_capture.reset();
                             }
-                            let input_channel_closed = id == channels.input_partial;
-                            if input_state.channel_closed(channels, id) || input_channel_closed {
-                                pending_input_version = None;
+                            if input_state.channel_closed(channels, id) {
                                 input_ready.store(false, Ordering::Release);
-                                let reason = if input_channel_closed {
+                                let reason = if id == channels.input_partial {
                                     "partially reliable input data channel closed"
                                 } else {
                                     "reliable input data channel closed"
                                 };
                                 let _ =
                                     event_sender.send(NvstReceiveEvent::InputUnavailable(reason));
+                                forward_optional(
+                                    &event_sender,
+                                    receiver.stop(NvstStopCause::InputDeliveryFailed),
+                                );
+                                break 'bundle;
                             }
                         }
                         if input_channels.is_some_and(|channels| id == channels.control_partial) {
@@ -8679,29 +8827,49 @@ fn run_nvst_webrtc_bundle(
             forward_frame_progress(&mut receiver, &event_sender, now);
         }
     }
+    input_ready.store(false, Ordering::Release);
+    let timestamp_us = transport_origin
+        .elapsed()
+        .as_micros()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let neutral_input = input_delivery.take_neutral_input(timestamp_us);
+    if let Some(channels) = input_channels {
+        let mut neutral_queued = true;
+        for message in neutral_input {
+            neutral_queued &= channels.send_control_teardown(&mut rtc, &message.bytes);
+        }
+        if !neutral_queued {
+            opennow_streamer_protocol::log::log_async(
+                "WARN",
+                "nvst-input",
+                "input neutralization could not be fully queued on the closing reliable channel; session is terminal",
+            );
+        }
+    }
     let mut shutdown_queued = true;
-    if let Some(hid_runtime) = hid_runtime.as_ref() {
-        if let (Some(hid_session), Some(channels)) = (hid_session.as_mut(), input_channels) {
-            shutdown_queued &= queue_hid_shutdown(hid_session, channels, &mut rtc);
-        }
-        if let (Some(session), Some(channels)) = (generic_session.as_mut(), input_channels) {
-            let actions = session.retire_all();
-            shutdown_queued &= send_generic_hid_actions(session, actions, |command, _| {
-                channels.send_control_teardown(&mut rtc, command)
-            });
-        }
-        forward_rtc_outputs(
-            &mut rtc,
-            |output| {
-                if let Output::Transmit(transmit) = output {
-                    let _ = socket.send_to(&transmit.contents, bundle_peer);
-                }
-            },
-            SONY_SHUTDOWN_FLUSH_BUDGET,
-        );
-        if let Some(generation) = hid_runtime.session_generation() {
-            hid_runtime.unbind_session(generation);
-        }
+    if let (Some(hid_session), Some(channels)) = (hid_session.as_mut(), input_channels) {
+        shutdown_queued &= queue_hid_shutdown(hid_session, channels, &mut rtc);
+    }
+    if let (Some(session), Some(channels)) = (generic_session.as_mut(), input_channels) {
+        let actions = session.retire_all();
+        shutdown_queued &= send_generic_hid_actions(session, actions, |command, _| {
+            channels.send_control_teardown(&mut rtc, command)
+        });
+    }
+    forward_rtc_outputs(
+        &mut rtc,
+        |output| {
+            if let Output::Transmit(transmit) = output {
+                let _ = socket.send_to(&transmit.contents, bundle_peer);
+            }
+        },
+        SONY_SHUTDOWN_FLUSH_BUDGET,
+    );
+    if let Some(hid_runtime) = hid_runtime.as_ref()
+        && let Some(generation) = hid_runtime.session_generation()
+    {
+        hid_runtime.unbind_session(generation);
     }
     if !shutdown_queued {
         input_ready.store(false, Ordering::Release);
@@ -8715,7 +8883,7 @@ fn run_nvst_webrtc_bundle(
 fn run_nvst_udp_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     setup: NvstWorkerSetup,
@@ -8745,7 +8913,7 @@ fn run_nvst_udp_receiver(
 fn run_nvst_video_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
-    commands: Receiver<UdpReceiverCommand>,
+    commands: CommandReceiver,
     outputs: NvstReceiverOutputs,
     transport_origin: Instant,
     mut send_keepalive: impl FnMut(&UdpSocket, &[u8], SocketAddr) -> std::io::Result<usize>,
@@ -8782,7 +8950,7 @@ fn run_nvst_video_receiver(
     let mut last_inbound_at = None;
     let mut port_unreachable = 0_u64;
     loop {
-        loop {
+        for _ in 0..COMMANDS_PER_ITERATION {
             match commands.try_recv() {
                 Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
                 Ok(UdpReceiverCommand::Resume) => {
@@ -8797,11 +8965,10 @@ fn run_nvst_video_receiver(
                         let _ = reply.send(Err(TransportError::InputNotReady));
                     }
                 }
-                command @ (Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected)) => {
-                    let cause = if command.is_ok() {
-                        NvstStopCause::Requested
-                    } else {
-                        NvstStopCause::ControllerClosed
+                command @ (Ok(UdpReceiverCommand::Stop(_)) | Err(TryRecvError::Disconnected)) => {
+                    let cause = match command {
+                        Ok(UdpReceiverCommand::Stop(cause)) => cause,
+                        _ => NvstStopCause::ControllerClosed,
                     };
                     forward_optional(&event_sender, receiver.stop(cause));
                     return;
@@ -9143,6 +9310,7 @@ fn forward_receive_event(
 ) -> bool {
     if let NvstReceiveEvent::Frame(frame) = event {
         let media_frame = EncodedMediaFrame {
+            sender_timing: frame.sender_timing,
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
             payload: Arc::from(frame.bytes),
@@ -9310,9 +9478,80 @@ mod tests {
     }
 
     #[test]
+    fn continuous_motion_cannot_starve_network_keepalive_or_stop() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut config = config();
+        config.video_peer = server.local_addr().unwrap();
+        config.client_udp_port = client.local_addr().unwrap().port();
+        let (media, _frames) = mpsc::sync_channel(1);
+        let (events, _received) = mpsc::channel();
+        let session = spawn_nvst_mjolnir_receiver(client, config, media, events).unwrap();
+        session.input_ready.store(true, Ordering::Release);
+        let control = session.control();
+        let producer_control = control.clone();
+        let (done, finished) = mpsc::sync_channel(1);
+        let producer = thread::spawn(move || {
+            let mut motion = vec![0; 22];
+            motion[..4].copy_from_slice(&7_u32.to_le_bytes());
+            while producer_control.queue_input(motion.clone(), true).is_ok() {}
+            done.send(()).unwrap();
+        });
+        let mut packet = [0; 2048];
+        server.recv_from(&mut packet).unwrap();
+        server.recv_from(&mut packet).unwrap();
+        let stopped_at = Instant::now();
+        control.stop().unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        producer.join().unwrap();
+        session.stop();
+        assert!(stopped_at.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn outer_input_admission_is_bounded_before_worker_drain() {
+        let (commands, receiver) = command_queue();
+        let control = NvstUdpReceiverControl {
+            commands,
+            input_ready: Arc::new(AtomicBool::new(true)),
+            microphone: Arc::new(Mutex::new(MicrophoneQueue::new(false))),
+        };
+        let mut rejected = false;
+        for _ in 0..257 {
+            let mut key = vec![0; 18];
+            key[..4].copy_from_slice(&3_u32.to_le_bytes());
+            rejected |= control.queue_input(key, false).is_err();
+        }
+        assert!(
+            rejected,
+            "discrete overflow must settle instead of growing the queue"
+        );
+        drop(receiver);
+    }
+
+    #[test]
+    fn outer_stop_preempts_queued_input() {
+        let (commands, receiver) = command_queue();
+        let control = NvstUdpReceiverControl {
+            commands,
+            input_ready: Arc::new(AtomicBool::new(true)),
+            microphone: Arc::new(Mutex::new(MicrophoneQueue::new(false))),
+        };
+        control.queue_input(vec![0; 18], false).unwrap();
+        control.stop().unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UdpReceiverCommand::Stop(_))
+        ));
+    }
+
+    #[test]
     fn typed_text_queue_preserves_order_reservation_and_readiness() {
         use opennow_streamer_protocol::text_input::{TextInputError, TextInputSlot};
-        let (commands, receiver) = std::sync::mpsc::channel();
+        let (commands, receiver) = command_queue();
         let control = super::NvstUdpReceiverControl {
             commands,
             input_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -9363,6 +9602,10 @@ mod tests {
         include!("nvst_audio_tests.rs");
     }
 
+    mod input_lifecycle_tests {
+        include!("nvst_input_lifecycle_tests.rs");
+    }
+
     mod ping_tests {
         include!("nvst_ping_tests.rs");
     }
@@ -9383,6 +9626,10 @@ mod tests {
     }
     mod nack_tests {
         include!("nvst_nack_tests.rs");
+    }
+
+    mod sender_timing_tests {
+        include!("nvst_sender_timing_tests.rs");
     }
     use super::*;
     use serde_json::json;
@@ -10106,6 +10353,7 @@ mod tests {
             (true, true)
         );
         let mut frame = EncodedVideoAccessUnit {
+            sender_timing: None,
             codec: NvstVideoCodec::H264,
             timestamp: 90_000,
             frame_index: 42,
@@ -10146,6 +10394,7 @@ mod tests {
             Instant::now(),
             &mut false,
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::Av1,
                 timestamp: 90_000,
                 frame_index: 2_417,
@@ -10190,6 +10439,7 @@ mod tests {
                     Instant::now(),
                     &mut delivery_gap,
                     NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                        sender_timing: None,
                         codec: NvstVideoCodec::H265,
                         timestamp: frame_index * 3_000,
                         frame_index,
@@ -10223,6 +10473,7 @@ mod tests {
         let mut delivery_gap = false;
         let frame = |frame_index: u32| {
             NvstReceiveEvent::Frame(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::H265,
                 timestamp: frame_index * 3_000,
                 frame_index,
@@ -11090,7 +11341,7 @@ mod tests {
         socket
             .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
             .unwrap();
-        let (commands, receiver) = mpsc::channel();
+        let (commands, receiver) = command_queue();
         let input_ready = Arc::new(AtomicBool::new(false));
         let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(false)));
         let outputs = NvstReceiverOutputs {
@@ -11132,7 +11383,7 @@ mod tests {
         let rtc =
             prepare_nvst_webrtc_bundle(&socket, &config, create_nvst_bundle_rtc(&socket).unwrap())
                 .unwrap();
-        let (commands, receiver) = mpsc::channel();
+        let (commands, receiver) = command_queue();
         let input_ready = Arc::new(AtomicBool::new(false));
         let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(false)));
         let outputs = NvstReceiverOutputs {
@@ -12055,14 +12306,14 @@ mod tests {
         }))
         .expect("valid NVST context")
         .expect("NVST handoff");
-        assert_eq!(configured.frame_time_us, DEFAULT_FRAME_TIME_US);
+        assert_eq!(configured.feedback().pacing_feedback_mode(), 1);
         let capped = parse_nvst_video_handoff(&json!({
             "nvstVideo": legacy_handoff(),
             "settings": { "fps": 360 }
         }))
         .expect("valid high-FPS NVST context")
         .expect("NVST handoff");
-        assert_eq!(capped.frame_time_us, DEFAULT_FRAME_TIME_US);
+        assert_eq!(capped.feedback().pacing_feedback_mode(), 1);
         assert!(matches!(
             parse_nvst_video_handoff(&json!({ "nvstTransport": { "tracks": [] } })),
             Err(NvstConfigError::MissingNvstVideoHandoff)
@@ -12586,7 +12837,11 @@ mod tests {
         };
         let mut assembler = VideoAccessUnitAssembler::new(NvstVideoCodec::H264, 4096);
         let frame = assembler
-            .push(header, 90_000, &[0x81, 0x08, 0, 0, 0, 1, 0x61, 0xaa])
+            .push(
+                header,
+                90_000,
+                &[0x01, 0x08, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x61, 0xaa],
+            )
             .expect("source packet")
             .expect("complete frame");
         assert_eq!(frame.bytes, [0, 0, 0, 1, 0x61, 0xaa]);
@@ -14836,6 +15091,7 @@ mod tests {
         let mut queue = BoundedFrameQueue::new(2);
         for frame_index in 1..=3 {
             queue.push(EncodedVideoAccessUnit {
+                sender_timing: None,
                 codec: NvstVideoCodec::H264,
                 timestamp: frame_index,
                 frame_index,

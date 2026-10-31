@@ -319,6 +319,13 @@ fn select_embedded_software(
     stream: crate::MediaStreamConfig,
     backends: &[VideoBackendCapability],
 ) -> LinuxVideoSelection {
+    if crate::HARDWARE_ONLY {
+        return LinuxVideoSelection {
+            path: LinuxVideoPath::Software,
+            use_vulkan_output: false,
+            fallback_reason: Some(crate::HARDWARE_ONLY_ERROR.to_owned()),
+        };
+    }
     let software = backends.iter().find(|backend| {
         backend.backend == "ffmpeg"
             && backend.available
@@ -369,7 +376,8 @@ fn select_video_path_for(
     let presentation = capabilities.presentation_available(window_system);
     let vulkan = capabilities.backend_supports_all_codecs("vulkan-video");
     let cuda = capabilities.backend_supports_all_codecs("cuda");
-    let ffmpeg = capabilities.backend_supports_all_codecs("ffmpeg-software");
+    let ffmpeg =
+        !crate::HARDWARE_ONLY && capabilities.backend_supports_all_codecs("ffmpeg-software");
     let vaapi = capabilities.decoder("vaapi-h264").available;
     let v4l2 = capabilities.decoder("v4l2-h264").available
         || CODECS
@@ -405,6 +413,7 @@ fn select_video_path_for(
         "cuda" | "nvdec" => backend_unavailable_reason(capabilities, "cuda"),
         "vaapi" => capabilities.decoder("vaapi-h264").detail,
         "v4l2" => capabilities.decoder("v4l2-h264").detail,
+        "software" | "ffmpeg" if crate::HARDWARE_ONLY => crate::HARDWARE_ONLY_ERROR.to_owned(),
         "software" | "ffmpeg" => backend_unavailable_reason(capabilities, "ffmpeg-software"),
         "hardware" => format!(
             "no Linux hardware decoder is available (Vulkan Video: {}; CUDA/NVDEC: {}; VA-API: {}; V4L2: {})",
@@ -424,7 +433,11 @@ fn select_video_path_for(
     LinuxVideoSelection {
         path: LinuxVideoPath::Software,
         use_vulkan_output: false,
-        fallback_reason: Some(format!("{reason}; using OpenH264/SDL fallback")),
+        fallback_reason: Some(if crate::HARDWARE_ONLY {
+            format!("{reason}; hardware-only build cannot use OpenH264/SDL fallback")
+        } else {
+            format!("{reason}; using OpenH264/SDL fallback")
+        }),
     }
 }
 
@@ -653,6 +666,47 @@ fn static_reason(reason: String) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_device_matrix_cannot_select_a_native_decoder() {
+        let capabilities = LinuxCapabilitySnapshot {
+            decoders: vec![],
+            presentation: PresentationCapability {
+                available: false,
+                api: "vulkan",
+                window_systems: vec![],
+                detail: "no hardware devices".to_owned(),
+            },
+        };
+        for requested in [
+            None,
+            Some("auto"),
+            Some("hardware"),
+            Some("software"),
+            Some("ffmpeg"),
+        ] {
+            let selection = select_video_path_for(requested, &capabilities, "x11");
+            assert_eq!(selection.path, LinuxVideoPath::Software);
+            assert!(!selection.use_vulkan_output);
+            assert!(selection.fallback_reason.is_some());
+            if crate::HARDWARE_ONLY {
+                assert!(selection.fallback_reason.unwrap().contains("hardware-only"));
+            }
+        }
+    }
+
+    #[test]
+    fn hardware_only_selection_never_uses_a_software_only_capability_snapshot() {
+        let capabilities = snapshot(false, false, true, true, vec!["x11"]);
+        for requested in [None, Some("auto"), Some("software"), Some("ffmpeg")] {
+            let selected = select_video_path_for(requested, &capabilities, "x11");
+            assert_eq!(
+                matches!(selected.path, LinuxVideoPath::Hardware(_)),
+                !crate::HARDWARE_ONLY,
+                "{requested:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1024,12 +1078,21 @@ mod tests {
                 crate::MediaStreamConfig::default(),
                 &[software_backend("h264", vec!["8bit_420"])],
             );
+            if crate::HARDWARE_ONLY {
+                assert_eq!(selected.path, LinuxVideoPath::Software);
+                assert!(!selected.use_vulkan_output);
+                assert!(selected.fallback_reason.unwrap().contains("hardware-only"));
+                continue;
+            }
             assert_eq!(
                 selected.path,
                 LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
             );
             assert!(selected.use_vulkan_output);
             assert!(selected.fallback_reason.is_none());
+        }
+        if crate::HARDWARE_ONLY {
+            return;
         }
         for codec in ["h264", "h265", "av1"] {
             let stream = crate::MediaStreamConfig {
@@ -1087,6 +1150,10 @@ mod tests {
             assert_eq!(selected.path, LinuxVideoPath::Software);
             assert!(!selected.use_vulkan_output);
             let reason = selected.fallback_reason.unwrap();
+            if crate::HARDWARE_ONLY {
+                assert!(reason.contains("hardware-only"));
+                continue;
+            }
             assert!(
                 reason.contains("Software decoding presents 8-bit 4:2:0 SDR only"),
                 "{color_quality:?} hdr={hdr}: {reason}"
@@ -1180,7 +1247,11 @@ mod tests {
         );
         assert_eq!(
             select_video_path_for(Some("software"), &available, "x11").path,
-            LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+            if crate::HARDWARE_ONLY {
+                LinuxVideoPath::Software
+            } else {
+                LinuxVideoPath::Hardware(DecoderPreference::SoftwareOnly)
+            }
         );
         assert_eq!(
             select_video_path_for(Some("hardware"), &available, "x11").path,

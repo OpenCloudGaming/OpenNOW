@@ -15,6 +15,44 @@ On a Windows hybrid laptop, Stream settings → Graphics processor lists each GP
 hardware decode codecs. Automatic uses the first high-performance adapter that
 can decode, so a discrete GPU without a decoder does not hide the integrated GPU.
 
+On Linux Wayland with Vulkan, OpenNOW owns the title bar and resize edges. Startup
+sets `Qt::FramelessWindowHint` before creating the native surface, so Qt does not
+negotiate compositor decorations. This avoids duplicate or missing controls when
+the compositor changes its preferred decoration mode. Other graphics backends
+and window systems keep their native decoration behavior.
+
+## Graceful quit requests
+
+`opennow-qt --request-quit` contacts the running instance for the same user and application-data scope. It does not start a window or a core process and does not require a display connection. Pass this flag by itself, through the same installed executable or Flatpak launcher used to start OpenNOW.
+
+The running Qt window asks for confirmation even when idle quit confirmation is disabled. Confirming ends the cloud session and waits for native recording finalization before closing. Normal window-close behavior remains disconnect-only. The command returns `0` and prints `opennow-quit-complete` only after the confirmed session shutdown and application teardown complete, `2` when the user cancels, and `1` for an unavailable endpoint, a busy request, disconnect, or the 120-second deadline. Callers must check the completion marker as well as the exit code because older releases ignore the flag. A failed request never authorizes process termination.
+
+Linux acceptance coverage runs with `ctest --test-dir build/opennow-qt -R qml-requested-quit --output-on-failure`. It exercises the real secondary executable and single-instance connection with fixture core and native responses, including cancellation, failed cloud stops, and delayed recording completion in desktop/console and windowed/fullscreen modes. Add `--smoke-exit-interactive` to the fixture's application arguments to operate its two confirmations manually. Real cloud-session and recorder I/O still require gameplay validation.
+
+## Hardware-only Linux builds
+
+To forbid software video decoding and software graphics composition, configure with
+`-DNO_SOFT_RENDERING=ON`. The option defaults to `OFF` and is supported only on Linux.
+
+```sh
+cmake -S opennow-qt -B build/opennow-qt -DCMAKE_BUILD_TYPE=Debug -DNO_SOFT_RENDERING=ON
+cmake --build build/opennow-qt
+```
+
+This build policy applies to both the embedded streamer and the bundled standalone
+streamer. Settings and environment variables cannot enable software decoding.
+Missing or incompatible hardware produces an error instead of a software fallback.
+Qt must use Vulkan on a physical device classified as an integrated, discrete, or
+virtual GPU, including after scene-graph recreation. CPU and unknown devices are rejected.
+A graphics-only Vulkan GPU can compose video decoded by separate hardware such as V4L2.
+
+FFmpeg remains linked because hardware decoder paths also use it. The option does
+not remove all software codec code from dependencies, eliminate CPU work, or add
+support for a particular board. STM32MP257F acceptance still requires testing the
+exact image, kernel, media and GPU drivers, and decoded-frame import on the device.
+Verify that frames reach the display, then disable the hardware device and confirm
+that startup or streaming fails without CPU decoding or composition.
+
 ## CI checks and manual builds
 
 Pull requests and pushes to `dev` or `main` run workflow lint, packaging-contract
@@ -109,8 +147,8 @@ After a successful run, download
 `opennow-qt-<version>-complete-unsigned` from the run's **Artifacts** section.
 Versions use `<project-version>-nightly.<run-number>.<attempt>` even when release
 publishing is disabled. The complete archive contains Windows x64/ARM64 setup.exe installers and
-portable ZIPs, Linux x64/ARM64 AppImages and DEBs, the Apple Silicon macOS DMG, `SHA256SUMS`,
-and source-commit metadata. The macOS ARM64 validation ZIP is a separate artifact.
+portable ZIPs, Linux x64/ARM64 AppImages and DEBs, Apple Silicon and Intel x64 macOS DMGs, `SHA256SUMS`,
+and source-commit metadata. Each macOS architecture's validation ZIP is a separate artifact.
 Artifacts expire after 14 days.
 
 These default no-key builds have no platform publisher signatures and require manual downloads
@@ -273,10 +311,10 @@ so it can load outside the build tree.
 The app explicitly links Qt Svg so macdeployqt includes the SVG image plugin used
 by the QML icons; the relocated-bundle check requires that plugin to be present.
 
-The manual `macos-arm64` package matrix entry builds and tests the native Apple Silicon
-stack, then checks both a relocated ZIP and an app copied from the mounted DMG with development
-dependencies hidden. The Apple Silicon DMG is part of the public nightly inventory; the ZIP
-remains a separate CI validation artifact. These applications have no Developer ID signature or
+The manual `macos-arm64` and `macos-x64` package matrix entries build and test the native Apple Silicon
+and Intel stacks, then check both a relocated ZIP and an app copied from the mounted DMG with development
+dependencies hidden. Both DMGs are part of the public nightly inventory; the ZIPs
+remain separate CI validation artifacts. These applications have no Developer ID signature or
 notarization and require manual updates. See
 [`qt-nightly-release.md`](../docs/qt-nightly-release.md) for installation warnings and the
 Windows setup.exe/portable ZIP contract. Offscreen tests cover shell and FFI
@@ -620,6 +658,10 @@ ordering to release a held controller.
 The public-safe `--smoke-test --route stream --smoke-input-capture-error` fixture
 renders the shared error banner over the existing stream item. Add `--desktop` for
 the desktop shell and `--screenshot /absolute/path.png` to save visual evidence.
+Use `--smoke-test --route stream --smoke-pointer-lock` to preview the macOS unlocked
+hint and enable control on any platform. The hint lasts six seconds after unlocking
+or starting a session with pointer lock off. Menus dismiss it without replaying it
+when gameplay resumes. This fixture does not exercise native capture.
 Offscreen and nested compositor tests do not replace live Windows/X11/Wayland
 controller and mouse acceptance on real streaming sessions.
 
@@ -760,13 +802,14 @@ the platform packages from that layout.
 F12 records the negotiated H.264/H.265/AV1 source stream plus Opus audio atomically
 into Matroska.
 
-The screenshot shortcut, Ctrl+F11 by default, grabs the stream's desktop region
-and saves a PNG. This is a compositor-dependent desktop grab, not a video-frame
-snapshot. Visible local menus, statistics, capture indicators, or other windows
-can appear in the image. The compositor can refuse capture. Capture uses a single
-screen. Multi-monitor boundaries, display scaling, and HDR image output require
-target validation. Neither screenshots nor source recordings remove GFN or game UI
-already encoded into the server's video.
+The screenshot shortcut, Ctrl+F11 by default, saves a PNG of the video frame before
+Qt composes local menus, statistics, capture indicators, or other windows. Only an
+explicit screenshot request performs GPU readback. One screenshot may be in flight,
+with a five-second frame timeout, and the image is bounded to 3840×2160 while
+preserving its aspect ratio. PNG encoding and disk writes run off the render and GUI
+threads. HDR video is tone-mapped to SDR for PNG output. Screenshots fail rather than
+falling back to a desktop grab when no video frame is available. Neither screenshots
+nor source recordings remove GFN or game UI already encoded into the server's video.
 
 Settings → Recording exposes source capture information, the recordings folder,
 editable recording/clipping shortcuts, and an opt-in replay buffer. Replay is off
@@ -781,7 +824,11 @@ same video item without taking focus or opening a blocking overlay.
 If a manual recording encounters stream discontinuity, recording-queue overflow,
 or a stream interruption, it stops and finalizes the valid prefix already written
 to the muxer. The capture notice distinguishes this early save from normal
-completion. Recording does not restart automatically. No file is saved before a
+completion. Manual recording continues in a new file after a discontinuity or
+reconnect while the same cloud session remains active, including interruptions
+before the first usable keyframe. Press F12 to cancel continuation while recovery
+is pending. Ending the cloud session clears recording intent. Queue overflow and
+storage failures stop recording without automatic retry. No file is saved before a
 usable video keyframe, and write, finalization, or publication errors remain
 failures. Publication uses a same-directory no-replace rename, not a hard link or
 copy. A filesystem that cannot perform that operation reports a save failure.

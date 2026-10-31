@@ -1,4 +1,5 @@
 #include "input/ControllerInput.h"
+#include "SdlJoystickTestSession.h"
 
 #include <QCoreApplication>
 #include <QKeyEvent>
@@ -70,7 +71,40 @@ class ControllerSourcesTest final : public QObject
 {
     Q_OBJECT
 
+private:
+    SdlJoystickTestSession m_joysticks;
+
 private slots:
+    void initTestCase()
+    {
+        QVERIFY2(m_joysticks.ready(), SDL_GetError());
+    }
+
+    void cleanup()
+    {
+        QVERIFY2(m_joysticks.reset(), SDL_GetError());
+    }
+
+    void joystickRuntimeOutlivesControllerInstances()
+    {
+        QVERIFY(SDL_WasInit(SDL_INIT_JOYSTICK));
+        QVERIFY(!SDL_WasInit(SDL_INIT_GAMEPAD));
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            {
+                ControllerInput input;
+                VirtualPad pad;
+                QVERIFY(pad.id);
+                QTRY_COMPARE(input.controllerCount(), 1);
+            }
+            QVERIFY(SDL_WasInit(SDL_INIT_JOYSTICK));
+            QVERIFY(!SDL_WasInit(SDL_INIT_GAMEPAD));
+            int count = 0;
+            auto *ids = SDL_GetJoysticks(&count);
+            SDL_free(ids);
+            QCOMPARE(count, 0);
+        }
+    }
+
     void anotherDeviceCannotCancelHeldNavigation()
     {
         ControllerInput input;

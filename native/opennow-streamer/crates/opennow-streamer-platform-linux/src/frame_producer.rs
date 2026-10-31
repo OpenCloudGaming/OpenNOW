@@ -572,6 +572,14 @@ impl LinuxFrameProducer {
             )
         };
         let physical_device = vk::PhysicalDevice::from_raw(render.physical_device as u64);
+        if !crate::vulkan_device::physical_device_allowed(
+            unsafe { instance.get_physical_device_properties(physical_device) }.device_type,
+        ) {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only build forbids software Vulkan devices",
+            ));
+        }
         let device = unsafe {
             ash::Device::load(
                 instance.fp_v1_0(),
@@ -1304,6 +1312,14 @@ impl LinuxFrameProducer {
                     ],
                     _ => [1.0, 1.0],
                 },
+                chroma_offset: crate::StreamFormat {
+                    chroma_location,
+                    ..prepared.source().format
+                }
+                .chroma_offset(match prepared {
+                    PreparedLinuxFrame::DmaBuf(frame) => Some(frame.coded_height),
+                    _ => None,
+                }),
                 color_matrix: match color_matrix {
                     crate::ColorMatrix::Bt601 => 0,
                     crate::ColorMatrix::Bt709 => 1,
@@ -1326,13 +1342,6 @@ impl LinuxFrameProducer {
                         10
                     }
                     _ => 8,
-                },
-                chroma_offset_x: if chroma_location == crate::ChromaLocation::Left
-                    && !prepared.source().format.pixel_format.is_444()
-                {
-                    0.5 / width as f32
-                } else {
-                    0.0
                 },
             };
             let constants = std::slice::from_raw_parts(
@@ -1429,10 +1438,10 @@ impl LinuxFrameProducer {
 #[repr(C)]
 struct ConversionConstants {
     texture_scale: [f32; 2],
+    chroma_offset: [f32; 2],
     color_matrix: u32,
     full_range: u32,
     sample_bits: u32,
-    chroma_offset_x: f32,
 }
 
 impl Drop for LinuxFrameProducer {
@@ -2323,6 +2332,9 @@ fn decode_readiness(result: std::result::Result<(), vk::Result>) -> Result<()> {
         }
     })
 }
+
+#[cfg(test)]
+mod chroma_tests;
 
 #[cfg(test)]
 mod tests {

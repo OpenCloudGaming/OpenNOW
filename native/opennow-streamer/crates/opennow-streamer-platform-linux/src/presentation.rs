@@ -1551,6 +1551,7 @@ struct ConversionConstants {
     coded_scale: [f32; 2],
     color_matrix: u32,
     full_range: u32,
+    chroma_offset: [f32; 2],
 }
 
 fn conversion_constants(
@@ -1582,6 +1583,7 @@ fn conversion_constants(
             ColorMatrix::Bt2020 => 2,
         },
         full_range: u32::from(frame.format.color_range == ColorRange::Full),
+        chroma_offset: frame.format.chroma_offset(coded_height),
     }
 }
 
@@ -2069,7 +2071,9 @@ pub(crate) fn probe_vulkan() -> std::result::Result<(Vec<&'static str>, String),
     let usable_devices = devices
         .into_iter()
         .filter(|device| {
-            supports_swapchain(&instance, *device).unwrap_or(false)
+            crate::vulkan_device::physical_device_allowed(
+                unsafe { instance.get_physical_device_properties(*device) }.device_type,
+            ) && supports_swapchain(&instance, *device).unwrap_or(false)
                 && unsafe { instance.get_physical_device_queue_family_properties(*device) }
                     .iter()
                     .any(|queue| queue.queue_flags.contains(vk::QueueFlags::GRAPHICS))
@@ -2098,6 +2102,11 @@ fn select_device(
     let mut ranked: Vec<(usize, vk::PhysicalDevice, i64)> = devices
         .into_iter()
         .enumerate()
+        .filter(|(_, device)| {
+            crate::vulkan_device::physical_device_allowed(
+                unsafe { instance.get_physical_device_properties(*device) }.device_type,
+            )
+        })
         .map(|(index, device)| {
             let props = unsafe { instance.get_physical_device_properties(device) };
             let queues = unsafe { instance.get_physical_device_queue_family_properties(device) };
@@ -2140,6 +2149,14 @@ fn select_shared_queue(
     shared: &VulkanVideoFrame,
 ) -> Result<(vk::PhysicalDevice, u32)> {
     let physical_device = vk::PhysicalDevice::from_raw(shared.physical_device as u64);
+    if !crate::vulkan_device::physical_device_allowed(
+        unsafe { instance.get_physical_device_properties(physical_device) }.device_type,
+    ) {
+        return Err(Error::unavailable(
+            Subsystem::Vulkan,
+            "hardware-only build forbids software Vulkan devices",
+        ));
+    }
     let properties =
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
     for queue_family in &shared.queue_families {
@@ -2416,7 +2433,7 @@ mod tests {
 
         use crate::{ChromaLocation, FramePlane, StreamFormat};
 
-        let frame = DecodedVideoFrame {
+        let mut frame = DecodedVideoFrame {
             format: StreamFormat {
                 width: 1920,
                 height: 1080,
@@ -2451,7 +2468,9 @@ mod tests {
         assert_eq!(constants.texture_scale, [1.0, 768.0 / 576.0]);
         assert_eq!(constants.color_matrix, 2);
         assert_eq!(constants.full_range, 1);
-        assert_eq!(std::mem::size_of::<ConversionConstants>(), 24);
+        assert_eq!(std::mem::size_of::<ConversionConstants>(), 32);
+        assert_eq!(std::mem::offset_of!(ConversionConstants, chroma_offset), 24);
+        assert_eq!(constants.chroma_offset, [0.5 / 1920.0, 0.0]);
 
         // An unpadded import, and one padded the way the Apple AVD block pads:
         // only the latter crops, and the letterbox scale is untouched either
@@ -2463,6 +2482,16 @@ mod tests {
         let padded = conversion_constants(&frame, extent, Some(1088));
         assert_eq!(padded.coded_scale, [1.0, 1080.0 / 1088.0]);
         assert_eq!(padded.texture_scale, constants.texture_scale);
+        frame.format.chroma_location = ChromaLocation::TopLeft;
+        assert_eq!(
+            conversion_constants(&frame, extent, Some(1088)).chroma_offset,
+            [0.5 / 1920.0, 0.5 / 1088.0]
+        );
+        frame.format.chroma_location = ChromaLocation::Center;
+        assert_eq!(
+            conversion_constants(&frame, extent, Some(1088)).chroma_offset,
+            [0.0, 0.0]
+        );
     }
 
     #[test]

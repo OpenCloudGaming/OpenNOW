@@ -62,9 +62,14 @@ OpenNowStreamerStatus fakeSend(const OpenNowStreamer *handle, const std::uint8_t
             static_cast<std::size_t>(response.size()), runtime->config.user_data);
         if (runtime->config.frame_available_callback)
             runtime->config.frame_available_callback(runtime->config.user_data);
-        if (runtime->config.cursor_callback) {
+        if (runtime->config.cursor_callback
+            && object.value(QStringLiteral("type")) == QStringLiteral("start")) {
             const std::uint8_t cursor[] = {0, 12, 0, 0, 0, 0, 0};
-            runtime->config.cursor_callback(cursor, sizeof(cursor), runtime->config.user_data);
+            const auto startId = object.value(QStringLiteral("id")).toString().toUtf8();
+            runtime->config.cursor_callback(
+                reinterpret_cast<const std::uint8_t *>(startId.constData()),
+                static_cast<std::size_t>(startId.size()),
+                cursor, sizeof(cursor), runtime->config.user_data);
         }
     });
     callback.join();
@@ -146,6 +151,55 @@ class NativeStreamRuntimeTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void screenshotRequestsAreBoundedAndRejectStaleCompletion()
+    {
+        NativeStreamRuntime runtime(fakeApi());
+        QSignalSpy ready(&runtime, &NativeStreamRuntime::screenshotReady);
+        QVERIFY(!runtime.requestScreenshot());
+        QVERIFY(runtime.start());
+        const auto start = [&](const QString &id) {
+            QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                  {QStringLiteral("id"), id}}));
+            QTRY_VERIFY(runtime.presentationAllowed());
+        };
+        start(QStringLiteral("first"));
+        QVERIFY(runtime.requestScreenshot());
+        QVERIFY(!runtime.requestScreenshot());
+        const auto first = runtime.takeScreenshotRequest();
+        QVERIFY(first);
+        QCOMPARE(runtime.takeScreenshotRequest(), 0u);
+        QImage frame(64, 32, QImage::Format_RGBA8888);
+        frame.fill(Qt::green);
+        runtime.completeScreenshot(first, frame);
+        QTRY_COMPARE(ready.count(), 1);
+        QCOMPARE(qvariant_cast<QImage>(ready.at(0).at(0)), frame);
+        runtime.completeScreenshot(first, frame);
+        QCoreApplication::processEvents();
+        QCOMPARE(ready.count(), 1);
+        QVERIFY(runtime.requestScreenshot());
+        const auto interrupted = runtime.takeScreenshotRequest();
+        start(QStringLiteral("replacement"));
+        QCOMPARE(ready.count(), 2);
+        QVERIFY(qvariant_cast<QImage>(ready.at(1).at(0)).isNull());
+        QVERIFY(runtime.requestScreenshot());
+        const auto resumed = runtime.takeScreenshotRequest();
+        QVERIFY(resumed != interrupted);
+        runtime.completeScreenshot(interrupted, frame);
+        QCoreApplication::processEvents();
+        QCOMPARE(ready.count(), 2);
+        QVERIFY(!runtime.requestScreenshot());
+        runtime.completeScreenshot(resumed, frame);
+        QTRY_COMPARE(ready.count(), 3);
+        QCOMPARE(qvariant_cast<QImage>(ready.at(2).at(0)), frame);
+        QVERIFY(runtime.requestScreenshot());
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 4, 6000);
+        QVERIFY(qvariant_cast<QImage>(ready.at(3).at(0)).isNull());
+        QCOMPARE(runtime.takeScreenshotRequest(), 0u);
+        QVERIFY(runtime.requestScreenshot());
+        QVERIFY(runtime.shutdown());
+        QCOMPARE(ready.count(), 5);
+    }
+
     void actualStreamingLifetimeIsIndependentOfRuntimeAndResumableStatuses()
     {
         static OpenNowStreamerConfig callbacks;
@@ -1040,22 +1094,75 @@ private slots:
         QVERIFY(runtime.shutdown());
     }
 
+    void rejectsCursorsQueuedBeforeAReplacementStart()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QSignalSpy cursors(&runtime, &NativeStreamRuntime::cursorUpdated);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("old")}}));
+        const std::uint8_t cursor[] = {0, 12, 0, 0, 0, 0, 0};
+        const auto deliver = [&](QByteArray startId) {
+            callbacks.cursor_callback(
+                reinterpret_cast<const std::uint8_t *>(startId.constData()),
+                static_cast<std::size_t>(startId.size()), cursor, sizeof(cursor),
+                callbacks.user_data);
+            startId.fill('x');
+        };
+        deliver("old");
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("replacement")}}));
+        QCoreApplication::processEvents();
+        QCOMPARE(cursors.size(), 0);
+        deliver("old");
+        deliver({});
+        QCoreApplication::processEvents();
+        QCOMPARE(cursors.size(), 0);
+        deliver("replacement");
+        QCoreApplication::processEvents();
+        QCOMPARE(cursors.size(), 1);
+        QCOMPARE(cursors.first().first().toByteArray(), QByteArray::fromHex("000c0000000000"));
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("stop")},
+                              {QStringLiteral("id"), QStringLiteral("stop")}}));
+        deliver("replacement");
+        QCoreApplication::processEvents();
+        QCOMPARE(cursors.size(), 1);
+        QVERIFY(runtime.shutdown());
+    }
+
     void copiesAndMarshalsWorkerCallbacksToTheQtThread()
     {
+        QList<bool> presentationAllowedAtFrame;
         NativeStreamRuntime runtime(fakeApi());
         QSignalSpy responses(&runtime, &NativeStreamRuntime::responseReceived);
         QSignalSpy frames(&runtime, &NativeStreamRuntime::frameAvailable);
         QSignalSpy cursors(&runtime, &NativeStreamRuntime::cursorUpdated);
+        connect(&runtime, &NativeStreamRuntime::frameAvailable, &runtime, [&] {
+            QCOMPARE(QThread::currentThread(), runtime.thread());
+            presentationAllowedAtFrame.append(runtime.presentationAllowed());
+        });
         QVERIFY(runtime.start());
         QVERIFY(runtime.send(QJsonObject{{QStringLiteral("id"), QStringLiteral("hello")},
-                                         {QStringLiteral("type"), QStringLiteral("hello")}}));
+                                         {QStringLiteral("type"), QStringLiteral("start")}}));
+        QCOMPARE(frames.size(), 1);
+        QCOMPARE(presentationAllowedAtFrame, QList<bool>({false}));
 
         QTRY_COMPARE_WITH_TIMEOUT(responses.size(), 1, 1'000);
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
                  QStringLiteral("hello"));
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("type")).toString(),
                  QStringLiteral("ok"));
-        QTRY_COMPARE_WITH_TIMEOUT(frames.size(), 1, 1'000);
+        QTRY_COMPARE_WITH_TIMEOUT(frames.size(), 3, 1'000);
+        QCOMPARE(presentationAllowedAtFrame, QList<bool>({false, false, true}));
         QTRY_COMPARE_WITH_TIMEOUT(cursors.size(), 1, 1'000);
         QCOMPARE(cursors.first().first().toByteArray(), QByteArray::fromHex("000c0000000000"));
         QVERIFY(runtime.shutdown());
@@ -1274,6 +1381,45 @@ private slots:
         QVERIFY(runtime.shutdown());
     }
 
+    void terminalEventsSurviveAFullCallbackQueue()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QSignalSpy events(&runtime, &NativeStreamRuntime::eventReceived);
+        QSignalSpy dropped(&runtime, &NativeStreamRuntime::callbacksDropped);
+        const auto deliver = [](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                     bytes.size(), callbacks.user_data);
+        };
+        for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks; ++i)
+            deliver(R"({"type":"telemetry"})");
+        deliver(R"({"type":"telemetry"})");
+        deliver(R"({"type":"status","status":"streaming"})");
+        deliver(R"({"type":"error","code":"transport-closed","message":"Lost"})");
+        deliver(R"({"type":"status","status":"stopped","message":"Lost"})");
+        for (qsizetype i = 0; i < NativeStreamRuntime::TerminalCallbackReserve; ++i)
+            deliver(R"({"type":"status","status":"error"})");
+        QTRY_COMPARE(events.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        QCOMPARE(dropped.size(), 1);
+        QCOMPARE(dropped.first().first().toInt(), 4);
+        QList<QString> terminal;
+        for (const auto &arguments : events) {
+            const auto event = arguments.first().toJsonObject();
+            const auto type = event.value(QStringLiteral("type")).toString();
+            if (type != QStringLiteral("telemetry"))
+                terminal.append(type + u':' + event.value(QStringLiteral("status")).toString());
+        }
+        QCOMPARE(terminal.mid(0, 2), (QList<QString>{QStringLiteral("error:"), QStringLiteral("status:stopped")}));
+        QCOMPARE(terminal.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        QVERIFY(runtime.shutdown());
+    }
+
     void relativeMouseDefaultUsesOnlyTheAcceptedSessionTransport()
     {
         static OpenNowStreamerConfig callbacks;
@@ -1396,12 +1542,12 @@ private slots:
             QVERIFY(runtime.shutdown());
             QVERIFY(runtime.start());
         });
-        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("hello")},
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
                               {QStringLiteral("id"), QStringLiteral("old-runtime")}}));
         QTRY_VERIFY(restarted);
         QCOMPARE(responses.size(), 0);
         QCOMPARE(cursors.size(), 0);
-        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("hello")},
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
                               {QStringLiteral("id"), QStringLiteral("new-runtime")}}));
         QTRY_COMPARE(responses.size(), 1);
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
@@ -1419,7 +1565,7 @@ private slots:
         connect(runtime, &NativeStreamRuntime::responseReceived, this, [&] {
             delete std::exchange(runtime, nullptr);
         });
-        QVERIFY(runtime->send({{QStringLiteral("type"), QStringLiteral("hello")},
+        QVERIFY(runtime->send({{QStringLiteral("type"), QStringLiteral("start")},
                                {QStringLiteral("id"), QStringLiteral("delete-runtime")}}));
         QTRY_VERIFY(!runtime);
         QCOMPARE(responses.size(), 1);
@@ -1503,7 +1649,7 @@ private slots:
         QVERIFY2(runtime.start(), qPrintable(runtime.lastError()));
         QVERIFY2(runtime.send(QJsonObject{{QStringLiteral("id"), QStringLiteral("abi-hello")},
                                           {QStringLiteral("type"), QStringLiteral("hello")},
-                                          {QStringLiteral("protocolVersion"), 7}}),
+                                          {QStringLiteral("protocolVersion"), 8}}),
                  qPrintable(runtime.lastError()));
         QTRY_VERIFY_WITH_TIMEOUT(!responses.isEmpty(), 5'000);
         QCOMPARE(responses.first().first().toJsonObject().value(QStringLiteral("id")).toString(),
@@ -1524,5 +1670,5 @@ private slots:
     }
 };
 
-QTEST_MAIN(NativeStreamRuntimeTest)
+QTEST_GUILESS_MAIN(NativeStreamRuntimeTest)
 #include "tst_nativestreamruntime.moc"

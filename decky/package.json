@@ -8,7 +8,7 @@
     "build": "rollup -c",
     "watch": "rollup -c -w",
     "typecheck": "tsc --noEmit",
-    "test": "python3 -m unittest discover -s tests -t .",
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs && python3 -m unittest discover -s tests -t .",
     "package": "python3 package.py"
   },
   "license": "MIT",

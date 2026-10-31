@@ -207,6 +207,27 @@ QtObject {
         check(ShellStore.selectedGame.selectedVariantIndex === -1 && ShellStore.selectedLaunchAppId() === "",
             "detail refresh replaced a missing selected variant with another store")
 
+        ShellStore.selectedGame = game(0)
+        const createsBeforeOutage = count("session.create")
+        ShellStore.launchSelectedGame()
+        replyInspection("ready")
+        client.requestFailed(ShellStore.remoteSessionsRequestId, "session_discovery_failed", "A region is unavailable")
+        check(ShellStore.launchInspectStage === "create" && ShellStore.lastError === "",
+            "a regional outage blocked the new launch or bypassed revalidation")
+        replyInspection("ready")
+        check(count("session.create") === createsBeforeOutage + 1,
+            "a new launch did not reach CloudMatch after incomplete discovery")
+        client.requestFailed(ShellStore.streamCreateRequestId, "session_conflict", "An existing game is running")
+        check(ShellStore.launchConflictDetected, "CloudMatch's existing-session conflict was lost")
+        replyInspection("ready")
+        client.requestFailed(ShellStore.remoteSessionsRequestId, "session_discovery_failed", "The existing game could not be found")
+        check(ShellStore.streamState === "error" && count("session.create") === createsBeforeOutage + 1
+            && count("session.stop") === beforeStops,
+            "failed conflict discovery created another session or stopped the existing game")
+        ShellStore.pendingLaunchParams = null
+        ShellStore.launchConflictDetected = false
+        ShellStore.streamState = "idle"
+
         ShellStore.lastError = ""
         owner.mutationMessage = ""
         owner.catalogGames = [game(0)]

@@ -131,6 +131,25 @@ pub(super) fn negotiated_announce(
     }
     handoff["framePacingFeedbackMode"] =
         json!(super::video_qos_offers(describe).pacing_feedback_mode(&result)?);
+    let mut estimator = serde_json::Map::new();
+    for (field, attribute) in [
+        ("jitterMode", "jitterHistory.jitterEstimationMode"),
+        ("jitterN", "jitterHistory.n"),
+        ("jitterStddevsX1000", "jitterHistory.stddevsX1000"),
+        ("jitterOutlierUs", "jitterHistory.outlierUs"),
+        ("jitterMinAdvanceUs", "jitterHistory.minAdvanceUs"),
+        ("jitterMaxAdvanceUs", "jitterHistory.maxAdvanceUs"),
+        ("renderMode", "renderHistory.renderEstimationMode"),
+        ("renderN", "renderHistory.n"),
+        ("renderStddevsX1000", "renderHistory.stddevsX1000"),
+        ("renderMinTimeUs", "renderHistory.minTimeUs"),
+        ("renderMaxTimeUs", "renderHistory.maxTimeUs"),
+    ] {
+        if let Some(value) = offered_u32(describe, &format!("video[0].framePacing.{attribute}")) {
+            estimator.insert(field.to_owned(), json!(value));
+        }
+    }
+    handoff["presentationEstimator"] = Value::Object(estimator);
     Ok(result)
 }
 

@@ -12,9 +12,6 @@ pub(crate) const FRAME_ACK_PAYLOAD_LEN: usize = 102;
 pub(crate) const FRAME_PACING_PAYLOAD_LEN: usize = 28;
 pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
 pub(crate) const FRAME_INVALIDATION_PAYLOAD_LEN: usize = 24;
-// The official GFN client keeps the frame-pacing PID target at 16.666 ms even for a
-// 120 FPS encoded stream. This is a renderer/feedback target, not the encoded-frame interval.
-pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
 pub(crate) const FRAME_PACING_INTERVAL: Duration = Duration::from_micros(55_556);
 pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -94,17 +91,16 @@ pub(crate) fn frame_ack(
 }
 
 pub(crate) fn frame_pacing_report(
-    frame_number: u32,
-    target_frame_time_us: u32,
-    pacing_error_us: u32,
+    report: crate::presentation_timing::PresentationReport,
 ) -> NvstControlCommand {
     let mut payload = vec![0; FRAME_PACING_PAYLOAD_LEN];
     put_u32(&mut payload, 0, 5);
-    put_u32(&mut payload, 8, 2);
-    put_u32(&mut payload, 12, frame_number);
-    put_u32(&mut payload, 16, target_frame_time_us);
-    put_u32(&mut payload, 20, pacing_error_us.min(target_frame_time_us));
-    put_u32(&mut payload, 24, 0x341a);
+    put_u32(&mut payload, 4, report.stream_index);
+    put_u32(&mut payload, 8, report.frame_count);
+    put_u32(&mut payload, 12, report.first_frame);
+    put_u32(&mut payload, 16, report.processing_budget_us);
+    put_u32(&mut payload, 20, report.present_delay_us);
+    put_u32(&mut payload, 24, report.vsync_interval_us);
     NvstControlCommand {
         code: FRAME_PACING_CODE,
         payload,
@@ -292,11 +288,18 @@ mod tests {
 
     #[test]
     fn frame_pacing_report_matches_the_source_test_vector() {
-        let command = frame_pacing_report(1, 16_000, 16_000);
+        let command = frame_pacing_report(crate::presentation_timing::PresentationReport {
+            stream_index: 7,
+            frame_count: 3,
+            first_frame: 41,
+            processing_budget_us: 2_000,
+            present_delay_us: 20_000,
+            vsync_interval_us: 0,
+        });
         assert_eq!(command.code, FRAME_PACING_CODE);
         assert_eq!(
             command.payload,
-            hex("05000000000000000200000001000000803e0000803e00001a340000")
+            hex("05000000070000000300000029000000d0070000204e000000000000")
         );
         assert_eq!(command.encoded().len(), 4 + FRAME_PACING_PAYLOAD_LEN);
     }

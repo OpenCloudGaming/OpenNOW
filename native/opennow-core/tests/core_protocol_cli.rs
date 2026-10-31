@@ -62,11 +62,19 @@ fn protocol_four_shells_receive_the_paged_library_capabilities() {
 #[test]
 fn protocol_five_shells_receive_the_paged_library_capabilities() {
     let response = hello(5);
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"]["code"], "incompatible_protocol");
+}
+
+#[test]
+fn protocol_six_shells_receive_allocation_settlement_capability() {
+    let response = hello(6);
     assert_eq!(response["ok"], true);
-    assert_eq!(response["result"]["protocolVersion"], 5);
+    assert_eq!(response["result"]["protocolVersion"], 6);
     let capabilities = response["result"]["capabilities"].as_array().unwrap();
     for capability in [
         "catalog.libraryPages.v1",
+        "catalog.storeLocal.v2",
         "catalog.metadata.v1",
         "account.syncObservation.v1",
         "account.pushInvalidation.v1",
@@ -74,6 +82,9 @@ fn protocol_five_shells_receive_the_paged_library_capabilities() {
         "queue.servers.v1",
         "auth.accountPicker.v1",
         "session.terminalCleanup.v1",
+        "session.allocationSettlement.v1",
+        "session.adReportIdentity.v1",
+        "account.mutations.scoped.v1",
     ] {
         assert!(capabilities.contains(&json!(capability)));
     }
@@ -95,7 +106,7 @@ fn writable_cores_exclusively_own_the_resolved_profile_until_exit() {
         .spawn()
         .unwrap();
     writeln!(first.stdin.as_mut().unwrap(), "{}", json!({
-        "type":"request","id":"owner","method":"core.hello","params":{"protocolVersion":5,"shell":"qt"}
+        "type":"request","id":"owner","method":"core.hello","params":{"protocolVersion":6,"shell":"qt"}
     })).unwrap();
     let stdout = first.stdout.take().unwrap();
     let (sender, receiver) = mpsc::channel();
@@ -284,7 +295,7 @@ mod pending_profile_owner {
             "{}",
             json!({
                 "type":"request", "id":"owner", "method":"core.hello",
-                "params":{"protocolVersion":5,"shell":"qt"}
+                "params":{"protocolVersion":6,"shell":"qt"}
             })
         )
         .unwrap();

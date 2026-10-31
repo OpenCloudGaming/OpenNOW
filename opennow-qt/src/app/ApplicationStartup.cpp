@@ -12,6 +12,7 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrChromeEffect.h"
+#include "streaming/rendering/StreamPresentation.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
 #endif
@@ -34,8 +35,10 @@
 #include <QSGRendererInterface>
 #include <QFileOpenEvent>
 #include <QProcess>
+#include <QPointer>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <thread>
 
@@ -99,6 +102,8 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #ifdef Q_OS_WIN
     if (!qEnvironmentVariableIsSet("QT_D3D_NO_VBLANK_THREAD"))
         qputenv("QT_D3D_NO_VBLANK_THREAD", "1");
+    if (!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME"))
+        qputenv("QT_QPA_UPDATE_IDLE_TIME", "0");
 #endif
     qputenv("QT_TLS_BACKEND", "schannel");
     QElapsedTimer startupTimer;
@@ -107,7 +112,19 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QGuiApplication::setOrganizationName(u"OpenCloudGaming"_s);
     QGuiApplication::setOrganizationDomain(u"opennow.app"_s);
     QGuiApplication::setApplicationVersion(QString::fromLatin1(OPENNOW_VERSION));
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) != u"--request-quit"_s) continue;
+        QCoreApplication requestApplication(argc, argv);
+        if (requestApplication.arguments().size() != 2) return EXIT_FAILURE;
+        const auto result = SingleInstance::requestQuit();
+        if (result == EXIT_SUCCESS) std::puts("opennow-quit-complete");
+        return result;
+    }
+#ifdef Q_OS_WIN
+    QQuickWindow::setDefaultAlphaBuffer(false);
+#else
     QQuickWindow::setDefaultAlphaBuffer(true);
+#endif
     QQuickWindow::setTextRenderType(QQuickWindow::QtTextRendering);
 #if defined(Q_OS_WIN)
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
@@ -119,6 +136,12 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     QQuickStyle::setStyle(u"Basic"_s);
 
     QGuiApplication application(argc, argv);
+#if defined(Q_OS_LINUX) && defined(NO_SOFT_RENDERING)
+#if !QT_CONFIG(vulkan) || !__has_include(<vulkan/vulkan.h>)
+    qCritical("NO_SOFT_RENDERING requires a Qt build with Vulkan support.");
+    return EXIT_FAILURE;
+#endif
+#endif
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
     QIcon applicationIcon;
     for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})
@@ -184,6 +207,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     NativeStreamRuntime::initializeDiagnostics();
     LinuxVulkanGraphics::Device vulkanDevice;
+#ifdef NO_SOFT_RENDERING
+    bool graphicsValidationRequired = true;
+#endif
     if (QQuickWindow::graphicsApi() == QSGRendererInterface::Vulkan
             && !vulkanDevice.initialize())
         qWarning("Embedded Vulkan Video is unavailable: %s Qt will use its default graphics device.",
@@ -202,6 +228,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qWarning("Could not start the embedded streamer runtime: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
     StreamVideoItem::setNativeStreamRuntime(&nativeStreamRuntime);
+    controller.setScreenshotCapture([&nativeStreamRuntime] {
+        return nativeStreamRuntime.requestScreenshot();
+    });
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::screenshotReady,
+                     &controller, &AppController::saveStreamScreenshot);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
@@ -275,6 +306,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     }
 
     HdrOutput hdrOutput;
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    StreamPresentation streamPresentation(&nativeStreamRuntime);
+#endif
     QObject::connect(&localization, &Localization::localeChanged, &hdrOutput, &HdrOutput::changed);
     QObject::connect(&hdrOutput, &HdrOutput::changed, &coreClient, [&] {
         coreClient.setNativeHdrSupported(hdrOutput.supported());
@@ -328,12 +362,39 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.loadFromModule(u"OpenNOW"_s, u"Main"_s);
     auto *rootWindow = engine.rootObjects().isEmpty() ? nullptr
         : qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!WindowTheme::prepareWindow(rootWindow)) {
+        qCritical("Could not establish window decoration ownership before native surface creation");
+        return EXIT_FAILURE;
+    }
     if (!graphicsDevices.applyTo(rootWindow)) {
         qCritical("Could not select the graphics adapter before scene-graph initialization");
         return EXIT_FAILURE;
     }
     hdrOutput.attach(rootWindow);
+#ifdef OPENNOW_EMBEDDED_STREAMER
+    streamPresentation.attach(rootWindow);
+#endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#ifdef NO_SOFT_RENDERING
+    if (!rootWindow || rootWindow->rendererInterface()->graphicsApi() != QSGRendererInterface::Vulkan) {
+        qCritical("NO_SOFT_RENDERING requires the Qt Vulkan scene graph; software and other graphics APIs are forbidden.");
+        return EXIT_FAILURE;
+    }
+    QObject::connect(rootWindow, &QQuickWindow::sceneGraphInitialized, rootWindow, [&graphicsValidationRequired] {
+        graphicsValidationRequired = true;
+    }, Qt::DirectConnection);
+    QObject::connect(rootWindow, &QQuickWindow::beforeRendering, rootWindow,
+                     [&vulkanDevice, rootWindow, &graphicsValidationRequired] {
+        if (!graphicsValidationRequired) return;
+        if (!vulkanDevice.validateHardwareRendering(rootWindow))
+            qFatal("Graphics initialization failed: %s", qUtf8Printable(vulkanDevice.lastError()));
+        graphicsValidationRequired = false;
+    }, Qt::DirectConnection);
+    QObject::connect(rootWindow, &QQuickWindow::sceneGraphError, rootWindow,
+                     [](QQuickWindow::SceneGraphError, const QString &message) {
+        qFatal("NO_SOFT_RENDERING Qt scene-graph initialization failed: %s", qUtf8Printable(message));
+    }, Qt::DirectConnection);
+#endif
     if (vulkanDevice.handle() && !vulkanDevice.adopt(rootWindow)) {
         qWarning("Could not adopt the embedded Vulkan device: %s",
                  qUtf8Printable(vulkanDevice.lastError()));
@@ -356,7 +417,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                          if (engine.rootObjects().isEmpty()) return;
                          auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
                          if (!window) return;
-                         window->show();
+                         if (window->visibility() == QWindow::Minimized)
+                             window->setWindowStates(window->windowStates() & ~Qt::WindowMinimized);
+                         if (!window->isVisible()) window->show();
                          window->raise();
                          window->requestActivate();
                      });
@@ -365,6 +428,19 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                          controller.activationRequested();
                          controller.handleArguments(forwardedArguments);
                      });
+    const QPointer<QQuickWindow> quitWindow(rootWindow);
+    QObject::connect(&singleInstance, &SingleInstance::quitRequested,
+                     &application, [&controller, quitWindow] {
+                         controller.activateWindow();
+                         if (quitWindow) QMetaObject::invokeMethod(quitWindow, "requestSessionQuit");
+                     });
+    QObject::connect(&singleInstance, &SingleInstance::quitRequestAbandoned,
+                     &application, [quitWindow] {
+                         if (quitWindow) QMetaObject::invokeMethod(quitWindow, "cancelSessionQuit");
+                     });
+    if (rootWindow)
+        QObject::connect(rootWindow, SIGNAL(sessionQuitCancelled()),
+                         &singleInstance, SLOT(cancelQuitRequest()));
 
     if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
         return EXIT_FAILURE;
@@ -374,6 +450,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
     const auto exitCode = application.exec();
+    auto *qmlCoreClient = engine.rootContext()->contextProperty(u"CoreClient"_s).value<QObject *>();
+    const auto requestedQuitCompleted = rootWindow && rootWindow->property("sessionQuitStopping").toBool()
+        && rootWindow->property("applicationCloseConfirmed").toBool()
+        && qmlCoreClient && qmlCoreClient->property("allocationsSettled").toBool()
+        && engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s)->property("sessionWorkIdle").toBool();
     armTeardownDeadline(exitCode);
     coreClient.stop();
 #ifdef OPENNOW_EMBEDDED_STREAMER
@@ -383,8 +464,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (!nativeStreamRuntime.shutdown()) {
         qWarning("Could not complete embedded streamer shutdown: %s",
                  qUtf8Printable(nativeStreamRuntime.lastError()));
+        return EXIT_FAILURE;
     }
 #endif
+    if (exitCode == EXIT_SUCCESS && requestedQuitCompleted) singleInstance.finishQuitRequest();
     return exitCode;
 }
 

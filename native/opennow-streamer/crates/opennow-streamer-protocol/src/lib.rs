@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 pub mod log;
 pub mod text_input;
 
-pub const PROTOCOL_VERSION: u64 = 7;
+pub const PROTOCOL_VERSION: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,6 +105,8 @@ pub struct Command {
     pub max_bitrate_kbps: Option<u32>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub recovery: bool,
     #[serde(default)]
     pub shortcuts: Option<Value>,
     #[serde(default)]
@@ -389,6 +391,26 @@ pub fn event(kind: &str, fields: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_stop_is_an_explicit_boolean_and_defaults_to_user_stop() {
+        use super::Command;
+        use serde_json::json;
+
+        let stop: Command = serde_json::from_value(json!({"id":"stop", "type":"stop"})).unwrap();
+        assert!(!stop.recovery);
+        let recovery: Command = serde_json::from_value(json!({
+            "id":"stop", "type":"stop", "recovery":true
+        }))
+        .unwrap();
+        assert!(recovery.recovery);
+        assert!(
+            serde_json::from_value::<Command>(json!({
+                "id":"stop", "type":"stop", "recovery":"true"
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn audio_mute_command_accepts_only_boolean_states() {
         use super::Command;

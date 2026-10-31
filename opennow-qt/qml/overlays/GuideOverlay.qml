@@ -375,6 +375,7 @@ FocusScope {
                         Image {
                             anchors.fill: parent
                             source: guideArt.resolvedUrl
+                            onStatusChanged: guideArt.reportImageStatus(status, source)
                             fillMode: Image.PreserveAspectCrop
                             sourceSize: Qt.size(128, 128)
                             asynchronous: true

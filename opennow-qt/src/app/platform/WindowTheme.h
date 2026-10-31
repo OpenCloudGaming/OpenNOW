@@ -14,6 +14,7 @@ class WindowTheme : public QObject
     Q_PROPERTY(bool clientDecorations READ clientDecorations NOTIFY clientDecorationsChanged)
 
 public:
+    static bool prepareWindow(QWindow *window);
     explicit WindowTheme(QObject *parent = nullptr);
     explicit WindowTheme(std::function<void(QWindow *, bool)> applyTheme, QObject *parent = nullptr);
 

@@ -2,6 +2,11 @@ add_library(opennow-generic-hid STATIC
     src/input/GenericHidInput.cpp
     src/input/GenericHidInput.h
     src/input/GenericHidWire.h)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(opennow-generic-hid PRIVATE
+        src/input/platform/LinuxHidIdentity.cpp
+        src/input/platform/LinuxHidIdentity.h)
+endif()
 target_include_directories(opennow-generic-hid PUBLIC src)
 target_link_libraries(opennow-generic-hid PUBLIC Qt6::Core SDL3::SDL3)
 if(APPLE)
@@ -33,11 +38,18 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/NativeStreamRenderCallback.h
     src/streaming/rendering/StreamVideoItemRendering.cpp
     src/streaming/rendering/StreamVideoRenderCallback.h
+    src/streaming/rendering/StreamFrameSnapshot.h
     src/streaming/rendering/StreamPresentTimings.h
+    src/streaming/rendering/StreamPresentation.cpp
+    src/streaming/rendering/StreamPresentation.h
+    src/streaming/rendering/StreamPresentationPolicy.h
+    src/streaming/rendering/StreamPresentationFeedback.h
+    src/streaming/rendering/WindowsPresentationObserver.h
     src/streaming/rendering/StreamVideoTextureRenderer.h
     src/streaming/rendering/StreamFrameInterpolator.cpp
     src/streaming/rendering/StreamFrameInterpolator.h
     src/streaming/rendering/StreamFramePacer.h
+    src/streaming/rendering/StreamSenderPacer.h
 )
 
 qt_add_executable(opennow-qt

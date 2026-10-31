@@ -102,19 +102,93 @@ impl SecretStore for OsSecretStore {
     }
 }
 
-struct LocalOnlyStore;
+#[cfg(target_os = "linux")]
+struct UnlockedOsSecretStore;
 
-impl SecretStore for LocalOnlyStore {
-    fn get(&self, _user_id: &str) -> Result<Option<String>, String> {
-        Ok(None)
+#[cfg(target_os = "linux")]
+impl UnlockedOsSecretStore {
+    fn with_item<T>(
+        &self,
+        user_id: &str,
+        action: impl FnOnce(&dbus_secret_service::Item<'_>) -> Result<T, dbus_secret_service::Error>,
+    ) -> Result<Option<T>, String> {
+        let unavailable = || "OS credential store is unavailable or locked".to_owned();
+        let service = dbus_secret_service::SecretService::connect_with_max_prompt_timeout(
+            dbus_secret_service::EncryptionType::Dh,
+            0,
+        )
+        .map_err(|_| unavailable())?;
+        let username = format!("session:{user_id}");
+        let mut attributes = std::collections::HashMap::from([
+            ("service", SERVICE_NAME),
+            ("username", username.as_str()),
+            ("target", "default"),
+        ]);
+        let search = service
+            .search_items(attributes.clone())
+            .map_err(|_| unavailable())?;
+        if !search.locked.is_empty() {
+            return Err(unavailable());
+        }
+        let mut items = search.unlocked;
+        let legacy_collection;
+        if items.is_empty() {
+            legacy_collection = match service.get_default_collection() {
+                Ok(collection) => collection,
+                Err(dbus_secret_service::Error::NoResult) => return Ok(None),
+                Err(_) => return Err(unavailable()),
+            };
+            attributes.remove("target");
+            items = legacy_collection
+                .search_items(attributes)
+                .map_err(|_| unavailable())?;
+        }
+        let item = match items.as_slice() {
+            [] => return Ok(None),
+            [item] => item,
+            _ => return Err("OS credential store contains ambiguous sessions".into()),
+        };
+        if item.is_locked().map_err(|_| unavailable())? {
+            return Err(unavailable());
+        }
+        action(item).map(Some).map_err(|_| unavailable())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SecretStore for UnlockedOsSecretStore {
+    fn get(&self, user_id: &str) -> Result<Option<String>, String> {
+        self.with_item(user_id, |item| item.get_secret())?
+            .map(|bytes| String::from_utf8(bytes).map_err(|_| "Saved session is invalid".into()))
+            .transpose()
     }
 
     fn set(&self, _user_id: &str, _encoded: &str) -> Result<(), String> {
         Err("Sessions on this device are saved locally".into())
     }
 
-    fn delete(&self, _user_id: &str) -> Result<(), String> {
-        Ok(())
+    fn delete(&self, user_id: &str) -> Result<(), String> {
+        self.with_item(user_id, |item| item.delete()).map(|_| ())
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+struct LocalOnlyStore {
+    legacy: Box<dyn SecretStore>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl SecretStore for LocalOnlyStore {
+    fn get(&self, user_id: &str) -> Result<Option<String>, String> {
+        self.legacy.get(user_id)
+    }
+
+    fn set(&self, _user_id: &str, _encoded: &str) -> Result<(), String> {
+        Err("Sessions on this device are saved locally".into())
+    }
+
+    fn delete(&self, user_id: &str) -> Result<(), String> {
+        self.legacy.delete(user_id)
     }
 }
 
@@ -137,8 +211,9 @@ impl CredentialVault {
         )
     }
     pub fn new(data_dir: PathBuf) -> Self {
+        #[cfg(target_os = "linux")]
         if crate::settings::on_steam_deck() {
-            return Self::local_only(data_dir);
+            return Self::local_only(data_dir, Box::new(UnlockedOsSecretStore));
         }
         #[cfg(windows)]
         let store = Box::new(encrypted_secret_store::EncryptedSecretStore::new(
@@ -157,10 +232,11 @@ impl CredentialVault {
         Self::with_store(data_dir, store)
     }
 
-    fn local_only(data_dir: PathBuf) -> Self {
+    #[cfg(any(target_os = "linux", test))]
+    fn local_only(data_dir: PathBuf, legacy: Box<dyn SecretStore>) -> Self {
         Self {
             local_only: true,
-            ..Self::with_store(data_dir, Box::new(LocalOnlyStore))
+            ..Self::with_store(data_dir, Box::new(LocalOnlyStore { legacy }))
         }
     }
 
@@ -369,6 +445,24 @@ impl CredentialVault {
         match self.store.get(user_id) {
             Ok(Some(encoded)) => {
                 let session = decode_session(&encoded, user_id)?;
+                if self.local_only && !self.store.is_plaintext(user_id) {
+                    let migration = self.store.set(user_id, &encoded).and_then(|()| {
+                        if self.store.is_plaintext(user_id)
+                            && self.store.get(user_id)?.as_deref() == Some(&encoded)
+                        {
+                            Ok(())
+                        } else {
+                            Err("Local credential verification failed".into())
+                        }
+                    });
+                    if let Err(error) = migration {
+                        self.warn(
+                            format!("migration:{user_id}"),
+                            format!("Credential migration to this device is pending: {error}"),
+                        );
+                        return Ok(Some(session));
+                    }
+                }
                 if self.session_file(user_id).exists() {
                     if let Err(error) = self.save(&session) {
                         self.warn(
@@ -382,7 +476,16 @@ impl CredentialVault {
             }
             Err(error) => {
                 if let Some(session) = self.load_legacy_session(user_id)? {
-                    self.warn(format!("migration:{user_id}"), "Legacy credential migration is pending; this session is not securely persisted".into());
+                    if self.local_only && !self.store.is_plaintext(user_id) {
+                        if let Err(error) = self.save(&session) {
+                            self.warn(
+                                format!("migration:{user_id}"),
+                                format!("Credential migration to this device is pending: {error}"),
+                            );
+                        }
+                    } else {
+                        self.warn(format!("migration:{user_id}"), "Legacy credential migration is pending; this session is not securely persisted".into());
+                    }
                     return Ok(Some(session));
                 }
                 return Err(error);
@@ -402,6 +505,9 @@ impl CredentialVault {
     }
 
     pub fn durable(&self, session: &AuthSession) -> bool {
+        if self.local_only && !self.store.is_plaintext(&session.user.user_id) {
+            return false;
+        }
         self.store
             .get(&session.user.user_id)
             .ok()
@@ -724,9 +830,9 @@ impl CredentialVault {
 }
 
 #[cfg(test)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MemorySecretStore {
-    values: Mutex<std::collections::HashMap<String, String>>,
+    values: std::sync::Arc<Mutex<std::collections::HashMap<String, String>>>,
     unavailable: bool,
     fail_user: Option<String>,
 }
@@ -907,12 +1013,18 @@ mod tests {
     #[test]
     fn steam_deck_sessions_live_in_a_device_file_without_the_os_store() {
         let directory = tempfile::tempdir().unwrap();
-        let vault = CredentialVault::local_only(directory.path().into());
+        let vault = CredentialVault::local_only(
+            directory.path().into(),
+            Box::<MemorySecretStore>::default(),
+        );
         let session = sample_session("deck-user");
         vault.save(&session).unwrap();
         assert_eq!(vault.persistence_state(&session), "device-file");
         drop(vault);
-        let restored = CredentialVault::local_only(directory.path().into());
+        let restored = CredentialVault::local_only(
+            directory.path().into(),
+            Box::<MemorySecretStore>::default(),
+        );
         assert_eq!(
             restored.load_active().unwrap().unwrap().user.user_id,
             "deck-user"
@@ -921,11 +1033,306 @@ mod tests {
         restored.remove("deck-user").unwrap();
         drop(restored);
         assert!(
-            CredentialVault::local_only(directory.path().into())
-                .load_active()
+            CredentialVault::local_only(
+                directory.path().into(),
+                Box::<MemorySecretStore>::default()
+            )
+            .load_active()
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn steam_deck_restores_keyring_only_accounts_into_device_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        let mut session = sample_session("deck-migrated");
+        session.user.email = Some("player@example.invalid".into());
+        session.user.avatar_url = Some("https://example.invalid/avatar".into());
+        prior.save(&session).unwrap();
+        prior.mark_needs_sign_in(&session.user.user_id).unwrap();
+        let metadata = fs::read(&prior.metadata_path).unwrap();
+        assert_eq!(prior.persistence_state(&session), "secure-store");
+        assert!(!directory.path().join("fallback-sessions").exists());
+        assert!(!prior.session_file(&session.user.user_id).exists());
+        drop(prior);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let restored = vault
+            .load_active()
+            .unwrap()
+            .expect("keyring-only account must restore");
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert_eq!(fs::read(&vault.metadata_path).unwrap(), metadata);
+        assert!(store.get(&session.user.user_id).unwrap().is_some());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(
+            directory.path().into(),
+            Box::new(MemorySecretStore {
+                unavailable: true,
+                ..Default::default()
+            }),
+        );
+        let restored = vault
+            .load_active()
+            .unwrap()
+            .expect("migrated account must restore without keyring");
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+    }
+
+    #[test]
+    fn steam_deck_local_saves_supersede_keyring_without_writing_to_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        let mut session = sample_session("deck-refreshed");
+        prior.save(&session).unwrap();
+        let original = store.get(&session.user.user_id).unwrap();
+        drop(prior);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        vault.load_active().unwrap().unwrap();
+        session.tokens.access_token = "refreshed-access".into();
+        session.tokens.refresh_token = Some("refreshed-refresh".into());
+        vault.save(&session).unwrap();
+        vault.save(&sample_session("deck-new")).unwrap();
+        assert!(store.get(&session.user.user_id).unwrap() == original);
+        assert!(store.get("deck-new").unwrap().is_none());
+        vault.set_active(&session.user.user_id).unwrap();
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+    }
+
+    #[test]
+    fn steam_deck_failed_migration_retains_keyring_and_retries() {
+        use sha2::{Digest, Sha256};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-retry");
+        prior.save(&session).unwrap();
+        drop(prior);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let root = directory.path().join("fallback-sessions");
+        fs::create_dir(&root).unwrap();
+        let digest = Sha256::digest(session.user.user_id.as_bytes());
+        let blocked = root.join(format!("{digest:x}.tmp"));
+        fs::create_dir(&blocked).unwrap();
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "migration-pending");
+        assert!(!vault.warnings().is_empty());
+        assert!(store.get(&session.user.user_id).unwrap().is_some());
+        fs::remove_dir(blocked).unwrap();
+        let restored = vault.load_active().unwrap().unwrap();
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert!(vault.warnings().is_empty());
+    }
+
+    #[test]
+    fn steam_deck_locked_store_does_not_block_local_save_or_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-locked");
+        prior.save(&session).unwrap();
+        drop(prior);
+        let locked = MemorySecretStore {
+            unavailable: true,
+            ..store.clone()
+        };
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(locked.clone()));
+        assert!(vault.load_active().is_err());
+        assert!(store.get(&session.user.user_id).unwrap().is_some());
+        assert!(!directory.path().join("fallback-sessions").exists());
+
+        vault.save(&session).unwrap();
+        assert_eq!(vault.persistence_state(&session), "device-file");
+        drop(vault);
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(locked));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert!(vault.remove(&session.user.user_id).is_err());
+        assert!(
+            fs::read_dir(directory.path().join("fallback-sessions"))
                 .unwrap()
+                .next()
                 .is_none()
         );
+        assert!(vault.load(&session.user.user_id).unwrap().is_none());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        assert!(vault.load_active().unwrap().is_none());
+        assert!(vault.load(&session.user.user_id).unwrap().is_none());
+        vault.migrate_legacy_electron_sessions().unwrap();
+        assert!(store.get(&session.user.user_id).unwrap().is_none());
+        assert!(vault.warnings().is_empty());
+    }
+
+    #[test]
+    fn steam_deck_logout_removes_local_and_keyring_accounts_without_restoring_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        prior.save(&sample_session("deck-first")).unwrap();
+        prior.save(&sample_session("deck-second")).unwrap();
+        prior.set_active("deck-first").unwrap();
+        drop(prior);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        vault.load_active().unwrap().unwrap();
+        vault.remove("deck-first").unwrap();
+        assert!(store.get("deck-first").unwrap().is_none());
+        assert!(vault.load("deck-first").unwrap().is_none());
+        assert!(store.get("deck-second").unwrap().is_some());
+        vault.remove_all().unwrap();
+        assert!(store.get("deck-second").unwrap().is_none());
+        assert!(vault.list().unwrap().is_empty());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        assert!(vault.load_active().unwrap().is_none());
+        assert!(vault.load("deck-first").unwrap().is_none());
+        assert!(vault.load("deck-second").unwrap().is_none());
+    }
+
+    #[test]
+    fn steam_deck_rejects_mismatched_keyring_identity_without_migrating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore::default();
+        let prior = CredentialVault::with_store(directory.path().into(), Box::new(store.clone()));
+        prior.save(&sample_session("deck-expected")).unwrap();
+        drop(prior);
+        store
+            .set(
+                "deck-expected",
+                &serde_json::to_string(&sample_session("other-user")).unwrap(),
+            )
+            .unwrap();
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        assert!(vault.load_active().is_err());
+        assert!(!directory.path().join("fallback-sessions").exists());
+        assert!(store.get("deck-expected").unwrap().is_some());
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_migrates_legacy_session_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore {
+            unavailable: true,
+            ..Default::default()
+        };
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-legacy-file");
+        fs::create_dir(vault.sessions_dir()).unwrap();
+        let source = vault.session_file(&session.user.user_id);
+        fs::write(&source, serde_json::to_vec(&session).unwrap()).unwrap();
+
+        let restored = vault.load(&session.user.user_id).unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_migrates_legacy_auth_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = MemorySecretStore {
+            unavailable: true,
+            ..Default::default()
+        };
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store.clone()));
+        let session = sample_session("deck-legacy-state");
+        let source = directory.path().join("auth-state.json");
+        fs::write(
+            &source,
+            serde_json::to_vec(&json!({"sessions": [session]})).unwrap(),
+        )
+        .unwrap();
+
+        vault.migrate_legacy_electron_sessions().unwrap();
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(vault.persistence_state(&restored), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
+        drop(vault);
+
+        let vault = CredentialVault::local_only(directory.path().into(), Box::new(store));
+        let restored = vault.load_active().unwrap().unwrap();
+        assert!(
+            serde_json::to_value(&restored).unwrap() == serde_json::to_value(&session).unwrap()
+        );
+    }
+
+    #[test]
+    fn steam_deck_unavailable_keyring_retains_legacy_source_until_local_migration_succeeds() {
+        use sha2::{Digest, Sha256};
+
+        let directory = tempfile::tempdir().unwrap();
+        let vault = CredentialVault::local_only(
+            directory.path().into(),
+            Box::new(MemorySecretStore {
+                unavailable: true,
+                ..Default::default()
+            }),
+        );
+        let session = sample_session("deck-legacy-retry");
+        let source = directory.path().join("auth-state.json");
+        let bytes = serde_json::to_vec(&json!({"sessions": [session]})).unwrap();
+        fs::write(&source, &bytes).unwrap();
+        let root = directory.path().join("fallback-sessions");
+        fs::create_dir(&root).unwrap();
+        let digest = Sha256::digest(session.user.user_id.as_bytes());
+        let blocked = root.join(format!("{digest:x}.tmp"));
+        fs::create_dir(&blocked).unwrap();
+
+        assert!(vault.migrate_legacy_electron_sessions().is_err());
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(vault.list().unwrap().is_empty());
+        assert!(!vault.warnings().is_empty());
+        fs::remove_dir(blocked).unwrap();
+        vault.migrate_legacy_electron_sessions().unwrap();
+        assert_eq!(vault.persistence_state(&session), "device-file");
+        assert_eq!(vault.list().unwrap()[0]["userId"], session.user.user_id);
+        assert!(!source.exists());
+        assert!(vault.warnings().is_empty());
     }
 
     #[test]

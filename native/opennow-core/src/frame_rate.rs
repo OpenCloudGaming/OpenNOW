@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     fn capabilities(backend: &str, codec: &str) -> Value {
-        json!({"protocolVersion":7, "videoBackends":[{"backend":backend, "platform":"linux",
+        json!({"protocolVersion":8, "videoBackends":[{"backend":backend, "platform":"linux",
             "available":true, "codecs":[{"codec":codec, "available":true,
                 "colorQualities":["8bit_420"]}]}]})
     }

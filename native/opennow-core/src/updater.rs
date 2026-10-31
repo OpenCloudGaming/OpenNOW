@@ -844,17 +844,30 @@ fn update_highlights(state: &mut State, release: Option<&Release>) {
 
 fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
     let extension = update_apply::compatible_package_extension().ok()?;
-    let os_aliases: &[&str] = if cfg!(target_os = "windows") {
-        &["win", "windows"]
-    } else if cfg!(target_os = "macos") {
-        &["mac", "macos", "darwin"]
-    } else {
-        &["linux"]
+    compatible_asset_for_target(
+        assets,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        extension,
+    )
+}
+
+fn compatible_asset_for_target<'a>(
+    assets: &'a [Asset],
+    os: &str,
+    architecture: &str,
+    extension: &str,
+) -> Option<&'a Asset> {
+    let os_aliases: &[&str] = match os {
+        "windows" => &["win", "windows"],
+        "macos" => &["mac", "macos", "darwin"],
+        "linux" => &["linux"],
+        _ => return None,
     };
-    let arch_aliases: &[&str] = if cfg!(target_arch = "aarch64") {
-        &["arm64", "aarch64"]
-    } else {
-        &["x64", "x86_64", "amd64"]
+    let arch_aliases: &[&str] = match architecture {
+        "aarch64" => &["arm64", "aarch64"],
+        "x86_64" => &["x64", "x86_64", "amd64"],
+        _ => return None,
     };
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
@@ -864,7 +877,9 @@ fn compatible_asset(assets: &[Asset]) -> Option<&Asset> {
         trusted_asset_url(asset)
             && safe_asset_name(&asset.name)
             && name.contains("qt")
-            && os_aliases.iter().any(|alias| name.contains(alias))
+            && name
+                .split(['-', '_', '.'])
+                .any(|token| os_aliases.contains(&token))
             && arch_aliases.iter().any(|alias| name.contains(alias))
             && package
             && asset.size > 0
@@ -1859,6 +1874,111 @@ mod tests {
             size: 123,
         }];
         assert!(compatible_asset(&assets).is_some());
+    }
+
+    #[test]
+    fn darwin_updates_select_only_the_matching_architecture_and_package_format() {
+        let assets: Vec<_> = ["arm64.zip", "x64.zip", "arm64.dmg", "x64.dmg"]
+            .into_iter()
+            .map(|suffix| {
+                let name = format!("OpenNOW-Qt-1.0.0-Darwin-{suffix}");
+                Asset {
+                    browser_download_url: format!("{RELEASE_ASSET_PREFIX}v1.0.0/{name}"),
+                    name,
+                    size: 123,
+                }
+            })
+            .collect();
+        for (architecture, expected, other) in
+            [("x86_64", "x64", "arm64"), ("aarch64", "arm64", "x64")]
+        {
+            assert_eq!(
+                compatible_asset_for_target(&assets, "macos", architecture, "dmg")
+                    .unwrap()
+                    .name,
+                format!("OpenNOW-Qt-1.0.0-Darwin-{expected}.dmg")
+            );
+            let wrong_architecture: Vec<_> = assets
+                .iter()
+                .filter(|asset| asset.name.contains(other))
+                .cloned()
+                .collect();
+            assert!(
+                compatible_asset_for_target(&wrong_architecture, "macos", architecture, "dmg")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn darwin_zip_assets_are_not_windows_updates() {
+        for (architecture, package_architecture) in [("x86_64", "x64"), ("aarch64", "arm64")] {
+            let assets: Vec<_> = ["Darwin", "Windows"]
+                .into_iter()
+                .map(|platform| {
+                    let name = format!("OpenNOW-Qt-1.0.0-{platform}-{package_architecture}.zip");
+                    Asset {
+                        browser_download_url: format!("{RELEASE_ASSET_PREFIX}v1.0.0/{name}"),
+                        name,
+                        size: 123,
+                    }
+                })
+                .collect();
+            assert_eq!(
+                compatible_asset_for_target(&assets, "windows", architecture, "zip")
+                    .unwrap()
+                    .name,
+                format!("OpenNOW-Qt-1.0.0-Windows-{package_architecture}.zip")
+            );
+            assert!(
+                compatible_asset_for_target(&assets[..1], "windows", architecture, "zip").is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn darwin_manifests_bind_the_exact_architecture() {
+        let signing = SigningKey::from_bytes(&[7_u8; 32]);
+        for (architecture, other) in [("x64", "arm64"), ("arm64", "x64")] {
+            let name = format!("OpenNOW-Qt-1.0.0-Darwin-{architecture}.dmg");
+            let mut release = release("v1.0.0", false);
+            release.assets = [name.clone(), format!("{name}.manifest.json")]
+                .into_iter()
+                .map(|name| Asset {
+                    browser_download_url: format!("{RELEASE_ASSET_PREFIX}v1.0.0/{name}"),
+                    name,
+                    size: 123,
+                })
+                .collect();
+            let available = AvailableUpdate {
+                version: "1.0.0".to_owned(),
+                asset: release.assets[0].clone(),
+                manifest_url: release.assets[1].browser_download_url.clone(),
+            };
+            assert!(manifest_asset(&release, &available.asset).is_some());
+            let mut manifest = UpdateManifest {
+                schema_version: 1,
+                version: available.version.clone(),
+                asset: name,
+                size: available.asset.size,
+                sha256: "ab".repeat(32),
+                signature: String::new(),
+            };
+            manifest.signature = BASE64.encode(
+                signing
+                    .sign(signature_payload(&manifest).as_bytes())
+                    .to_bytes(),
+            );
+            verify_manifest(&manifest, &signing.verifying_key()).unwrap();
+            assert!(manifest_matches_release(&manifest, &available));
+            manifest.asset = format!("OpenNOW-Qt-1.0.0-Darwin-{other}.dmg");
+            assert!(verify_manifest(&manifest, &signing.verifying_key()).is_err());
+            assert!(!manifest_matches_release(&manifest, &available));
+            release.assets[1].name = format!("{}.manifest.json", manifest.asset);
+            release.assets[1].browser_download_url =
+                format!("{RELEASE_ASSET_PREFIX}v1.0.0/{}", release.assets[1].name);
+            assert!(manifest_asset(&release, &available.asset).is_none());
+        }
     }
 
     #[test]
