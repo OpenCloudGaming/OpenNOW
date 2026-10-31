@@ -114,6 +114,11 @@ enum SessionConnectionPolicy {
 }
 
 extension ActiveSession {
+    func transportPreferenceError(settings: AppSettings) -> String? {
+        guard !settings.experimentalNativeNVSTEnabled, nativeTransportRequired == true else { return nil }
+        return "This allocation requires Native NVST, which is disabled. End this session and start a new one to request WebRTC, or enable Native NVST in Settings → Stream → Connection."
+    }
+
     func usesNativeTransport(settings: AppSettings) -> Bool {
         settings.experimentalNativeNVSTEnabled || nativeTransportRequired == true
     }
