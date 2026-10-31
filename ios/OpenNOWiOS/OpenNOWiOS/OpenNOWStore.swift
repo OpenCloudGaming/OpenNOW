@@ -687,6 +687,7 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     var touchProvisioned: Bool? = nil
     var nativeRtspsEndpoints: [String]? = nil
     var nativeTransportRequired: Bool? = nil
+    var allocatedAppId: String? = nil
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -4493,6 +4494,7 @@ private actor GFNAPIClient {
             nativeTransportRequired: signaling?.requiresNativeTransport
         )
         active.sessionControlBaseUrl = controlBase
+        active.allocatedAppId = SessionLifecyclePolicy.allocatedAppID(in: sessionObj, fallback: resolvedLaunchAppId)
         return active
     }
 
@@ -4590,6 +4592,7 @@ private actor GFNAPIClient {
             updated.iceServers = iceServers
         }
         updated.adState = adState
+        updated.allocatedAppId = SessionLifecyclePolicy.allocatedAppID(in: sessionObj, fallback: activeSession.allocatedAppId)
         updated.gpuType = sessionObj["gpuType"] as? String ?? updated.gpuType
         updated.negotiatedStreamProfile = Self.extractNegotiatedStreamProfile(sessionObj: sessionObj) ?? updated.negotiatedStreamProfile
         updated.requestedStreamingFeatures = Self.extractStreamingFeatures(
@@ -4889,6 +4892,11 @@ private actor GFNAPIClient {
             throw error
         }
 
+        guard let allocatedAppID = SessionLifecyclePolicy.allocatedAppID(in: validationSessionObj, fallback: candidate.appId) else {
+            throw NSError(domain: "OpenNOW.Session", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "The launcher for this cloud session could not be verified. Refresh account sessions and try again."
+            ])
+        }
         var claimJSON: [String: Any] = [:]
         if preClaimStatus != 1 {
             let sessionQuery = URLQueryItemEncoder.encode([
@@ -4898,7 +4906,7 @@ private actor GFNAPIClient {
             let claimURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)?\(sessionQuery)")!
             let claimBody = Self.buildClaimBody(
                 sessionId: candidate.id,
-                appId: candidate.appId ?? game.launchAppId ?? "0",
+                appId: allocatedAppID,
                 settings: settings,
                 profile: streamProfile,
                 deviceProfile: deviceProfile,
@@ -4976,6 +4984,7 @@ private actor GFNAPIClient {
         active.sessionControlBaseUrl = SessionControlRouting.baseURL(
             host: claimedControl?["ip"] as? String, port: claimedControl?["port"] as? Int
         )
+        active.allocatedAppId = SessionLifecyclePolicy.allocatedAppID(in: resolvedSessionObj, fallback: allocatedAppID)
 
         for _ in 0..<45 {
             let polled = try await pollSession(session: session, activeSession: active, settings: settings)
@@ -9710,7 +9719,7 @@ final class OpenNOWStore: ObservableObject {
 
             let candidate = RemoteSessionCandidate(
                 id: polled.id,
-                appId: polled.game.launchAppId,
+                appId: polled.allocatedAppId,
                 status: polled.status,
                 serverIp: polled.serverIp,
                 streamSettingsSignature: nil,

@@ -181,6 +181,26 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
     }
 
+    func testReconnectKeepsAllocatedLauncherAndDecodesLegacySession() throws {
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [
+            "sessionRequestData": ["appId": "epic-variant"]
+        ], fallback: "steam-default"), "epic-variant")
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [
+            "sessionRequestData": ["appId": 12345]
+        ]), "12345")
+        XCTAssertEqual(SessionLifecyclePolicy.allocatedAppID(in: [:], fallback: "epic-variant"), "epic-variant")
+        XCTAssertNil(SessionLifecyclePolicy.allocatedAppID(in: [:]))
+        XCTAssertNil(SessionLifecyclePolicy.allocatedAppID(in: ["sessionRequestData": ["appId": true]]))
+        var session = queueFixture()
+        session.allocatedAppId = "epic-variant"
+        let data = try JSONEncoder().encode(session)
+        XCTAssertEqual(try JSONDecoder().decode(ActiveSession.self, from: data).allocatedAppId, "epic-variant")
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "allocatedAppId")
+        let oldData = try JSONSerialization.data(withJSONObject: legacy)
+        XCTAssertNil(try JSONDecoder().decode(ActiveSession.self, from: oldData).allocatedAppId)
+    }
+
     @MainActor
     func testContinuePlayingDismissalPreservesLiveSessionAndCanBeRestored() {
         let defaults = UserDefaults.standard

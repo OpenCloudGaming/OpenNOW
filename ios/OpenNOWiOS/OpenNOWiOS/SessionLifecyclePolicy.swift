@@ -28,6 +28,19 @@ struct SessionTerminationConfirmation {
 }
 
 enum SessionLifecyclePolicy {
+    static func allocatedAppID(in session: [String: Any], fallback: String? = nil) -> String? {
+        let value = (session["sessionRequestData"] as? [String: Any])?["appId"]
+        if let value = value as? String {
+            let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty, value.utf8.count <= 256 { return value }
+        } else if let value = SessionConnectionPolicy.integer(value), value > 0 {
+            return String(value)
+        }
+        guard let fallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fallback.isEmpty, fallback.utf8.count <= 256 else { return nil }
+        return fallback
+    }
+
     static func isTerminal(_ status: Int) -> Bool {
         status > 3 && status != 6
     }

@@ -8,6 +8,7 @@ final class QueueLiveActivityManager {
     static let shared = QueueLiveActivityManager()
 
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "QueueLiveActivity")
+    private var revision = UUID()
 
     private init() {}
 
@@ -17,6 +18,8 @@ final class QueueLiveActivityManager {
         storeName: String?,
         state: QueueActivityAttributes.ContentState?
     ) async {
+        let requestedRevision = UUID()
+        revision = requestedRevision
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
         let activities = Activity<QueueActivityAttributes>.activities
@@ -32,6 +35,7 @@ final class QueueLiveActivityManager {
 
         if let existing = activities.first(where: { $0.attributes.sessionId == sessionId }) {
             await existing.update(content)
+            guard revision == requestedRevision else { return }
             for activity in activities where activity.id != existing.id {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
@@ -39,6 +43,7 @@ final class QueueLiveActivityManager {
         }
 
         await endAll(activities: activities)
+        guard revision == requestedRevision else { return }
 
         do {
             _ = try Activity.request(
@@ -51,6 +56,7 @@ final class QueueLiveActivityManager {
     }
 
     func endAll() async {
+        revision = UUID()
         await endAll(activities: Activity<QueueActivityAttributes>.activities)
     }
 
