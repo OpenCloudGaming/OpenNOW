@@ -2598,6 +2598,10 @@ class NativeStreamClient(
             "transport start generation=$generation reconnectAttempts=$reconnectAttempts session=${streamDiagnosticId(session.sessionId)} iceServers=${session.iceServers.size} media=${session.mediaConnectionInfo?.let { "${it.ip}:${it.port}" } ?: "unknown"}",
         )
         if (session.usesNvstTransport(settings)) {
+            recordStreamDiagnostic(
+                "native transport selected experimentalNvst=${settings.experimentalNvst} " +
+                    "sessionRequiresNative=${session.nativeTransportRequired}",
+            )
             if (session.rtspsEndpoints.isEmpty()) {
                 failStream("The session has no NVST endpoint. Disable experimental NVST to use WebRTC, or launch a new session. The cloud session is retained.", generation)
                 return
@@ -2653,7 +2657,9 @@ class NativeStreamClient(
                             "error" -> {
                                 lastNvstError = detail
                                 recordStreamDiagnostic("NVST attachment failed: $detail")
-                                if (nvstAttachmentRequiresResume(detail)) {
+                                if (isNvstDecoderFailure(detail)) {
+                                    failStream("$detail. Your cloud session is retained; retry when ready.", generation)
+                                } else if (nvstAttachmentRequiresResume(detail)) {
                                     requestSessionRecovery(detail, StreamSessionRecoveryMode.ResumeNvstAttachment)
                                 } else {
                                     scheduleTransportReconnect("NVST attachment failed", SIGNALING_RECONNECT_DELAY_MS, generation)

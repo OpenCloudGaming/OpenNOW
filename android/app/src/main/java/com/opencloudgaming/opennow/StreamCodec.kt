@@ -437,12 +437,27 @@ internal class OpenNowVideoDecoderFactory(
             )
         }
         val textureDecoder = if (decoder != null && tuneSelectedDecoder) {
-            LowLatencyVideoDecoder(
+            val tuned = LowLatencyVideoDecoder(
                 delegate = decoder,
                 requestedFps = exactRequestedFps,
                 lowLatencyEnabled = nativeLowLatencyDecoderEnabled,
                 standardLowLatencyEnabled = standardLowLatencyEnabled,
             )
+            // WebRTC owns its decoder recovery. NVST's direct Java calls need a local retry
+            // before an initialization error unwinds JNI and closes the media attachment.
+            if (directJavaDecode) DecoderInitializationFallback(
+                preferred = tuned,
+                createFallback = {
+                    hardwareFactory.createDecoder(info)?.let { plain ->
+                        // Keep startup cleanup/diagnostics around the retry without injecting
+                        // performance hints, vendor keys or runtime low-latency parameters.
+                        LowLatencyVideoDecoder(plain, exactRequestedFps, false, tuningEnabled = false)
+                    }
+                },
+                reportFailure = { detail ->
+                    NativeInputDiagnostics.addRetained("codec-initialization-fallback", detail)
+                },
+            ) else tuned
         } else {
             decoder
         }

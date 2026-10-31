@@ -10,6 +10,7 @@ import java.util.concurrent.ArrayBlockingQueue
 internal fun VideoDecoder.supportsBorrowedNvstInput(): Boolean = when (this) {
     is MediaCodecSurfaceVideoDecoder -> true // Copies any asynchronously queued input itself.
     is LowLatencyVideoDecoder -> this.canBorrowEncodedInput
+    is DecoderInitializationFallback -> this.canBorrowEncodedInput
     is SurfaceOrTextureVideoDecoder -> this.canBorrowEncodedInput
     else -> OpenNowMediaCodecTuning.consumesEncodedInputSynchronously(this)
 }

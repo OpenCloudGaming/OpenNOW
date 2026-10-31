@@ -35,6 +35,12 @@ APK and debug builds check `https://api.printedwaste.com/releases/opennow/latest
 
 `apkUrl`, `artifactUrl`, or `url` may point at the APK. `releaseNotes` may use real newlines or literal `\n` separators. The app compares `versionCode` against its installed build and asks Android's package installer to confirm the downloaded APK.
 
+## Localization
+
+Android translations live in `app/src/main/res/values-*/strings.xml`. The default English resources also include the Android sections of `../locales/en.json`, generated during the build; localized overrides for those keys belong in the Android XML files. Crowdin manages the separate desktop translations in `../locales/*.json`.
+
+Run `python3 scripts/check_translations.py` from this folder to check every supported language for missing strings and plurals, duplicate keys, empty values, and mismatched format arguments. Also run `npm --prefix ../opennow-stable run locales:check` and `./gradlew :app:processDebugResources` after translation changes.
+
 ## Runtime Notes
 
 - UI is native Compose.

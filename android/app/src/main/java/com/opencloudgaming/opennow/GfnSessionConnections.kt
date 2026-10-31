@@ -19,7 +19,7 @@ private fun JsonObject.connectionValue(key: String): String? =
 /** Match dev's WebRTC endpoint ordering, independently of the native RTSPS/media routes. */
 internal fun resolveGfnSessionConnections(
     session: JsonObject,
-    streamingBaseUrl: String? = null,
+    reportedNativeTransport: Boolean? = reportedGfnSessionNativeTransport(session),
 ): GfnSessionConnections? {
     val connections = (session["connectionInfo"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
     fun JsonObject.usage() = connectionValue("usage")?.toIntOrNull()
@@ -47,32 +47,43 @@ internal fun resolveGfnSessionConnections(
         mediaConnectionInfo = selectedMedia,
         // BUNDLE (17) can have a different NAT mapping from VIDEO (2) on alliance seats.
         bundleConnectionInfo = media(listOf(17), requireIp = true),
-        nativeTransportRequired = sessionNativeTransportRequired(session, connection, streamingBaseUrl),
+        nativeTransportRequired = reportedNativeTransport ?: connection.isRtspSessionConnection(),
     )
 }
 
-private fun sessionNativeTransportRequired(
-    session: JsonObject,
-    connection: JsonObject,
-    streamingBaseUrl: String?,
-): Boolean {
-    if (isAllianceCloudMatchBase(streamingBaseUrl)) {
-        val request = session["sessionRequestData"] as? JsonObject
-        // Match dev's reported_native_session/reported_webrtc_session. Partners can
-        // return RTSPS descriptors for a WebRTC allocation; those are converted to
-        // WSS 443 above and do not imply an RTSP control protocol on that service.
-        // Explicit native allocation always wins over stale WebRTC metadata.
-        if (request?.connectionValue("secureRTSPSupported") == "true" ||
-            request?.connectionValue("streamerVersion") == "14") return true
-        val metadata = request?.get("metaData") as? JsonArray
-        if (metadata.orEmpty().any { raw ->
-                val entry = raw as? JsonObject
-                entry?.connectionValue("key") == "GSStreamerType" &&
-                    entry.connectionValue("value") == "WebRTC"
-            }) return false
+/** Match dev's reported transport for every provider; RTSPS descriptors also occur on WebRTC seats. */
+internal fun reportedGfnSessionNativeTransport(session: JsonObject): Boolean? {
+    val request = session["sessionRequestData"] as? JsonObject ?: return null
+    // Explicit native allocation wins over stale WebRTC metadata.
+    if (request.connectionValue("secureRTSPSupported") == "true" ||
+        request.connectionValue("streamerVersion") == "14") return true
+    val metadata = request["metaData"] as? JsonArray
+    if (metadata.orEmpty().any { raw ->
+            val entry = raw as? JsonObject
+            entry?.connectionValue("key") == "GSStreamerType" &&
+                entry.connectionValue("value") == "WebRTC"
+        }) return false
+    return null
+}
+
+/** Sparse poll/resume replies must not change a session's explicitly reported transport. */
+internal class GfnSessionConnectionResolver(private val retainedSessionLimit: Int = 32) {
+    private val reportedTransports = linkedMapOf<String, Boolean>()
+
+    init { require(retainedSessionLimit > 0) }
+
+    @Synchronized fun resolve(session: JsonObject): GfnSessionConnections? {
+        val id = session.connectionValue("sessionId")?.takeIf { it.isNotBlank() }
+        val reported = reportedGfnSessionNativeTransport(session)
+        if (id != null && reported != null) {
+            reportedTransports.remove(id)
+            reportedTransports[id] = reported
+            while (reportedTransports.size > retainedSessionLimit) {
+                reportedTransports.remove(reportedTransports.keys.first())
+            }
+        }
+        return resolveGfnSessionConnections(session, reported ?: id?.let(reportedTransports::get))
     }
-    // Preserve NVIDIA and legacy sessions' endpoint-based transport selection.
-    return connection.isRtspSessionConnection()
 }
 
 private fun sessionMediaConnection(connection: JsonObject): MediaConnectionInfo? {

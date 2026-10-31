@@ -12,6 +12,31 @@ RTSP disconnect (never send TEARDOWN on local stop or reconnect), keep the curso
 composited by the server, and retain Android's selected FPS up to 360. Android owns MediaCodec,
 audio playback, UI, and CloudMatch session termination.
 
+Transport selection and decoder startup correction (2026-10-31), compared with dev
+5b89338a3 (`opennow-core/src/cloudmatch.rs` and platform-linux `src/session.rs`):
+- The RMX3890 reports reach H.264/H.265 MediaCodec configuration, then a caught
+  IllegalStateException with zero queued video buffers; reconnects receive OPTIONS 400.
+  Their CloudMatch payloads explicitly report WebRTC despite RTSPS-shaped endpoints.
+  Android now honors reported allocation transport for NVIDIA as well as partners,
+  retaining that evidence in a bounded per-session cache across sparse poll/resume replies.
+  Explicit user NVST opt-in still selects NVST; missing allocation metadata keeps the
+  existing endpoint fallback. Request profiles and provider identities are unchanged.
+- The direct-Java texture decoder retries a rejected tuned instance once with a fresh,
+  untuned hardware decoder inside the same attachment, following dev's local decoder
+  recovery ownership. Codec, dimensions, FPS and persisted settings are preserved.
+- The pinned WebRTC 144.7559.14 releaseInternal skips codec release before running=true,
+  which is set only after configure/start succeeds. The codec wrapper now releases failed
+  startup exactly once on both tuned and untuned paths; failed cleanup prevents a retry.
+  Platform configure/start causes and bounded Java traces are retained before WebRTC
+  converts the error into a status code. WebRTC keeps ownership of its own fallback.
+- If local video initialization/decode still throws, Android reports a decoder failure
+  and stops locally, retaining the cloud session instead of re-opening RTSP or claiming
+  another attachment. Transport errors keep their existing bounded recovery policy.
+
+Regression tests cover NVIDIA's reported WebRTC allocation with NVST off, explicit NVST
+opt-in, sparse-response retention, startup fallback and codec cleanup. Live playback on
+the affected phone still needs verification; these changes do not rewrite NVST negotiation.
+
 To refresh, compare the two crates and src/nvst_rtsp.rs against native/opennow-streamer
 at the recorded upstream revision, retaining the Android lifecycle differences.
 

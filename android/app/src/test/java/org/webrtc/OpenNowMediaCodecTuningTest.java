@@ -153,4 +153,95 @@ public class OpenNowMediaCodecTuningTest {
       @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) {}
     };
   }
+
+  @Test
+  public void releasesRejectedStartupBeforeFallbackAndNeverReleasesCodecTwice() throws Exception {
+    for (String phase : Arrays.asList("configure", "start")) {
+      List<String> calls = new ArrayList<>();
+      IllegalStateException failure = new IllegalStateException("rejected " + phase);
+      MediaCodecWrapper codec = (MediaCodecWrapper) Proxy.newProxyInstance(
+          MediaCodecWrapper.class.getClassLoader(), new Class<?>[] {MediaCodecWrapper.class},
+          (proxy, method, args) -> {
+            calls.add(method.getName());
+            if (method.getName().equals(phase)) throw failure;
+            return null;
+          });
+      MediaCodecWrapperFactory factory = (MediaCodecWrapperFactory) OpenNowMediaCodecTuning.wrapFactory(
+          (MediaCodecWrapperFactory) name -> codec, new OpenNowMediaCodecTuning.Tuning() {
+            @Override public String selectCodecName(String name) { return name; }
+            @Override public void configure(String name, android.media.MediaFormat format) {}
+            @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) {}
+            @Override public void initializationFailed(String name, String at, RuntimeException error) {
+              assertEquals(Arrays.asList(phase, "release"), calls);
+            }
+          });
+      MediaCodecWrapper result = factory.createByCodecName("decoder");
+      assertSame(failure, assertThrows(IllegalStateException.class, () -> {
+        if (phase.equals("configure")) result.configure(null, null, null, 0);
+        else result.start();
+      }));
+      // The pinned WebRTC startup path never makes this call. A future release that does
+      // must still be safe, as must a caller cleaning up a failed decoder explicitly.
+      result.release();
+      result.release();
+      assertEquals(Arrays.asList(phase, "release"), calls);
+    }
+  }
+
+  @Test
+  public void cleanupFailureIsReportedAndPreservesBothCauses() throws Exception {
+    IllegalStateException startupFailure = new IllegalStateException("configure failed");
+    IllegalStateException cleanupFailure = new IllegalStateException("release failed");
+    List<String> observed = new ArrayList<>();
+    MediaCodecWrapper codec = (MediaCodecWrapper) Proxy.newProxyInstance(
+        MediaCodecWrapper.class.getClassLoader(), new Class<?>[] {MediaCodecWrapper.class},
+        (proxy, method, args) -> { throw method.getName().equals("release") ? cleanupFailure : startupFailure; });
+    MediaCodecWrapperFactory factory = (MediaCodecWrapperFactory) OpenNowMediaCodecTuning.wrapFactory(
+        (MediaCodecWrapperFactory) name -> codec, new OpenNowMediaCodecTuning.Tuning() {
+          @Override public String selectCodecName(String name) { return name; }
+          @Override public void configure(String name, android.media.MediaFormat format) {}
+          @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) {}
+          @Override public void initializationCleanupFailed(String name, RuntimeException error) {
+            assertSame(cleanupFailure, error);
+            observed.add("cleanup-failed");
+          }
+          @Override public void initializationFailed(String name, String phase, RuntimeException error) {
+            assertSame(startupFailure, error);
+            assertArrayEquals(new Throwable[] {cleanupFailure}, error.getSuppressed());
+            observed.add("startup-failed");
+          }
+        });
+    MediaCodecWrapper result = factory.createByCodecName("decoder");
+    assertSame(startupFailure, assertThrows(IllegalStateException.class, () -> result.configure(null, null, null, 0)));
+    assertEquals(Arrays.asList("cleanup-failed", "startup-failed"), observed);
+  }
+
+  @Test
+  public void retainsPlatformStartupCauseBeforeWebRtcConvertsItToStatus() throws Exception {
+    for (String phase : Arrays.asList("configure", "start")) {
+      IllegalStateException failure = new IllegalStateException("platform rejected " + phase);
+      List<String> observed = new ArrayList<>();
+      MediaCodecWrapper codec = (MediaCodecWrapper) Proxy.newProxyInstance(
+          MediaCodecWrapper.class.getClassLoader(), new Class<?>[] {MediaCodecWrapper.class},
+          (proxy, method, args) -> { throw failure; });
+      MediaCodecWrapperFactory factory = (MediaCodecWrapperFactory) OpenNowMediaCodecTuning.wrapFactory(
+          (MediaCodecWrapperFactory) name -> codec, new OpenNowMediaCodecTuning.Tuning() {
+            @Override public String selectCodecName(String name) { return name; }
+            @Override public void configure(String name, android.media.MediaFormat format) {}
+            @Override public void started(String name, OpenNowMediaCodecTuning.ParameterSetter setter) {}
+            @Override public void initializationFailed(String name, String at, RuntimeException error) {
+              assertEquals("decoder", name);
+              assertSame(failure, error);
+              observed.add(at);
+              throw new IllegalStateException("observer failed");
+            }
+          });
+      MediaCodecWrapper result = factory.createByCodecName("decoder");
+      assertSame(failure, assertThrows(IllegalStateException.class, () -> {
+        if (phase.equals("configure")) result.configure(null, null, null, 0);
+        else result.start();
+      }));
+      assertEquals(Arrays.asList(phase), observed);
+    }
+  }
 }

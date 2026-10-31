@@ -22,6 +22,8 @@ public final class OpenNowMediaCodecTuning {
     String selectCodecName(String originalName);
     void configure(String codecName, MediaFormat format);
     void started(String codecName, ParameterSetter parameters);
+    default void initializationFailed(String codecName, String phase, RuntimeException error) {}
+    default void initializationCleanupFailed(String codecName, RuntimeException error) {}
     default void inputQueued() {}
     default void outputDequeued(boolean codecConfig) {}
     default void outputReleased(boolean render) {}
@@ -51,6 +53,7 @@ public final class OpenNowMediaCodecTuning {
     private final MediaCodecWrapper delegate;
     private final String name;
     private final Tuning tuning;
+    private boolean released;
 
     TunedCodec(MediaCodecWrapper delegate, String name, Tuning tuning) {
       this.delegate = delegate;
@@ -59,16 +62,47 @@ public final class OpenNowMediaCodecTuning {
     }
 
     @Override public void configure(MediaFormat format, Surface surface, MediaCrypto crypto, int flags) {
-      tuning.configure(name, format);
-      delegate.configure(format, surface, crypto, flags);
+      try {
+        tuning.configure(name, format);
+        delegate.configure(format, surface, crypto, flags);
+      } catch (RuntimeException error) {
+        initializationFailed("configure", error);
+        throw error;
+      }
     }
     @Override public void start() {
-      delegate.start();
-      tuning.started(name, delegate::setParameters);
+      try {
+        delegate.start();
+        tuning.started(name, delegate::setParameters);
+      } catch (RuntimeException error) {
+        initializationFailed("start", error);
+        throw error;
+      }
+    }
+    private void initializationFailed(String phase, RuntimeException error) {
+      // In the pinned AndroidVideoDecoder, releaseInternal() skips codec.release() until
+      // running=true. That flag is set AFTER configure/start, so failed startup leaks a codec
+      // unless this owner releases it. Free it before any fresh-decoder retry can run.
+      try {
+        release();
+      } catch (RuntimeException cleanupError) {
+        if (cleanupError != error) error.addSuppressed(cleanupError);
+        try {
+          tuning.initializationCleanupFailed(name, cleanupError);
+        } catch (RuntimeException ignored) {}
+      }
+      // AndroidVideoDecoder turns platform exceptions into status codes. Retain the cause first.
+      try {
+        tuning.initializationFailed(name, phase, error);
+      } catch (RuntimeException ignored) {}
     }
     @Override public void flush() { delegate.flush(); }
     @Override public void stop() { delegate.stop(); }
-    @Override public void release() { delegate.release(); }
+    @Override public void release() {
+      if (released) return;
+      released = true;
+      delegate.release();
+    }
     @Override public int dequeueInputBuffer(long timeoutUs) { return delegate.dequeueInputBuffer(timeoutUs); }
     @Override public void queueInputBuffer(int index, int offset, int size, long ptsUs, int flags) {
       delegate.queueInputBuffer(index, offset, size, ptsUs, flags);

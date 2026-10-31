@@ -28,6 +28,28 @@ class GfnSessionConnectionsTest {
         buildJsonObject { put("connectionInfo", OpenNowJson.parseToJsonElement(raw)) },
     )
 
+    @Test fun nvidiaWebRtcMetadataOverridesNativeLookingDescriptorsEvenWithToggleOff() {
+        // RMX3890 H.264/H.265 reports: NVIDIA returns these descriptors for an allocation
+        // whose request explicitly says WebRTC, secureRTSPSupported=false, streamerVersion=1.
+        val payload = OpenNowJson.parseToJsonElement("""{
+            "sessionId":"nvidia-seat","status":2,"sessionRequestData":$webRtcRequest,
+            "connectionInfo":[
+                {"usage":14,"appLevelProtocol":6,"port":322,
+                 "resourcePath":"rtsps://80-250-96-36.cloudmatchbeta.nvidiagrid.net:322"},
+                {"usage":14,"appLevelProtocol":6,"port":48322,
+                 "resourcePath":"rtsps://80-250-96-36.cloudmatchbeta.nvidiagrid.net:48322"}
+            ]
+        }""").jsonObject
+        val route = resolveGfnSessionConnections(payload)!!
+        assertFalse(route.nativeTransportRequired)
+        assertEquals("wss://80-250-96-36.cloudmatchbeta.nvidiagrid.net/nvst/", route.signalingUrl)
+        val session = SessionInfo("seat", 2, serverIp = route.serverIp,
+            signalingServer = route.signalingServer, signalingUrl = route.signalingUrl,
+            nativeTransportRequired = route.nativeTransportRequired)
+        assertFalse(session.usesNvstTransport(StreamSettings(experimentalNvst = false)))
+        assertTrue(session.usesNvstTransport(StreamSettings(experimentalNvst = true)))
+    }
+
     @Test fun explicitWebSocketWinsOverEarlierNativeDescriptorAndKeepsItsPort() {
         val result = resolve("""[
             {"usage":14,"appLevelProtocol":6,"resourcePath":"rtsps://native.abya.example:322"},
@@ -135,7 +157,7 @@ class GfnSessionConnectionsTest {
 
     @Test fun yesWebRtcAllocationUsesWebRtcEvenWithRtspDescriptorsAndEnhancedModeZero() {
         for ((status, mode) in listOf(1 to 1, 2 to 0, 3 to 0)) {
-            val result = resolveGfnSessionConnections(partnerSession(webRtcRequest, status, mode), yesBase)!!
+            val result = resolveGfnSessionConnections(partnerSession(webRtcRequest, status, mode))!!
             assertFalse(result.nativeTransportRequired)
             assertEquals("wss://seat.yes.example/nvst/", result.signalingUrl)
             assertEquals("seat.yes.example:443", result.signalingServer)
@@ -161,36 +183,58 @@ class GfnSessionConnectionsTest {
             """{"secureRTSPSupported":true,"metaData":[{"key":"GSStreamerType","value":"WebRTC"}]}""",
         )) {
             val session = partnerSession(request)
-            assertTrue(resolveGfnSessionConnections(session, yesBase)!!.nativeTransportRequired)
+            assertTrue(resolveGfnSessionConnections(session)!!.nativeTransportRequired)
             val webSocketSession = JsonObject(session + ("connectionInfo" to OpenNowJson.parseToJsonElement(
                 """[{"usage":14,"appLevelProtocol":4,"resourcePath":"wss://seat.yes.example/nvst/"}]""")))
-            assertTrue(resolveGfnSessionConnections(webSocketSession, yesBase)!!.nativeTransportRequired)
+            assertTrue(resolveGfnSessionConnections(webSocketSession)!!.nativeTransportRequired)
         }
     }
 
     @Test fun partnerSessionsWithoutReportedTransportKeepEndpointFallback() {
         for (request in listOf("{}", """{"secureRTSPSupported":false}""",
             """{"metaData":[null,1,{}, {"key":"Other","value":"WebRTC"}]}""")) {
-            assertTrue(resolveGfnSessionConnections(partnerSession(request), yesBase)!!.nativeTransportRequired)
+            assertTrue(resolveGfnSessionConnections(partnerSession(request))!!.nativeTransportRequired)
         }
         val session = partnerSession("""{"metaData":[{"key":"GSStreamerType","value":"WebRTC"}]}""")
-        assertFalse(resolveGfnSessionConnections(session, yesBase)!!.nativeTransportRequired)
+        assertFalse(resolveGfnSessionConnections(session)!!.nativeTransportRequired)
     }
 
-    @Test fun nvidiaAndUnknownProviderContextsPreserveEndpointBasedTransportSelection() {
-        for (base in listOf(null, "", "invalid", "https://cloudmatchbeta.nvidiagrid.net",
-            "https://prod.cloudmatchbeta.nvidiagrid.net", "https://np-sjc-01.cloudmatchbeta.nvidiagrid.net",
-            "https://cloudmatch.nvidiagrid.net", "https://np-sjc-01.cloudmatch.nvidiagrid.net",
-            "https://203.0.113.10", "https://[2001:db8::10]", "https://localhost")) {
-            val session = partnerSession(webRtcRequest)
-            assertTrue("base=$base", resolveGfnSessionConnections(session, base)!!.nativeTransportRequired)
+    @Test fun sessionsWithoutReportedTransportPreserveEndpointBasedSelection() {
+        for (request in listOf("{}", """{"secureRTSPSupported":false,"streamerVersion":"1"}""")) {
+            val session = partnerSession(request)
+            assertTrue(resolveGfnSessionConnections(session)!!.nativeTransportRequired)
             val webSocketSession = JsonObject(session + ("connectionInfo" to OpenNowJson.parseToJsonElement(
                 """[{"usage":14,"appLevelProtocol":4,"ip":"203.0.113.10","port":49003,"resourcePath":"/nvst/"}]""")))
-            val result = resolveGfnSessionConnections(webSocketSession, base)!!
-            assertFalse("base=$base", result.nativeTransportRequired)
+            val result = resolveGfnSessionConnections(webSocketSession)!!
+            assertFalse(result.nativeTransportRequired)
             assertEquals("wss://203.0.113.10/nvst/", result.signalingUrl)
             assertEquals(MediaConnectionInfo("203.0.113.10", 49003), result.mediaConnectionInfo)
         }
+    }
+
+    @Test fun sparsePollAndResumeRepliesRetainExplicitTransportForOnlyTheSameSession() {
+        val resolver = GfnSessionConnectionResolver()
+        fun seat(id: String, request: String) = JsonObject(partnerSession(request) + ("sessionId" to JsonPrimitive(id)))
+        assertFalse(resolver.resolve(seat("webrtc-seat", webRtcRequest))!!.nativeTransportRequired)
+        repeat(3) {
+            assertFalse(resolver.resolve(seat("webrtc-seat", "{}"))!!.nativeTransportRequired)
+        }
+        assertTrue(resolver.resolve(seat("different-seat", "{}"))!!.nativeTransportRequired)
+        assertTrue(resolver.resolve(seat("webrtc-seat", """{"secureRTSPSupported":true}"""))!!.nativeTransportRequired)
+        assertTrue(resolver.resolve(seat("webrtc-seat", "{}"))!!.nativeTransportRequired)
+    }
+
+    @Test fun transportIsRememberedBeforeQueueRepliesHaveUsableEndpointsAndRetentionIsBounded() {
+        val resolver = GfnSessionConnectionResolver(retainedSessionLimit = 2)
+        fun seat(id: String, request: String) = JsonObject(partnerSession(request) + ("sessionId" to JsonPrimitive(id)))
+        val queued = JsonObject(seat("first", webRtcRequest) + ("connectionInfo" to JsonArray(emptyList())))
+        assertNull(resolver.resolve(queued))
+        assertFalse(resolver.resolve(seat("first", "{}"))!!.nativeTransportRequired)
+        resolver.resolve(seat("second", webRtcRequest))
+        resolver.resolve(seat("third", webRtcRequest))
+        assertTrue(resolver.resolve(seat("first", "{}"))!!.nativeTransportRequired) // Evicted; use descriptor fallback.
+        assertFalse(resolver.resolve(seat("second", "{}"))!!.nativeTransportRequired)
+        assertFalse(resolver.resolve(seat("third", "{}"))!!.nativeTransportRequired)
     }
 
 }

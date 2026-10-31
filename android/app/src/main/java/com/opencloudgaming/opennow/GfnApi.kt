@@ -3113,6 +3113,8 @@ class GfnSessionRepository(
     private val isAndroidTv: Boolean = false,
     private val useDesktopNativeTvIdentity: Boolean = isAndroidTv,
 ) {
+    private val sessionConnections = GfnSessionConnectionResolver()
+
     suspend fun createSession(
         token: String,
         streamingBaseUrl: String?,
@@ -3250,7 +3252,7 @@ class GfnSessionRepository(
             val s = raw.asObject() ?: return@mapNotNull null
             val status = s.int("status") ?: return@mapNotNull null
             if (status !in setOf(1, 2, 3)) return@mapNotNull null
-            val connections = resolveGfnSessionConnections(s, base)
+            val connections = sessionConnections.resolve(s)
             val connIp = connections?.serverIp
             val controlIp = s.obj("sessionControlInfo")?.string("ip")
             val monitor = activeSessionMonitorSettings(s)
@@ -3310,6 +3312,7 @@ class GfnSessionRepository(
         val validation = runCatching { OpenNowJson.parseToJsonElement(validationText).jsonObject }.getOrNull()
         sessionClaimResponseFailure(validationCode, validation?.obj("requestStatus")?.int("statusCode"))
             ?.let { throw IllegalStateException(it) }
+        validation?.obj("session")?.let { sessionConnections.resolve(it) }
         val status = validation?.obj("session")?.int("status")
         if (status != null && isTerminalSessionStatus(status)) {
             val latestSession = runCatching {
@@ -3555,7 +3558,7 @@ class GfnSessionRepository(
         }
         val session = payload.obj("session") ?: error("CloudMatch response missing session")
         val sessionStatus = session.int("status") ?: 0
-        val signaling = runCatching { resolveSignaling(payload, base) }.getOrElse { error ->
+        val signaling = runCatching { resolveSignaling(payload) }.getOrElse { error ->
             if (sessionStatus in READY_SESSION_STATUSES) {
                 throw error
             }
@@ -3727,12 +3730,12 @@ class GfnSessionRepository(
 
     private fun streamingServerIp(payload: JsonObject): String? =
         payload.obj("session")?.let { session ->
-            resolveGfnSessionConnections(session)?.serverIp
+            sessionConnections.resolve(session)?.serverIp
                 ?: session.obj("sessionControlInfo")?.string("ip")?.let(::usableSessionHost)
         }
 
-    private fun resolveSignaling(payload: JsonObject, streamingBaseUrl: String): GfnSessionConnections =
-        resolveGfnSessionConnections(payload.obj("session") ?: error("Missing session"), streamingBaseUrl)
+    private fun resolveSignaling(payload: JsonObject): GfnSessionConnections =
+        sessionConnections.resolve(payload.obj("session") ?: error("Missing session"))
             ?: error("CloudMatch response did not include a signaling host")
 
     private fun isZoneHostname(value: String): Boolean =

@@ -224,7 +224,10 @@ internal class NvstTransport(
                 microphone.start()
                 NvstBridge.run(handle, nvstSessionContext(session, settings), this)
             } catch (error: Exception) {
-                if (!stopped) event("error", "NVST failed: ${error.javaClass.simpleName}")
+                if (!stopped) {
+                    NativeInputDiagnostics.addRetained("nvst.failure", boundedJavaCrashTrace(error))
+                    event("error", nvstFailureDetail(error))
+                }
             } finally {
                 stopped = true
                 inputReady = false
@@ -317,7 +320,7 @@ internal class NvstTransport(
         receivedBytes.addAndGet(bytes.remaining().toLong())
         if (!contiguous) needsKeyframe = true
         if (needsKeyframe && !keyframe) return false
-        val activeDecoder = decoder ?: run {
+        val activeDecoder = decoder ?: nvstDecoderOperation("initialization") {
             val created = decoderFactory.createDecoder(VideoCodecInfo(codec, emptyMap(), emptyList()))
                 ?: error("No Android decoder for negotiated NVST codec $codec")
             decoder = created
@@ -344,7 +347,7 @@ internal class NvstTransport(
         }
         val image = checkNotNull(decoderInput).frame(bytes, timestampNs, keyframe)
         return try {
-            val status = activeDecoder.decode(image, decodeInfo)
+            val status = nvstDecoderOperation("decode") { activeDecoder.decode(image, decodeInfo) }
             val accepted = status == VideoCodecStatus.OK
             needsKeyframe = !accepted
             accepted

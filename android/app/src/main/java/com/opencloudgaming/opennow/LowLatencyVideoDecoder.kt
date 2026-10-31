@@ -15,10 +15,12 @@ class LowLatencyVideoDecoder(
     private val requestedFps: Int,
     private val lowLatencyEnabled: Boolean,
     private val standardLowLatencyEnabled: Boolean = false,
+    private val tuningEnabled: Boolean = true,
 ) : VideoDecoder {
 
     private var patched = false
     private var wrapperInstalled = false
+    private var initializationCleanupFailed = false
     private val bufferProgress = CodecBufferProgress()
 
     internal val canBorrowEncodedInput: Boolean
@@ -37,7 +39,7 @@ class LowLatencyVideoDecoder(
     override fun release(): VideoCodecStatus {
         val result = delegate.release()
         if (wrapperInstalled) retainBufferProgress(force = true)
-        return result
+        return if (initializationCleanupFailed) VideoCodecStatus.ERROR else result
     }
 
     override fun decode(frame: EncodedImage?, info: VideoDecoder.DecodeInfo?): VideoCodecStatus {
@@ -46,6 +48,7 @@ class LowLatencyVideoDecoder(
 
     override fun getImplementationName(): String {
         val suffix = when {
+            !tuningEnabled -> "untuned"
             lowLatencyEnabled -> "low-latency"
             standardLowLatencyEnabled -> "platform-low-latency"
             else -> "performance"
@@ -81,19 +84,31 @@ class LowLatencyVideoDecoder(
                 originalFactory,
                 object : OpenNowMediaCodecTuning.Tuning {
                     override fun selectCodecName(originalName: String): String =
-                        selectStreamCodecName(originalName, lowLatencyEnabled)
+                        if (tuningEnabled) selectStreamCodecName(originalName, lowLatencyEnabled) else originalName
 
                     override fun configure(codecName: String, format: MediaFormat) {
                         NativeInputDiagnostics.add(
                             "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
                                 "lowLatency=$lowLatencyEnabled standardLowLatency=$standardLowLatencyEnabled before=$format",
                         )
-                        applyStreamFormat(format, codecName, requestedFps, lowLatencyEnabled, standardLowLatencyEnabled)
+                        if (tuningEnabled) {
+                            applyStreamFormat(format, codecName, requestedFps, lowLatencyEnabled, standardLowLatencyEnabled)
+                        }
                         NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
                     }
 
                     override fun started(codecName: String, parameters: OpenNowMediaCodecTuning.ParameterSetter) {
-                        applyStreamParameters(parameters, lowLatencyEnabled, standardLowLatencyEnabled)
+                        if (tuningEnabled) applyStreamParameters(parameters, lowLatencyEnabled, standardLowLatencyEnabled)
+                    }
+
+                    override fun initializationFailed(codecName: String, phase: String, error: RuntimeException) {
+                        NativeInputDiagnostics.addRetained("codec-initialization-error",
+                            "MediaCodec $phase failed decoder=$codecName ${boundedJavaCrashTrace(error)}")
+                    }
+
+                    override fun initializationCleanupFailed(codecName: String, error: RuntimeException) {
+                        // A second codec must not start when platform ownership is uncertain.
+                        initializationCleanupFailed = true
                     }
 
                     override fun inputQueued() = bufferProgress.inputQueued()
