@@ -146,19 +146,12 @@ class NativeTouchGamesTest {
     }
 
     @Test
-    fun websiteClientModeDisablesNativeTouchProvisioning() {
-        assertFalse(
+    fun nativeTouchProvisioningAllowedWithStreamSettings() {
+        assertTrue(
             shouldUseNativeTouch(
                 NativeTouchMode.Always,
                 game(supportedControls = listOf("TOUCHSCREEN")),
                 StreamSettings(browserClientMode = true),
-            ),
-        )
-        assertFalse(
-            shouldUseNativeTouch(
-                NativeTouchMode.Always,
-                game(supportedControls = listOf("TOUCHSCREEN")),
-                StreamSettings(browserClientMode = true).forProviderInput("OTHER"),
             ),
         )
     }

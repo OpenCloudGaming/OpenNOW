@@ -230,18 +230,10 @@ private fun cloudMatchClientIdentity(
     if (preferBrowserMode) {
         return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
-    // NVIDIA's native client class allocates RTSP-only touch seats even when the request
-    // echoes GSStreamerType=WebRTC. Keep the client class aligned with the chosen transport.
-    if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY && !preferNvstTransport &&
-        (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
-        return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
-    }
-    // NVST touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
-    // with Android os + TABLET device type, so the server allocates the full desktop
-    // resolution matrix (including ultrawide 2560×1080) while still enabling the
-    // native touch digitizer on the host.
+    // For touch-friendly launches, use NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY (or browser mode)
+    // so the server enables the touch digitizer for the game while streaming via WebRTC.
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
-        return NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY
+        return if (preferNvstTransport) NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY else NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
     if (appLaunchMode != null && preferNativeAndroidMode) {
         return when {

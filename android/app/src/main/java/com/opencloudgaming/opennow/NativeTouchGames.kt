@@ -53,7 +53,7 @@ internal fun shouldUseNativeTouch(
     mode: NativeTouchMode,
     game: GameInfo?,
     streamSettings: StreamSettings,
-): Boolean = !streamSettings.browserClientMode && shouldUseNativeTouch(mode, game)
+): Boolean = shouldUseNativeTouch(mode, game)
 
 /** Keep user's chosen browserClientMode setting across providers. */
 internal fun StreamSettings.forProviderInput(providerCode: String?): StreamSettings = this
