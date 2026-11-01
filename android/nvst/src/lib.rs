@@ -372,12 +372,9 @@ fn run(
                     .map_err(|e| e.to_string())?;
                 if let Some(index) = frame.frame_index {
                     if accepted {
-                        feedback.publish_accepted_frame(
-                            index,
-                            frame.payload.len() as u32,
-                            Instant::now(),
-                        );
+                        feedback.publish_accepted_frame(index, frame.payload.len() as u32);
                     } else {
+                        feedback.retire_undelivered_frame(index);
                         feedback.request_keyframe();
                     }
                 }

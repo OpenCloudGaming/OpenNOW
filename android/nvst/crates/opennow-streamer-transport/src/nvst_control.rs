@@ -8,9 +8,6 @@ pub(crate) const IDR_REQUEST_CODE: u16 = 0x302;
 
 pub(crate) const FRAME_ACK_PAYLOAD_LEN: usize = 102;
 pub(crate) const QOS_REPORT_PAYLOAD_LEN: usize = 52;
-// The official GFN client keeps the frame-pacing PID target at 16.666 ms even for a
-// 120 FPS encoded stream. This is a renderer/feedback target, not the encoded-frame interval.
-pub(crate) const DEFAULT_FRAME_TIME_US: u32 = 16_666;
 pub(crate) const QOS_REPORT_INTERVAL: Duration = Duration::from_millis(50);
 pub(crate) const MAX_CONTROL_BATCH_BYTES: usize = 1071;
 
@@ -92,25 +89,22 @@ pub(crate) fn nack_v2(stream_index: u8, missing: &[u16]) -> Option<NvstControlCo
 
 pub(crate) fn frame_ack(
     frame_number: u32,
-    client_time_ms: f64,
+    first_packet_time_ms: Option<f64>,
     frame_bytes: u32,
-    frame_time_us: u32,
-    measured_stage_ms: Option<f32>,
 ) -> NvstControlCommand {
     let mut payload = vec![0; FRAME_ACK_PAYLOAD_LEN];
     put_u16(&mut payload, 0, 1);
     put_u16(&mut payload, 2, 9);
     put_u32(&mut payload, 4, frame_number);
-    put_u64(&mut payload, 12, client_time_ms.to_bits());
-    if let Some(stage_ms) = measured_stage_ms.filter(|value| value.is_finite() && *value >= 0.0) {
-        for offset in (28..=44).step_by(4) {
-            put_u32(&mut payload, offset, stage_ms.to_bits());
-        }
+    if let Some(first_packet_time_ms) = first_packet_time_ms {
+        put_u64(&mut payload, 12, first_packet_time_ms.to_bits());
     }
-    put_u32(&mut payload, 48, (-1.0_f32).to_bits());
+    for offset in (20..=48).step_by(4) {
+        put_u32(&mut payload, offset, (-1.0_f32).to_bits());
+    }
     put_u32(&mut payload, 72, frame_bytes);
-    put_u32(&mut payload, 84, 16_384);
-    put_u32(&mut payload, 96, frame_time_us);
+    put_u32(&mut payload, 94, (-1.0_f32).to_bits());
+    put_u32(&mut payload, 98, (-1.0_f32).to_bits());
     NvstControlCommand {
         code: FRAME_ACK_CODE,
         payload,
@@ -166,9 +160,7 @@ mod tests {
 
     #[test]
     fn batching_preserves_records_and_bounds_each_sctp_message() {
-        let records: Vec<_> = (0..25)
-            .map(|frame| frame_ack(frame, 0.0, 1, 16666, None))
-            .collect();
+        let records: Vec<_> = (0..25).map(|frame| frame_ack(frame, None, 1)).collect();
         let expected: Vec<_> = records
             .iter()
             .flat_map(NvstControlCommand::encoded)
@@ -204,7 +196,7 @@ mod tests {
 
     #[test]
     fn frame_ack_places_only_source_pinned_fields() {
-        let command = frame_ack(42, 20_320.16, 15_168, 16_667, Some(4.5));
+        let command = frame_ack(42, Some(20_320.16), 15_168);
         assert_eq!(command.code, FRAME_ACK_CODE);
         assert_eq!(command.payload.len(), FRAME_ACK_PAYLOAD_LEN);
         assert_eq!(&command.payload[0..4], &[1, 0, 9, 0]);
@@ -216,10 +208,10 @@ mod tests {
             u64::from_le_bytes(command.payload[12..20].try_into().unwrap()),
             20_320.16_f64.to_bits()
         );
-        for offset in (28..=44).step_by(4) {
+        for offset in (20..=48).step_by(4) {
             assert_eq!(
                 u32::from_le_bytes(command.payload[offset..offset + 4].try_into().unwrap()),
-                4.5_f32.to_bits()
+                (-1.0_f32).to_bits()
             );
         }
         assert_eq!(
@@ -232,25 +224,32 @@ mod tests {
         );
         assert_eq!(
             u32::from_le_bytes(command.payload[84..88].try_into().unwrap()),
-            16_384
+            0
         );
         assert_eq!(
-            u32::from_le_bytes(command.payload[96..100].try_into().unwrap()),
-            16_667
+            u32::from_le_bytes(command.payload[94..98].try_into().unwrap()),
+            (-1.0_f32).to_bits()
         );
-        assert_eq!(&command.payload[100..102], &[0, 0]);
+        assert_eq!(&command.payload[98..102], &(-1.0_f32).to_le_bytes());
         assert_eq!(
             command.payload,
             hex(
-                "010009002a00000000000000d7a3703d0ad8d34000000000000000000000904000009040000090400000904000009040000080bf0000000000000000000000000000000000000000403b000000000000000000000040000000000000000000001b4100000000"
+                "010009002a00000000000000d7a3703d0ad8d340000080bf000080bf000080bf000080bf000080bf000080bf000080bf000080bf0000000000000000000000000000000000000000403b0000000000000000000000000000000000000000000080bf000080bf"
             )
         );
     }
 
     #[test]
     fn frame_ack_leaves_unavailable_stage_metrics_zero() {
-        let command = frame_ack(1, 0.0, 7, DEFAULT_FRAME_TIME_US, None);
-        assert!(command.payload[28..48].iter().all(|byte| *byte == 0));
+        let command = frame_ack(1, None, 7);
+        assert_eq!(&command.payload[12..20], &[0; 8]);
+        assert_eq!(&command.payload[56..60], &[0; 4]);
+        for offset in (20..=48).step_by(4) {
+            assert_eq!(
+                &command.payload[offset..offset + 4],
+                &(-1.0_f32).to_le_bytes()
+            );
+        }
     }
 
     #[test]
