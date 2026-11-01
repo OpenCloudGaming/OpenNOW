@@ -35,8 +35,7 @@ use str0m::rtp::Ssrc;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::nvst_control::{
-    DEFAULT_FRAME_TIME_US, QOS_REPORT_INTERVAL, QosReport, batch_control_records, frame_ack,
-    idr_request, nack_v2,
+    QOS_REPORT_INTERVAL, QosReport, batch_control_records, frame_ack, idr_request, nack_v2,
 };
 use super::nvst_input::{
     NvstInputChannelState, NvstInputChannels, NvstInputCodec, native_input_type_is_motion,
@@ -324,7 +323,23 @@ struct RtcpReportBlock {
 struct CompletedFrameFeedback {
     frame_number: u32,
     bytes: u32,
-    accepted_at: Instant,
+    first_packet_at: Option<Instant>,
+}
+
+impl CompletedFrameFeedback {
+    fn command(&self, origin: Instant) -> super::nvst_control::NvstControlCommand {
+        let first_packet_time_ms = self
+            .first_packet_at
+            .map(|first_at| first_at.saturating_duration_since(origin).as_secs_f64() * 1_000.0);
+        frame_ack(self.frame_number, first_packet_time_ms, self.bytes)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FramePacketTiming {
+    frame_number: u32,
+    first_at: Instant,
+    assembled: bool,
 }
 
 #[derive(Debug)]
@@ -347,6 +362,7 @@ pub struct NvstFeedbackState {
     last_completed_rtp_timestamp: AtomicU32,
     last_completed_frame_number: AtomicU32,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
+    frame_packet_timings: Mutex<VecDeque<FramePacketTiming>>,
 }
 
 impl Default for NvstFeedbackState {
@@ -366,6 +382,7 @@ impl Default for NvstFeedbackState {
             last_completed_rtp_timestamp: AtomicU32::new(0),
             last_completed_frame_number: AtomicU32::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
+            frame_packet_timings: Mutex::new(VecDeque::new()),
         }
     }
 }
@@ -436,6 +453,16 @@ impl NvstFeedbackState {
     }
 
     fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
+        if let Some(timing) = self
+            .frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.frame_number == frame.frame_index)
+        {
+            timing.assembled = true;
+        }
         self.last_completed_frame_number
             .store(frame.frame_index, Ordering::Release);
         self.completed_frames.fetch_add(1, Ordering::AcqRel);
@@ -458,7 +485,50 @@ impl NvstFeedbackState {
         }
     }
 
-    pub fn publish_accepted_frame(&self, frame_number: u32, bytes: u32, accepted_at: Instant) {
+    fn record_frame_packet(&self, frame_number: u32, received_at: Instant) {
+        let mut timings = self
+            .frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(timing) = timings
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.frame_number == frame_number)
+        {
+            if !timing.assembled {
+                timing.first_at = timing.first_at.min(received_at);
+            }
+            return;
+        }
+        if timings.len() == MAX_PENDING_FRAME_ACKS {
+            timings.pop_front();
+        }
+        timings.push_back(FramePacketTiming {
+            frame_number,
+            first_at: received_at,
+            assembled: false,
+        });
+    }
+
+    pub fn retire_undelivered_frame(&self, frame_number: u32) {
+        self.frame_packet_timings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|entry| entry.frame_number != frame_number);
+    }
+
+    pub fn publish_accepted_frame(&self, frame_number: u32, bytes: u32) {
+        let first_packet_at = {
+            let mut timings = self
+                .frame_packet_timings
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            timings
+                .iter()
+                .position(|entry| entry.frame_number == frame_number && entry.assembled)
+                .and_then(|position| timings.remove(position))
+                .map(|timing| timing.first_at)
+        };
         let mut pending = self
             .pending_frame_acks
             .lock()
@@ -469,7 +539,7 @@ impl NvstFeedbackState {
         pending.push_back(CompletedFrameFeedback {
             frame_number,
             bytes,
-            accepted_at,
+            first_packet_at,
         });
     }
 
@@ -658,7 +728,6 @@ pub struct NvstVideoConfig {
     reorder_window_packets: usize,
     max_access_unit_bytes: usize,
     timeout: Duration,
-    frame_time_us: u32,
     /// Negotiated `x-nv-video[0].packetSize`; FEC shards are this plus 16 RTP bytes.
     video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
@@ -690,7 +759,6 @@ impl fmt::Debug for NvstVideoConfig {
             .field("reorder_window_packets", &self.reorder_window_packets)
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
-            .field("frame_time_us", &self.frame_time_us)
             .field("video_packet_size", &self.video_packet_size)
             .finish()
     }
@@ -1007,7 +1075,6 @@ impl NvstVideoConfig {
             reorder_window_packets,
             max_access_unit_bytes,
             timeout,
-            frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
         })
@@ -3410,6 +3477,11 @@ impl NvstVideoReceiver {
                 actual: packet.header.ssrc,
             })];
         }
+        if let Some(extension) = packet.header.gs_video_header {
+            let frame_number =
+                u32::from_le_bytes(extension[4..8].try_into().expect("GS header length"));
+            self.config.feedback.record_frame_packet(frame_number, now);
+        }
         self.bound_ssrc.get_or_insert(packet.header.ssrc);
         self.last_authenticated_packet = Some(now);
         self.authenticated_packets += 1;
@@ -3545,6 +3617,9 @@ impl NvstVideoReceiver {
     }
 
     fn invalidate_picture(&mut self) {
+        if let Some(frame_number) = self.assembler.current_frame {
+            self.config.feedback.retire_undelivered_frame(frame_number);
+        }
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
@@ -4851,7 +4926,6 @@ fn run_nvst_webrtc_bundle(
     // PLAY starts with an IDR. Recovery is armed only by actual loss/rejection,
     // avoiding an extra startup IDR before the application protocol is ready.
     let audio_track = config.audio_track().cloned();
-    let frame_time_us = config.frame_time_us;
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
@@ -5204,18 +5278,7 @@ fn run_nvst_webrtc_bundle(
             let mut ack_count = 0_u64;
             let mut newest_ack = None;
             while let Some(frame) = feedback.take_completed_frame() {
-                let client_time_ms = frame
-                    .accepted_at
-                    .saturating_duration_since(transport_origin)
-                    .as_secs_f64()
-                    * 1_000.0;
-                records.push(frame_ack(
-                    frame.frame_number,
-                    client_time_ms,
-                    frame.bytes,
-                    frame_time_us,
-                    None,
-                ));
+                records.push(frame.command(transport_origin));
                 ack_count += 1;
                 newest_ack = Some(frame.frame_number);
             }
@@ -7061,14 +7124,28 @@ mod tests {
         }))
         .expect("valid NVST context")
         .expect("NVST handoff");
-        assert_eq!(configured.frame_time_us, DEFAULT_FRAME_TIME_US);
+        configured.feedback.publish_accepted_frame(42, 7);
+        let ack = configured
+            .feedback
+            .take_completed_frame()
+            .unwrap()
+            .command(Instant::now());
+        assert_eq!(&ack.payload[94..98], &(-1.0_f32).to_le_bytes());
+        assert_eq!(&ack.payload[98..102], &(-1.0_f32).to_le_bytes());
         let capped = parse_nvst_video_handoff(&json!({
             "nvstVideo": legacy_handoff(),
             "settings": { "fps": 360 }
         }))
         .expect("valid high-FPS NVST context")
         .expect("NVST handoff");
-        assert_eq!(capped.frame_time_us, DEFAULT_FRAME_TIME_US);
+        capped.feedback.publish_accepted_frame(43, 8);
+        let ack = capped
+            .feedback
+            .take_completed_frame()
+            .unwrap()
+            .command(Instant::now());
+        assert_eq!(&ack.payload[94..98], &(-1.0_f32).to_le_bytes());
+        assert_eq!(&ack.payload[98..102], &(-1.0_f32).to_le_bytes());
         assert!(matches!(
             parse_nvst_video_handoff(&json!({ "nvstTransport": { "tracks": [] } })),
             Err(NvstConfigError::MissingNvstVideoHandoff)
@@ -7710,7 +7787,7 @@ mod tests {
         assert_eq!(feedback.take_nack(Instant::now()), None);
         assert_eq!(feedback.completed_frame_snapshot(), (1, 7, frame.timestamp));
         assert!(feedback.take_completed_frame().is_none());
-        feedback.publish_accepted_frame(frame.frame_index, 7, Instant::now());
+        feedback.publish_accepted_frame(frame.frame_index, 7);
         let pending_ack = feedback
             .take_completed_frame()
             .expect("accepted frame acknowledgment");
@@ -7722,7 +7799,7 @@ mod tests {
     fn accepted_frame_queue_discards_stale_feedback_and_preserves_sequence_numbers() {
         let feedback = NvstFeedbackState::default();
         for frame_number in 1..=u32::try_from(MAX_PENDING_FRAME_ACKS + 2).unwrap() {
-            feedback.publish_accepted_frame(frame_number, frame_number, Instant::now());
+            feedback.publish_accepted_frame(frame_number, frame_number);
         }
 
         let first = feedback.take_completed_frame().expect("newest queue head");
@@ -7735,6 +7812,191 @@ mod tests {
         }
         assert_eq!(last.frame_number, 514);
         assert_eq!(last.bytes, 514);
+    }
+
+    #[test]
+    fn frame_ack_uses_first_authenticated_packet_instead_of_decoder_acceptance() {
+        let config = config();
+        let feedback = config.feedback();
+        let crypto = test_srtp(&config);
+        let first = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                10,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                42,
+                &[0, 0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let last = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(11, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, 42, &[0xaa]),
+            0,
+        );
+        let mut invalid = first.clone();
+        *invalid.last_mut().unwrap() ^= 1;
+        let mut receiver = NvstVideoReceiver::new(config);
+        let origin = Instant::now();
+        assert!(matches!(
+            receiver.process_datagram(peer(), &invalid, origin + Duration::from_millis(1))[..],
+            [NvstReceiveEvent::Dropped(_)]
+        ));
+        assert!(
+            receiver
+                .process_datagram(peer(), &first, origin + Duration::from_millis(7))
+                .is_empty()
+        );
+        let events = receiver.process_datagram(peer(), &last, origin + Duration::from_millis(15));
+        assert!(matches!(events[..], [NvstReceiveEvent::Frame(_)]));
+        assert!(feedback.take_completed_frame().is_none());
+        feedback.publish_accepted_frame(42, 6);
+        let ack = feedback.take_completed_frame().unwrap().command(origin);
+        assert_eq!(&ack.payload[12..20], &7.0_f64.to_le_bytes());
+        assert_eq!(&ack.payload[4..8], &42_u32.to_le_bytes());
+        assert_eq!(&ack.payload[72..76], &6_u32.to_le_bytes());
+        feedback.publish_accepted_frame(43, 6);
+        let unknown = feedback.take_completed_frame().unwrap().command(origin);
+        assert_eq!(&unknown.payload[12..20], &[0; 8]);
+    }
+
+    #[test]
+    fn frame_packet_timing_is_bounded_retired_and_not_reused_by_unknown_frames() {
+        let feedback = NvstFeedbackState::default();
+        let origin = Instant::now();
+        for frame in 0..=MAX_PENDING_FRAME_ACKS as u32 {
+            feedback.record_frame_packet(frame, origin + Duration::from_millis(u64::from(frame)));
+        }
+        let timings = feedback.frame_packet_timings.lock().unwrap();
+        assert_eq!(timings.len(), MAX_PENDING_FRAME_ACKS);
+        assert_eq!(timings.front().unwrap().frame_number, 1);
+        drop(timings);
+        feedback.retire_undelivered_frame(1);
+        feedback.publish_accepted_frame(1, 7);
+        assert_eq!(
+            feedback.take_completed_frame().unwrap().first_packet_at,
+            None
+        );
+        feedback.publish_accepted_frame(2, 7);
+        assert_eq!(
+            feedback.take_completed_frame().unwrap().first_packet_at,
+            None
+        );
+    }
+
+    #[test]
+    fn invalidating_a_picture_preserves_completed_frame_timing_only() {
+        let config = config();
+        let feedback = config.feedback();
+        let crypto = test_srtp(&config);
+        let complete = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                10,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                42,
+                &[0, 0, 0, 1, 0x65, 0xaa],
+            ),
+            0,
+        );
+        let partial = protect_for_test(
+            &crypto,
+            build_plaintext_rtp(
+                11,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                43,
+                &[0, 0, 0, 1, 0x61],
+            ),
+            0,
+        );
+        let origin = Instant::now();
+        let mut receiver = NvstVideoReceiver::new(config);
+        assert!(matches!(
+            receiver.process_datagram(peer(), &complete, origin + Duration::from_millis(7))[..],
+            [NvstReceiveEvent::Frame(_)]
+        ));
+        assert!(
+            receiver
+                .process_datagram(peer(), &partial, origin + Duration::from_millis(12))
+                .is_empty()
+        );
+        receiver.invalidate_picture();
+        feedback.publish_accepted_frame(42, 6);
+        let ack = feedback.take_completed_frame().unwrap().command(origin);
+        assert_eq!(&ack.payload[12..20], &7.0_f64.to_le_bytes());
+        assert!(feedback.frame_packet_timings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn replacing_an_incomplete_picture_preserves_the_new_frame_first_packet_time() {
+        for single_packet in [false, true] {
+            let config = config();
+            let feedback = config.feedback();
+            let crypto = test_srtp(&config);
+            let partial = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(
+                    10,
+                    FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                    41,
+                    &[0, 0, 0, 1, 0x65],
+                ),
+                0,
+            );
+            let first = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(
+                    11,
+                    FLAG_SOF | FLAG_CONTAINS_PIC_DATA | if single_packet { FLAG_EOF } else { 0 },
+                    42,
+                    &[0, 0, 0, 1, 0x65],
+                ),
+                0,
+            );
+            let last = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(12, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, 42, &[0xaa]),
+                0,
+            );
+            let origin = Instant::now();
+            let mut receiver = NvstVideoReceiver::new(config);
+            assert!(
+                receiver
+                    .process_datagram(peer(), &partial, origin + Duration::from_millis(3))
+                    .is_empty()
+            );
+            let mut events =
+                receiver.process_datagram(peer(), &first, origin + Duration::from_millis(7));
+            if !single_packet {
+                events.extend(receiver.process_datagram(
+                    peer(),
+                    &last,
+                    origin + Duration::from_millis(15),
+                ));
+            }
+            assert!(events.iter().any(|event| matches!(
+                event,
+                NvstReceiveEvent::Dropped(NvstDropReason::FrameDiscontinuity)
+            )));
+            let frame = events
+                .iter()
+                .find_map(|event| match event {
+                    NvstReceiveEvent::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(frame.frame_index, 42);
+            assert!(frame.keyframe);
+            assert!(!frame.contiguous);
+            feedback.publish_accepted_frame(42, frame.bytes.len() as u32);
+            let ack = feedback.take_completed_frame().unwrap().command(origin);
+            assert_eq!(
+                &ack.payload[12..20],
+                &7.0_f64.to_le_bytes(),
+                "single_packet={single_packet}"
+            );
+            assert!(feedback.frame_packet_timings.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

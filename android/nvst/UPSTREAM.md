@@ -72,6 +72,25 @@ affected RMX3890 still requires an updated build and device verification.
 To refresh, compare the two crates and src/nvst_rtsp.rs against native/opennow-streamer
 at the recorded upstream revision, retaining the Android lifecycle differences.
 
+Frame acknowledgement timing correction (2026-11-01), selectively backported from
+dev commit 3abf24d7f315 (`nvst.rs` and `nvst_control.rs`): Android now records the
+first authenticated packet arrival for each sender-authored frame number, retains
+that timestamp through assembly, and sends it only after the decoder accepts the
+frame. The bounded timing history discards incomplete pictures on reference
+invalidation and retires decoder-rejected frames. Missing or evicted measurements
+stay unknown instead of being replaced by the time Android submitted the frame.
+Invalidation retires only the assembler's discarded picture, preserving the first
+arrival of a replacement SOF and completed frames still awaiting decoder acceptance.
+
+The 102-byte v9 frame acknowledgement now uses the upstream unknown-stage
+sentinels, removes the synthetic value at offset 84, and leaves the two trailing
+float timing fields at offsets 94 and 98 unknown. The previous write of a nominal
+frame interval at offset 96 overlapped both fields. This does not add v5
+presentation timing, bandwidth estimation, or a new transport-selection policy.
+Byte-exact encoder and authenticated packet tests cover these corrections; they
+do not establish that a particular reported blur, FPS drop, or 4K stream failure
+has been resolved on an affected Android TV.
+
 Android now sends native touch records through the reliable RemoteInput envelope, forwards
 bounded server input notifications to the Android haptics parser, and initially advertises haptics
 disabled until Android supplies the actual user/device capability. The microphone sender uses the
