@@ -59,7 +59,7 @@ internal fun buildGfnSignInUrl(
         "wss://$authorityAndPath/sign_in"
     }
     fun queryValue(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
-    val version = if (reconnect) "3.0" else "2"
+    val version = "3.0"
     return buildString {
         append(signInBase)
         append("?peer_id=")
@@ -242,7 +242,8 @@ class GfnSignalingClient(
         // different JSON shape, which would escape OkHttp's callback and kill the process.
         val peerInfo = parsed["peer_info"] as? JsonObject
         peerInfo?.let { info ->
-            onEvent(SignalingEvent.Log("Signaling peer registration local=${(info["name"] as? JsonPrimitive)?.contentOrNull == peerName} id=${(info["id"] as? JsonPrimitive)?.intOrNull} role=${(info["peerRole"] as? JsonPrimitive)?.intOrNull}"))
+            val role = (info["peer_role"] as? JsonPrimitive)?.intOrNull ?: (info["peerRole"] as? JsonPrimitive)?.intOrNull
+            onEvent(SignalingEvent.Log("Signaling peer registration local=${(info["name"] as? JsonPrimitive)?.contentOrNull == peerName} id=${(info["id"] as? JsonPrimitive)?.intOrNull} role=$role"))
             if ((info["name"] as? JsonPrimitive)?.contentOrNull == peerName) {
                 peerId = (info["id"] as? JsonPrimitive)?.intOrNull ?: peerId
             }
@@ -293,7 +294,7 @@ class GfnSignalingClient(
         onEvent(SignalingEvent.Log("Sending peer info resolution=${width}x$height peer=$peerName"))
         sendJson(
             """
-            {"ackid":${nextAckId()},"peer_info":{"browser":"Chrome","browserVersion":"131","connected":true,"id":$peerId,"name":"$peerName","peerRole":0,"resolution":"${width}x$height","version":2}}
+            {"ackid":${nextAckId()},"peer_info":{"browser":"Chrome","browserVersion":"131.0.0.0","connected":true,"id":$peerId,"name":"$peerName","peer_role":1,"resolution":"${width}x$height","signalingVersion":"3.0","version":3}}
             """.trimIndent(),
             "peer_info",
         )

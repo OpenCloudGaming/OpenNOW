@@ -100,7 +100,7 @@ class GfnSessionConnectionsTest {
             assertEquals("wss://203.0.113.10$path", result.signalingUrl)
             assertEquals("203.0.113.10:443", result.signalingServer)
             assertEquals(MediaConnectionInfo("203.0.113.10", 49003), result.mediaConnectionInfo)
-            assertEquals("wss://203.0.113.10/nvst/sign_in?peer_id=peer-test&version=2&peer_role=1&pairing_id=session-test",
+            assertEquals("wss://203.0.113.10/nvst/sign_in?peer_id=peer-test&version=3.0&peer_role=1&pairing_id=session-test",
                 buildGfnSignInUrl(result.signalingUrl, result.signalingServer, "peer-test", "session-test", reconnect = false))
         }
     }
@@ -164,7 +164,7 @@ class GfnSessionConnectionsTest {
             assertEquals(MediaConnectionInfo("203.0.113.20", 13334), result.mediaConnectionInfo)
             assertEquals(MediaConnectionInfo("203.0.113.20", 18342), result.bundleConnectionInfo)
             assertEquals(
-                "wss://seat.yes.example/nvst/sign_in?peer_id=peer&version=2&peer_role=1&pairing_id=seat",
+                "wss://seat.yes.example/nvst/sign_in?peer_id=peer&version=3.0&peer_role=1&pairing_id=seat",
                 buildGfnSignInUrl(result.signalingUrl, result.signalingServer, "peer", "seat", reconnect = false),
             )
             val session = SessionInfo("seat", status, streamingBaseUrl = yesBase,

@@ -55,9 +55,8 @@ internal fun shouldUseNativeTouch(
     streamSettings: StreamSettings,
 ): Boolean = !streamSettings.browserClientMode && shouldUseNativeTouch(mode, game)
 
-/** Alliance sessions retain their native touch behavior when the NVIDIA-only option is saved. */
-internal fun StreamSettings.forProviderInput(providerCode: String?): StreamSettings =
-    if (!browserClientMode || providerCode.equals("NVIDIA", ignoreCase = true)) this else copy(browserClientMode = false)
+/** Keep user's chosen browserClientMode setting across providers. */
+internal fun StreamSettings.forProviderInput(providerCode: String?): StreamSettings = this
 
 /**
  * Resolves native game touch for the active stream after the player has made a session-level

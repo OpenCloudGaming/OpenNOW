@@ -154,7 +154,7 @@ class NativeTouchGamesTest {
                 StreamSettings(browserClientMode = true),
             ),
         )
-        assertTrue(
+        assertFalse(
             shouldUseNativeTouch(
                 NativeTouchMode.Always,
                 game(supportedControls = listOf("TOUCHSCREEN")),

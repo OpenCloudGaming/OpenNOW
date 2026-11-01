@@ -14,7 +14,7 @@ class StreamSignalingFailureTest {
     fun freshSignalingUsesTheExistingProtocolWithoutReconnectMarker() {
         assertEquals(
             "wss://stream.example.test/nvst/sign_in?" +
-                "peer_id=peer-fresh&version=2&peer_role=1&pairing_id=session-fresh",
+                "peer_id=peer-fresh&version=3.0&peer_role=1&pairing_id=session-fresh",
             buildGfnSignInUrl(
                 signalingUrl = "wss://stream.example.test/nvst/",
                 signalingServer = "ignored.example.test:443",
