@@ -5062,12 +5062,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun prepareNewSessionInput(game: GameInfo?, settings: StreamSettings): StreamSettings {
         val mode = resolveStreamInputModeAtLaunch(game, settings, allowWebsiteClientOverride = true)
         val resolvedSettings = settings.forStreamInputMode(mode)
-        if (mode == StreamInputMode.NativeTouch &&
-            (settings.browserClientMode || settingsStore.settings.value.stream.browserClientMode)
-        ) {
-            updateStreamSettings { it.forStreamInputMode(mode) }
-            recordDebugEvent("input", "Website client mode disabled by native touch launch choice")
-        }
+        // Keep user's settings intact on native touch launch
         _state.update { it.copy(activeStreamSettings = resolvedSettings) }
         return resolvedSettings
     }

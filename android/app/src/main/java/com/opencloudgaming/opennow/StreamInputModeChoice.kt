@@ -11,8 +11,7 @@ internal data class LaunchInputModeChoice(
 )
 
 /** Clear website-only input restrictions; CloudMatch media identity follows the NVST choice. */
-internal fun StreamSettings.forStreamInputMode(mode: StreamInputMode): StreamSettings =
-    if (mode == StreamInputMode.NativeTouch && browserClientMode) copy(browserClientMode = false) else this
+internal fun StreamSettings.forStreamInputMode(mode: StreamInputMode): StreamSettings = this
 
 /** A saved keyboard overlay preference must not override the host's selected touch mode. */
 internal fun keyboardOverlayEnabledForStream(

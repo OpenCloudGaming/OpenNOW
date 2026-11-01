@@ -225,23 +225,15 @@ private fun cloudMatchClientIdentity(
     preferNativeAndroidMode: Boolean = false,
     preferNvstTransport: Boolean = false,
 ): CloudMatchClientIdentity {
-    // The opt-in applies only to NVIDIA. Alliance client identities are provider-owned.
+    // Website client mode uses NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY (WebRTC platform="browser")
     val host = streamingBaseUrl?.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
-    if (preferBrowserMode && (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
+    if (preferBrowserMode) {
         return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
-    // NVIDIA's native client class allocates RTSP-only touch seats even when the request
-    // echoes GSStreamerType=WebRTC. Keep the client class aligned with the chosen transport.
-    if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY && !preferNvstTransport &&
-        (streamingBaseUrl.isNullOrBlank() || host?.let(::isNvidiaCloudMatchHost) == true)) {
-        return NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
-    }
-    // NVST touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
-    // with Android os + TABLET device type, so the server allocates the full desktop
-    // resolution matrix (including ultrawide 2560×1080) while still enabling the
-    // native touch digitizer on the host.
+    // For touch-friendly launches, use NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY (or browser mode)
+    // so the server enables the touch digitizer for the game while streaming via WebRTC.
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
-        return NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY
+        return if (preferNvstTransport) NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY else NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
     if (appLaunchMode != null && preferNativeAndroidMode) {
         return when {
@@ -273,7 +265,7 @@ private fun cloudMatchPlatformName(identity: CloudMatchClientIdentity, appLaunch
 
 /** Keep YES allocation aligned with its working native Android streaming path. */
 private fun CloudMatchClientIdentity.requiresNativeSessionTransport(streamingBaseUrl: String?): Boolean =
-    this == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY || requiresNativeAllianceCloudMatchTransport(streamingBaseUrl)
+    this != NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY && (this == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY || requiresNativeAllianceCloudMatchTransport(streamingBaseUrl))
 
 internal fun isNvidiaShieldTvDevice(
     androidTvProfile: Boolean,
