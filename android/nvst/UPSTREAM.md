@@ -79,6 +79,8 @@ that timestamp through assembly, and sends it only after the decoder accepts the
 frame. The bounded timing history discards incomplete pictures on reference
 invalidation and retires decoder-rejected frames. Missing or evicted measurements
 stay unknown instead of being replaced by the time Android submitted the frame.
+Invalidation retires only the assembler's discarded picture, preserving the first
+arrival of a replacement SOF and completed frames still awaiting decoder acceptance.
 
 The 102-byte v9 frame acknowledgement now uses the upstream unknown-stage
 sentinels, removes the synthetic value at offset 84, and leaves the two trailing

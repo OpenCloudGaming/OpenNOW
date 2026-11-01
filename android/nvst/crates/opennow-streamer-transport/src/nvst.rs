@@ -3617,15 +3617,12 @@ impl NvstVideoReceiver {
     }
 
     fn invalidate_picture(&mut self) {
+        if let Some(frame_number) = self.assembler.current_frame {
+            self.config.feedback.retire_undelivered_frame(frame_number);
+        }
         self.assembler.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
-        self.config
-            .feedback
-            .frame_packet_timings
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|timing| timing.assembled);
         self.config.feedback.request_keyframe();
     }
 
@@ -7928,6 +7925,78 @@ mod tests {
         let ack = feedback.take_completed_frame().unwrap().command(origin);
         assert_eq!(&ack.payload[12..20], &7.0_f64.to_le_bytes());
         assert!(feedback.frame_packet_timings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn replacing_an_incomplete_picture_preserves_the_new_frame_first_packet_time() {
+        for single_packet in [false, true] {
+            let config = config();
+            let feedback = config.feedback();
+            let crypto = test_srtp(&config);
+            let partial = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(
+                    10,
+                    FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                    41,
+                    &[0, 0, 0, 1, 0x65],
+                ),
+                0,
+            );
+            let first = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(
+                    11,
+                    FLAG_SOF | FLAG_CONTAINS_PIC_DATA | if single_packet { FLAG_EOF } else { 0 },
+                    42,
+                    &[0, 0, 0, 1, 0x65],
+                ),
+                0,
+            );
+            let last = protect_for_test(
+                &crypto,
+                build_plaintext_rtp(12, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, 42, &[0xaa]),
+                0,
+            );
+            let origin = Instant::now();
+            let mut receiver = NvstVideoReceiver::new(config);
+            assert!(
+                receiver
+                    .process_datagram(peer(), &partial, origin + Duration::from_millis(3))
+                    .is_empty()
+            );
+            let mut events =
+                receiver.process_datagram(peer(), &first, origin + Duration::from_millis(7));
+            if !single_packet {
+                events.extend(receiver.process_datagram(
+                    peer(),
+                    &last,
+                    origin + Duration::from_millis(15),
+                ));
+            }
+            assert!(events.iter().any(|event| matches!(
+                event,
+                NvstReceiveEvent::Dropped(NvstDropReason::FrameDiscontinuity)
+            )));
+            let frame = events
+                .iter()
+                .find_map(|event| match event {
+                    NvstReceiveEvent::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(frame.frame_index, 42);
+            assert!(frame.keyframe);
+            assert!(!frame.contiguous);
+            feedback.publish_accepted_frame(42, frame.bytes.len() as u32);
+            let ack = feedback.take_completed_frame().unwrap().command(origin);
+            assert_eq!(
+                &ack.payload[12..20],
+                &7.0_f64.to_le_bytes(),
+                "single_packet={single_packet}"
+            );
+            assert!(feedback.frame_packet_timings.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
