@@ -30,8 +30,8 @@ object OpenNowMotion {
 val LocalReduceMotion = staticCompositionLocalOf { false }
 
 /**
- * User/system motion preference for the short-lived controller focus effect. Capability-based
- * background throttling must not silently turn an explicitly enabled focus effect into a static
- * border on TV.
+ * User/system motion preference for foreground feedback such as controller focus and loading
+ * indicators. Capability-based background throttling must not freeze these small indicators
+ * on constrained TV devices.
  */
-val LocalReduceControllerFocusMotion = staticCompositionLocalOf { false }
+val LocalReduceForegroundMotion = staticCompositionLocalOf { false }

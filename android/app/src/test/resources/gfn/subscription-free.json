@@ -1,0 +1,733 @@
+{
+    "autoPaymentState": "NOT_APPLICABLE",
+    "features": {
+        "features": [
+            {
+                "key": "SUPPORTED_AUDIO_FORMATS",
+                "textValue": "STEREO"
+            },
+            {
+                "key": "ENABLED_FPS",
+                "setValue": [
+                    "60",
+                    "30"
+                ]
+            },
+            {
+                "key": "ENABLED_DEBUG_TOOLS",
+                "textValue": "false"
+            },
+            {
+                "key": "BIT_DEPTH",
+                "textValue": "[{\"value\":\"8\",\"isEntitled\":true}]"
+            },
+            {
+                "key": "SUPPORTED_CHROMA_FORMAT",
+                "textValue": "[{\"value\":\"YUV420\",\"isEntitled\":true}]"
+            },
+            {
+                "key": "SUPPORTED_HDR_VERSION",
+                "setValue": [
+                    "OFF"
+                ]
+            },
+            {
+                "key": "SUPPORTED_DL_PREFILTERING",
+                "setValue": [
+                    "OFF"
+                ]
+            },
+            {
+                "key": "STREAMING_SUPPORT",
+                "textValue": "ENABLED"
+            },
+            {
+                "key": "SUPPORTED_DLSS_OVERRIDE_FG",
+                "textValue": "false"
+            },
+            {
+                "key": "SUPPORTED_DLSS_OVERRIDE_SR",
+                "textValue": "true"
+            },
+            {
+                "key": "SUPPORTED_DLSS_OVERRIDE_RR",
+                "textValue": "false"
+            }
+        ],
+        "resolutions": [
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 3840
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 3840
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1440,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1440,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1600,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1600,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 800,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 800,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 768,
+                "isEntitled": true,
+                "widthInPixels": 1024
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 768,
+                "isEntitled": true,
+                "widthInPixels": 1024
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "isEntitled": true,
+                "widthInPixels": 1920
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1200,
+                "isEntitled": true,
+                "widthInPixels": 1920
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1050,
+                "isEntitled": true,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1050,
+                "isEntitled": true,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 768,
+                "isEntitled": true,
+                "widthInPixels": 1366
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 768,
+                "isEntitled": true,
+                "widthInPixels": 1366
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 834,
+                "isEntitled": true,
+                "widthInPixels": 1112
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 834,
+                "isEntitled": true,
+                "widthInPixels": 1112
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 900,
+                "isEntitled": true,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 900,
+                "isEntitled": true,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "isEntitled": true,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1200,
+                "isEntitled": true,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1080,
+                "isEntitled": true,
+                "widthInPixels": 1920
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1080,
+                "isEntitled": true,
+                "widthInPixels": 1920
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 1024,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 1024,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 720,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 720,
+                "isEntitled": true,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 900,
+                "isEntitled": true,
+                "widthInPixels": 1440
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 900,
+                "isEntitled": true,
+                "widthInPixels": 1440
+            },
+            {
+                "framesPerSecond": 60,
+                "heightInPixels": 720,
+                "isEntitled": false,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 30,
+                "heightInPixels": 720,
+                "isEntitled": false,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 720,
+                "isEntitled": false,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 800,
+                "isEntitled": false,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 834,
+                "isEntitled": false,
+                "widthInPixels": 1112
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 768,
+                "isEntitled": false,
+                "widthInPixels": 1366
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1440,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1050,
+                "isEntitled": false,
+                "widthInPixels": 1680
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 720,
+                "isEntitled": false,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1024,
+                "isEntitled": false,
+                "widthInPixels": 1280
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1200,
+                "isEntitled": false,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1600,
+                "isEntitled": false,
+                "widthInPixels": 2560
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 900,
+                "isEntitled": false,
+                "widthInPixels": 1600
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1200,
+                "isEntitled": false,
+                "widthInPixels": 1920
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 900,
+                "isEntitled": false,
+                "widthInPixels": 1440
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 3840
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 768,
+                "isEntitled": false,
+                "widthInPixels": 1024
+            },
+            {
+                "framesPerSecond": 120,
+                "heightInPixels": 1080,
+                "isEntitled": false,
+                "widthInPixels": 1920
+            }
+        ]
+    },
+    "firstEntitlementStartDateTime": "2026-02-07T15:29:21.492Z",
+    "iapProviderDetails": {
+        "manageCTA": "geforcenow://redirect/nvidia_account_management_gfn",
+        "nvidiaEcomEnabled": true,
+        "providerCode": "NVIDIA",
+        "restoreEnabled": false,
+        "upgradeCTA": "geforcenow://redirect/nvidia_account_management_gfn"
+    },
+    "membershipTier": "FREE",
+    "productSku": "1000",
+    "productUri": "https://www.nvidia.com/content/dam/en-zz/Solutions/gfn/json/products-2/en_GB_1000.json",
+    "startDateTime": "2026-02-07T15:29:21.492Z",
+    "streamingQualities": [
+        {
+            "clientStreamingQualityMode": "BALANCED",
+            "features": [
+                {
+                    "key": "PROFILE_VSYNC",
+                    "textValue": "2"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK",
+                    "textValue": "true"
+                },
+                {
+                    "key": "PROFILE_HDR",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_REFLEX",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_CLOUD_GSYNC",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_L4S",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_BIT_DEPTH",
+                    "textValue": "8"
+                },
+                {
+                    "key": "PROFILE_HDR_VERSION",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_CHROMA_FORMAT",
+                    "textValue": "YUV420"
+                },
+                {
+                    "key": "PROFILE_DL_PREFILTERING",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK_MODE",
+                    "textValue": "1"
+                },
+                {
+                    "key": "PROFILE_HUD_STREAMING",
+                    "textValue": "false"
+                }
+            ],
+            "maxBitRate": {
+                "bitrateOption": false,
+                "bitrateValue": 0,
+                "maxBitrateValue": 75,
+                "minBitrateValue": 5
+            },
+            "resolution": {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "widthInPixels": 1920
+            }
+        },
+        {
+            "clientStreamingQualityMode": "DATA_SAVER",
+            "features": [
+                {
+                    "key": "PROFILE_VSYNC",
+                    "textValue": "2"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK",
+                    "textValue": "true"
+                },
+                {
+                    "key": "PROFILE_HDR",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_REFLEX",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_CLOUD_GSYNC",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_L4S",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_BIT_DEPTH",
+                    "textValue": "8"
+                },
+                {
+                    "key": "PROFILE_HDR_VERSION",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_CHROMA_FORMAT",
+                    "textValue": "YUV420"
+                },
+                {
+                    "key": "PROFILE_DL_PREFILTERING",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK_MODE",
+                    "textValue": "1"
+                },
+                {
+                    "key": "PROFILE_HUD_STREAMING",
+                    "textValue": "false"
+                }
+            ],
+            "maxBitRate": {
+                "bitrateOption": true,
+                "bitrateValue": 12,
+                "maxBitrateValue": 75,
+                "minBitrateValue": 5
+            },
+            "resolution": {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "widthInPixels": 1920
+            }
+        },
+        {
+            "clientStreamingQualityMode": "COMPETITIVE",
+            "features": [
+                {
+                    "key": "PROFILE_VSYNC",
+                    "textValue": "0"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK",
+                    "textValue": "true"
+                },
+                {
+                    "key": "PROFILE_HDR",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_REFLEX",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_CLOUD_GSYNC",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_L4S",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_BIT_DEPTH",
+                    "textValue": "8"
+                },
+                {
+                    "key": "PROFILE_HDR_VERSION",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_CHROMA_FORMAT",
+                    "textValue": "YUV420"
+                },
+                {
+                    "key": "PROFILE_DL_PREFILTERING",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK_MODE",
+                    "textValue": "1"
+                },
+                {
+                    "key": "PROFILE_HUD_STREAMING",
+                    "textValue": "false"
+                }
+            ],
+            "maxBitRate": {
+                "bitrateOption": false,
+                "bitrateValue": 0,
+                "maxBitrateValue": 75,
+                "minBitrateValue": 5
+            },
+            "resolution": {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "widthInPixels": 1920
+            }
+        },
+        {
+            "clientStreamingQualityMode": "CINEMATIC",
+            "features": [
+                {
+                    "key": "PROFILE_VSYNC",
+                    "textValue": "0"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_HDR",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_REFLEX",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_CLOUD_GSYNC",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_L4S",
+                    "textValue": "false"
+                },
+                {
+                    "key": "PROFILE_BIT_DEPTH",
+                    "textValue": "8"
+                },
+                {
+                    "key": "PROFILE_HDR_VERSION",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_CHROMA_FORMAT",
+                    "textValue": "YUV420"
+                },
+                {
+                    "key": "PROFILE_DL_PREFILTERING",
+                    "textValue": "OFF"
+                },
+                {
+                    "key": "PROFILE_ADJUST_FOR_NETWORK_MODE",
+                    "textValue": "1"
+                },
+                {
+                    "key": "PROFILE_HUD_STREAMING",
+                    "textValue": "false"
+                }
+            ],
+            "maxBitRate": {
+                "bitrateOption": false,
+                "bitrateValue": 0,
+                "maxBitrateValue": 0,
+                "minBitrateValue": 0
+            },
+            "resolution": {
+                "framesPerSecond": 60,
+                "heightInPixels": 1200,
+                "widthInPixels": 1920
+            }
+        }
+    ],
+    "streamingSupport": "ENABLED",
+    "subType": "UNLIMITED",
+    "type": "FREE",
+    "upsells": [
+        {
+            "booleanValue": true,
+            "key": "LOWER_SESSION_QUEUE_WAIT_TIME"
+        },
+        {
+            "booleanValue": true,
+            "key": "HIGHER_SESSION_LENGTH"
+        },
+        {
+            "booleanValue": true,
+            "key": "HIGHER_RESOLUTION"
+        },
+        {
+            "booleanValue": true,
+            "key": "HIGHER_FPS"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_IN_GAME_SETTINGS_PERSISTENCE"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_HDR"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_RTX"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_REFLEX"
+        },
+        {
+            "booleanValue": true,
+            "key": "AD_FREE_EXPERIENCE"
+        },
+        {
+            "booleanValue": true,
+            "key": "BETTER_PRODUCT"
+        },
+        {
+            "booleanValue": true,
+            "key": "DAY_PASS"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_CLOUD_GSYNC"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_L4S"
+        },
+        {
+            "booleanValue": false,
+            "key": "HIGHER_BIT_DEPTH"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_MODS"
+        },
+        {
+            "booleanValue": false,
+            "key": "PERMANENT_STORAGE_AVAILABLE_TO_PURCHASE"
+        },
+        {
+            "booleanValue": false,
+            "key": "HIGHER_STORAGE_SIZE_AVAILABLE"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_HIGHER_CHROMA_FORMAT"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_HUD_STREAMING"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_DL_PREFILTERING"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_DLSS_OVERRIDE_FG"
+        },
+        {
+            "booleanValue": false,
+            "key": "SUPPORT_DLSS_OVERRIDE_SR"
+        },
+        {
+            "booleanValue": true,
+            "key": "SUPPORT_DLSS_OVERRIDE_RR"
+        }
+    ]
+}

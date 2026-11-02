@@ -22,7 +22,7 @@ import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 
 @Composable
 internal fun SpaceLaunchScreen(state: OpenNowUiState, status: String, onMinimize: () -> Unit, onCancel: () -> Unit,
@@ -53,7 +53,7 @@ internal fun SpaceLaunchScreen(state: OpenNowUiState, status: String, onMinimize
                                     .spaceArrival(if (queuePosition == null) status else "queue")
                                     .clearAndSetSemantics { text = AnnotatedString(status) },
                                 style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, fontWeight = FontWeight.Normal),
-                                contentColor = SpaceWhite)
+                                contentColor = SpaceWhite, reduceMotion = LocalReduceForegroundMotion.current)
                         }
                         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, maxLines = 3) }
                     }
@@ -72,11 +72,11 @@ internal fun SpaceLaunchScreen(state: OpenNowUiState, status: String, onMinimize
 
 @Composable
 private fun SpaceLaunchStatusProgress(connectingProgress: (() -> Float)?) {
-    val modifier = Modifier.size(18.dp).clearAndSetSemantics { }
+    val modifier = Modifier.size(18.dp).testTag("space-launch-progress").clearAndSetSemantics { }
     if (connectingProgress != null) {
         CircularProgressIndicator(progress = connectingProgress, modifier = modifier, color = SpaceWhite,
             trackColor = SpaceWhite.copy(alpha = .12f), strokeWidth = 2.dp)
-    } else if (LocalReduceMotion.current || !LocalWindowInfo.current.isWindowFocused) {
+    } else if (LocalReduceForegroundMotion.current || !LocalWindowInfo.current.isWindowFocused) {
         CircularProgressIndicator(progress = { .72f }, modifier = modifier, color = SpaceWhite,
             trackColor = SpaceWhite.copy(alpha = .12f), strokeWidth = 2.dp)
     } else {

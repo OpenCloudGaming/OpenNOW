@@ -63,7 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
-import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
@@ -113,6 +113,7 @@ internal fun SpaceUiScreen(
     queueContent: @Composable (compact: Boolean) -> Unit = {},
     onOpenLocalApps: () -> Unit = { onNavigate(AppPage.Settings) },
     onSpaceUiChange: (Boolean) -> Unit = {},
+    safeAreaPadding: Dp = 0.dp,
 ) {
     val games = remember(state.page, state.games, state.catalogResult.games, state.libraryGames,
         state.catalogFilterIds, state.libraryFilterIds, state.librarySearch, state.librarySortId,
@@ -137,7 +138,7 @@ internal fun SpaceUiScreen(
     val navigationRequester = remember { FocusRequester() }
     val searchRequester = remember { FocusRequester() }
     val settingsEntryRequester = remember { FocusRequester() }
-    val reduceMotion = LocalReduceMotion.current
+    val reduceMotion = LocalReduceForegroundMotion.current
     val context = LocalContext.current
     var backdropUrl by remember { mutableStateOf(game?.let { gameTvBannerImageUrl(context, it) }) }
     LaunchedEffect(game?.id, reduceMotion, discoverCatalog) {
@@ -193,11 +194,13 @@ internal fun SpaceUiScreen(
     ) {
         val compact = maxHeight < 560.dp
         val portrait = maxWidth < maxHeight
+        val portraitRail = shouldUseSpacePortraitArtwork(state.androidTvProfile, LocalConfiguration.current.smallestScreenWidthDp)
         val iconNavigation = maxWidth < 600.dp && !portrait
         val compactQueue = portrait || maxWidth < 700.dp
         val inset = if (compact) 22.dp else if (portrait) 20.dp else 36.dp
         SpaceSceneBackdrop(backdropUrl.takeUnless { portrait || state.page == AppPage.Settings })
-        Column(Modifier.fillMaxSize().testTag("space-scene-content").padding(horizontal = inset, vertical = if (compact) 10.dp else 20.dp)) {
+        Column(Modifier.fillMaxSize().padding(safeAreaPadding).testTag("space-scene-content")
+            .padding(horizontal = inset, vertical = if (compact) 10.dp else 20.dp)) {
             Row(Modifier.fillMaxWidth().focusGroup().testTag("space-top-rail"), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(if (iconNavigation) 4.dp else 10.dp)) {
                 TopBarProfileMenu(
@@ -272,7 +275,8 @@ internal fun SpaceUiScreen(
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()
                     .expandSpaceCatalogOnSwipe(inputEnabled && games.isNotEmpty()) { discoverCatalog = true }) {
                     // Budget the full rail, its focus gutters and a touch-sized catalog action first.
-                    val railArtworkSize = if (compact) (maxHeight * .30f).coerceIn(72.dp, 98.dp) else 134.dp
+                    val railArtworkSize = if (portraitRail) (maxHeight * .32f).coerceIn(86.dp, 164.dp)
+                        else if (compact) (maxHeight * .30f).coerceIn(72.dp, 98.dp) else 134.dp
                     val heroHeight = (maxHeight - railArtworkSize - 116.dp).coerceAtLeast(if (compact) 68.dp else 150.dp)
                     val showHero = maxHeight >= 260.dp
                     val showHeroDescription = maxHeight >= 340.dp
@@ -321,6 +325,7 @@ internal fun SpaceUiScreen(
                                         compact = compact, reduceMotion = reduceMotion,
                                         showPremiumMarker = state.settings.showPremiumMarker,
                                         artworkSize = railArtworkSize,
+                                        artworkAspectRatio = if (portraitRail) 628f / 888f else 1f,
                                         modifier = Modifier.spaceArrival(item.id, (index.coerceAtMost(5) * 24)).then(if (game?.id == item.id) Modifier.focusRequester(selectedRequester) else Modifier),
                                         onFocused = {
                                             if (state.page == AppPage.Library) librarySelectedId = item.id
@@ -349,7 +354,7 @@ private fun SpaceNavigationTabs(page: AppPage, pages: List<AppPage>, portrait: B
                 else -> R.string.nav_settings
             }), active = page == destination, showFocusOutline = page != AppPage.Settings,
                 horizontalPadding = if (iconsOnly) 12.dp else 16.dp,
-                modifier = (if (portrait) Modifier.weight(1f) else Modifier).spaceSelectionMark(page == destination).then(
+                modifier = (if (portrait) Modifier.weight(1f) else Modifier).then(
                     if (page == destination) Modifier.focusRequester(requester) else Modifier)
                     .onPreviewKeyEvent { event ->
                         if (page == AppPage.Settings && event.key == Key.DirectionDown && event.type == KeyEventType.KeyDown) {
@@ -404,7 +409,7 @@ private fun SpaceLibraryBody(
     catalogControls: @Composable () -> Unit,
     libraryContent: @Composable () -> Unit,
 ) {
-    val reduceMotion = LocalReduceMotion.current
+    val reduceMotion = LocalReduceForegroundMotion.current
     val overview: @Composable () -> Unit = {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(end = if (portrait) 0.dp else 24.dp),
             verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 20.dp)) {
@@ -457,7 +462,7 @@ private fun SpaceLibraryBody(
 internal fun SpaceGameTile(game: GameInfo, selected: Boolean, compact: Boolean, reduceMotion: Boolean,
     showPremiumMarker: Boolean, modifier: Modifier, onFocused: () -> Unit, onClick: () -> Unit,
     portraitArtwork: Boolean = false, fillWidth: Boolean = false,
-    artworkSize: Dp = if (compact) 98.dp else 134.dp) {
+    artworkSize: Dp = if (compact) 98.dp else 134.dp, artworkAspectRatio: Float = 1f) {
     val premiumMarker = showPremiumMarker && game.hasPremiumMembershipMarker()
     val premiumDescription = stringResource(R.string.catalog_premium_marker)
     var focused by remember { mutableStateOf(false) }
@@ -465,6 +470,7 @@ internal fun SpaceGameTile(game: GameInfo, selected: Boolean, compact: Boolean, 
     val latestOnFocused by rememberUpdatedState(onFocused)
     LaunchedEffect(interaction.hovered) { if (interaction.hovered) latestOnFocused() }
     val shape = RoundedCornerShape(14.dp)
+    val verticalArtwork = portraitArtwork || artworkAspectRatio < 1f
     val focusManager = LocalFocusManager.current
     // The focus target includes the frame's gutter, so scroll-to-focus cannot crop its glow at a list edge.
     Box(modifier.onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
@@ -481,19 +487,18 @@ internal fun SpaceGameTile(game: GameInfo, selected: Boolean, compact: Boolean, 
         }
         .testTag("space-game-${game.id}").padding(12.dp)) {
         Box((if (portraitArtwork || fillWidth) Modifier.fillMaxWidth().aspectRatio(if (portraitArtwork) 628f / 888f else 1f)
-            else Modifier.size(artworkSize))
+            else Modifier.height(artworkSize).aspectRatio(artworkAspectRatio))
             .testTag("space-game-art-${game.id}").then(interaction.modifier)
-            .spaceSelectionMark(selected)
             .spaceFocusFrame(focused || interaction.hovered, 14.dp, hovered = interaction.hovered)
             .border(if (selected) 2.dp else 1.dp, if (selected) SpaceIce.copy(alpha = .8f) else SpaceWhite.copy(alpha = .16f), shape)) {
             Box(Modifier.fillMaxSize().clip(shape).background(SpaceInk)) {
-                UrlImage(catalogCardImageUrl(game, tvProfile = !portraitArtwork, requestWidth = if (portraitArtwork) 512 else 272), Modifier.fillMaxSize())
+                UrlImage(catalogCardImageUrl(game, tvProfile = !verticalArtwork, requestWidth = if (verticalArtwork) 512 else 272), Modifier.fillMaxSize())
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, SpaceInk.copy(alpha = .92f)))))
-                Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(SpaceWhite.copy(alpha = .12f * interaction.emphasis), Color.Transparent))))
-                Text(game.title, color = SpaceWhite, fontSize = if (portraitArtwork) 14.sp else if (compact) 10.sp else 12.sp,
-                    lineHeight = if (portraitArtwork) 19.sp else 15.sp, fontWeight = FontWeight.Medium,
-                    maxLines = if (compact && artworkSize < 80.dp && !portraitArtwork) 1 else 2, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.BottomStart).padding(if (compact && artworkSize < 80.dp && !portraitArtwork) 8.dp else 10.dp))
+                Box(Modifier.fillMaxSize().spaceTileHighlight(interaction.emphasis))
+                Text(game.title, color = SpaceWhite, fontSize = if (verticalArtwork) 14.sp else if (compact) 10.sp else 12.sp,
+                    lineHeight = if (verticalArtwork) 19.sp else 15.sp, fontWeight = FontWeight.Medium,
+                    maxLines = if (compact && artworkSize < 80.dp && !verticalArtwork) 1 else 2, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(if (compact && artworkSize < 80.dp && !verticalArtwork) 8.dp else 10.dp))
                 if (premiumMarker) PremiumMembershipMarker(Modifier.align(Alignment.TopEnd).padding(6.dp))
             }
         }
@@ -515,8 +520,7 @@ internal fun SpaceControl(label: String, modifier: Modifier = Modifier, active: 
         .onFocusChanged { focused = it.isFocused }
         .hoverable(interaction.source, enabled = enabled)
         .graphicsLayer { alpha = if (enabled) 1f else .38f }
-        .clip(shape).background(when { filled -> SpaceWhite; else -> SpaceWhite.copy(alpha = (if (active) .12f else 0f) + .13f * interaction.emphasis) })
-        .border(1.dp, SpaceIce.copy(alpha = if (showFocusOutline) interaction.emphasis else 0f), shape)
+        .clip(shape).spaceControlSurface(interaction.emphasis, shape, filled, active, showFocusOutline)
         .onPreviewKeyEvent { event ->
             handleDpadFocusMove(event, focusManager)
         }

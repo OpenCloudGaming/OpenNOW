@@ -280,7 +280,17 @@ class OnScreenControlsSettingsInstrumentedTest {
         compose.onNodeWithText("On-screen controls").assertIsDisplayed()
         compose.onNodeWithText("Audio").assertIsDisplayed()
         compose.onNodeWithText("Status bar").assertIsDisplayed()
-        compose.onNodeWithText("On-screen controls").performClick()
+        fun scrollToRow(label: String): SemanticsNodeInteraction {
+            compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText(label))
+            return compose.onNodeWithText(label)
+        }
+        scrollToRow("Full gamepad mouse mode").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Enable Mouse Mode").assertIsDisplayed()
+        compose.onNodeWithText("Back").performClick()
+        scrollToRow("More controls").performClick()
+        scrollToRow("Stretch to fit").assertIsDisplayed()
+        scrollToRow("Fewer controls").performClick()
+        scrollToRow("On-screen controls").performClick()
         compose.onNodeWithText("Keyboard & mouse buttons").assertIsDisplayed().performClick()
         compose.onNodeWithText("Add button").assertIsDisplayed()
     }

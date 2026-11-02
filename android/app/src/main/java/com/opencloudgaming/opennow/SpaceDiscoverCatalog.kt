@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -10,23 +12,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 import kotlin.math.ceil
+import kotlin.math.abs
 
 @Composable
 internal fun SpaceDiscoverCatalog(games: List<GameInfo>, selectedId: String?, gridState: LazyGridState,
     selectedRequester: FocusRequester, compact: Boolean, showPremiumMarker: Boolean, modifier: Modifier, onFocused: (String) -> Unit,
     onSelectGame: (GameInfo) -> Unit, onBack: () -> Unit, catalogControls: @Composable () -> Unit) {
-    val reduced = LocalReduceMotion.current
+    val reduced = LocalReduceForegroundMotion.current
     Column(modifier.fillMaxWidth().spaceArrival("discover-catalog")) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -57,18 +59,25 @@ internal fun SpaceDiscoverCatalog(games: List<GameInfo>, selectedId: String?, gr
 internal fun Modifier.expandSpaceCatalogOnSwipe(enabled: Boolean, onExpand: () -> Unit): Modifier {
     val threshold = with(LocalDensity.current) { 48.dp.toPx() }
     val expand by rememberUpdatedState(onExpand)
-    val connection = remember(enabled, threshold) {
-        object : NestedScrollConnection {
-            var distance = 0f
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (!enabled || source != NestedScrollSource.UserInput) return Offset.Zero
-                distance = if (available.y < 0f) distance - available.y else 0f
-                if (distance < threshold) return Offset.Zero
-                distance = 0f
+    if (!enabled) return this
+    // NestedScrollSource.UserInput also includes keyboard/focus scrolling. Observe an actual
+    // touch gesture so restoring the rail's focus after Back cannot reopen the catalog.
+    return pointerInput(threshold) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (down.type != PointerType.Touch) return@awaitEachGesture
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed || event.changes.count { it.pressed } != 1) break
+                val distance = change.position - down.position
+                // Leave horizontal browsing to the game rail; each new gesture starts at zero.
+                if (abs(distance.x) >= threshold && abs(distance.x) >= abs(distance.y)) break
+                if (-distance.y < threshold || -distance.y <= abs(distance.x)) continue
+                change.consume()
                 expand()
-                return Offset(0f, available.y)
+                break
             }
         }
     }
-    return nestedScroll(connection)
 }

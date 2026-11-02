@@ -2,7 +2,7 @@ package com.opencloudgaming.opennow.ui.controls
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,6 +22,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import com.opencloudgaming.opennow.LocalSpaceUiPresentation
 import com.opencloudgaming.opennow.rememberSpaceInteraction
+import com.opencloudgaming.opennow.spaceAnimatedSurface
 import com.opencloudgaming.opennow.focusMoveHaptics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -47,7 +49,6 @@ import com.opencloudgaming.opennow.LocalSettingsControllerNavigationEnabled
 import com.opencloudgaming.opennow.InteractionFocusFrame
 import com.opencloudgaming.opennow.LocalAbsoluteCinemaEverywhere
 import com.opencloudgaming.opennow.handleVerticalDpadFocusMove
-import com.opencloudgaming.opennow.isTvActivateKey
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
 import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
@@ -114,9 +115,8 @@ data class ControlRowStyle(
         /**
          * In-stream controls panel: denser, and focusable unconditionally.
          *
-         * The panel's own rows used to rely on `clickable`'s implicit focusability with no
-         * `isTvActivateKey` handling at all, which made controller navigation inside a stream
-         * noticeably more fragile than in settings. Going through the shared row fixes that.
+         * Shares settings-row focus navigation and Compose activation/long-press handling.
+         * Nested controls keep ownership of their own activation events.
          */
         @Composable
         fun stream(): ControlRowStyle = ControlRowStyle(
@@ -159,6 +159,7 @@ internal fun controlRowStyle(): ControlRowStyle =
 internal fun ControlRow(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     enabled: Boolean = true,
     indentLevel: Int = 0,
     style: ControlRowStyle = controlRowStyle(),
@@ -186,28 +187,24 @@ internal fun ControlRow(
                 .hoverable(hoverInteraction, enabled = enabled)
                 .onFocusChanged { focused = style.focusable && (it.isFocused || it.hasFocus) }
                 .focusMoveHaptics()
-                .border(
-                    width = if (space) 1.dp else if (showFocus) style.borderFocusWidth else style.borderRestWidth,
-                    color = if (space) MaterialTheme.colorScheme.primary.copy(alpha = motion!!.emphasis * .65f) else Color.Transparent,
-                    shape = style.shape,
-                )
-                .clip(style.shape)
-                .background(if (space) androidx.compose.ui.graphics.lerp(style.containerRest, style.containerFocused, motion!!.emphasis) else if (showFocus) style.containerFocused else style.containerRest)
+                .controlRowSurface(style, showFocus, motion?.emphasis)
                 .then(
-                    if (onClick != null) Modifier.clickable(interactionSource = hoverInteraction, indication = if (space) null else androidx.compose.foundation.LocalIndication.current, enabled = enabled, onClick = onClick)
+                    if (onClick != null) Modifier.combinedClickable(
+                        interactionSource = hoverInteraction,
+                        indication = if (space) null else androidx.compose.foundation.LocalIndication.current,
+                        enabled = enabled,
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    )
                     else Modifier,
                 )
                 .onPreviewKeyEvent { event ->
                     when {
-                        !space && style.focusable && enabled && onClick != null && isTvActivateKey(event) -> {
-                            onClick()
-                            true
-                        }
                         style.focusable -> handleVerticalDpadFocusMove(event, focusManager)
                         else -> false
                     }
                 }
-                .then(if (!space || onClick == null) Modifier.focusable(enabled = style.focusable) else Modifier)
+                .then(if (onClick == null) Modifier.focusable(enabled = style.focusable) else Modifier)
                 .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding),
             verticalAlignment = verticalAlignment,
             content = content,
@@ -226,15 +223,18 @@ internal fun ControlRow(
  * on the `Slider` itself.
  */
 @Composable
-internal fun Modifier.controlRowContainer(style: ControlRowStyle, showFocus: Boolean, emphasis: Float? = null): Modifier = this
-    .border(
-        // The sibling InteractionFocusFrame is the single visible focus owner.
-        width = if (emphasis != null) 1.dp else if (showFocus) style.borderFocusWidth else style.borderRestWidth,
-        color = if (emphasis != null) MaterialTheme.colorScheme.primary.copy(alpha = emphasis * .65f) else Color.Transparent,
-        shape = style.shape,
-    )
-    .clip(style.shape)
-    .background(if (emphasis != null) androidx.compose.ui.graphics.lerp(style.containerRest, style.containerFocused, emphasis) else if (showFocus) style.containerFocused else style.containerRest)
+internal fun Modifier.controlRowSurface(style: ControlRowStyle, showFocus: Boolean,
+    emphasis: State<Float>? = null): Modifier = if (emphasis != null) {
+    clip(style.shape).spaceAnimatedSurface(emphasis, style.shape, style.containerRest, style.containerFocused,
+        Color.Transparent, MaterialTheme.colorScheme.primary.copy(alpha = .65f))
+} else {
+    border(if (showFocus) style.borderFocusWidth else style.borderRestWidth, Color.Transparent, style.shape)
+        .clip(style.shape).background(if (showFocus) style.containerFocused else style.containerRest)
+}
+
+@Composable
+internal fun Modifier.controlRowContainer(style: ControlRowStyle, showFocus: Boolean,
+    emphasis: State<Float>? = null): Modifier = controlRowSurface(style, showFocus, emphasis)
     .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding)
 
 /**

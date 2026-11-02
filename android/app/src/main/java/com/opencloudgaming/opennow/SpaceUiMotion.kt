@@ -10,14 +10,23 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 
 internal val LocalSpaceAnimatedFocusOutline = compositionLocalOf { true }
 internal val LocalSpaceControllerConnected = compositionLocalOf { false }
@@ -26,19 +35,19 @@ internal val LocalSpaceControllerConnected = compositionLocalOf { false }
 internal class SpaceInteraction(
     val source: MutableInteractionSource,
     val hovered: Boolean,
-    val emphasis: Float,
+    val emphasis: State<Float>,
     val modifier: Modifier,
 )
 
 @Composable
 internal fun rememberSpaceInteraction(focused: Boolean, tile: Boolean = false, enabled: Boolean = true,
-    reduceMotion: Boolean = LocalReduceMotion.current, cornerRadius: Dp = 4.dp, showFocusOutline: Boolean = true): SpaceInteraction {
+    reduceMotion: Boolean = LocalReduceForegroundMotion.current, cornerRadius: Dp = 4.dp, showFocusOutline: Boolean = true): SpaceInteraction {
     val fast = LocalSpaceFastNavigation.current
     val source = remember { MutableInteractionSource() }
     val hovered by source.collectIsHoveredAsState()
     val pressed by source.collectIsPressedAsState()
     val engaged = enabled && (focused || hovered)
-    val emphasis by animateFloatAsState(if (engaged) 1f else 0f,
+    val emphasis = animateFloatAsState(if (engaged) 1f else 0f,
         tween(if (reduceMotion) 0 else if (fast) 55 else 180), label = "space-emphasis")
     val scale = animateFloatAsState(when {
         reduceMotion -> 1f
@@ -50,14 +59,55 @@ internal fun rememberSpaceInteraction(focused: Boolean, tile: Boolean = false, e
     val lift = with(LocalDensity.current) { (if (tile) 3.dp else 0.dp).toPx() }
     return SpaceInteraction(source, enabled && hovered, emphasis, Modifier.graphicsLayer {
         scaleX = scale.value; scaleY = scale.value
-        translationY = if (reduceMotion || pressed) 0f else -lift * emphasis
+        translationY = if (reduceMotion || pressed) 0f else -lift * emphasis.value
     }.then(if (tile || !showFocusOutline || !LocalSpaceAnimatedFocusOutline.current) Modifier else Modifier.spaceFocusFrame(engaged, cornerRadius, hovered = enabled && hovered)))
+}
+
+/** Read animation state only while drawing; keep brushes and outlines out of the frame loop. */
+internal fun Modifier.spaceTileHighlight(emphasis: State<Float>): Modifier = drawWithCache {
+    val sheen = Brush.linearGradient(listOf(SpaceWhite.copy(alpha = .12f), Color.Transparent))
+    onDrawBehind {
+        val opacity = emphasis.value
+        if (opacity > 0f) drawRect(sheen, alpha = opacity)
+    }
+}
+
+internal fun Modifier.spaceControlSurface(emphasis: State<Float>, shape: Shape,
+    filled: Boolean, active: Boolean, showFocusOutline: Boolean): Modifier = spaceAnimatedSurface(
+    emphasis, shape,
+    restColor = if (filled) SpaceWhite else SpaceWhite.copy(alpha = if (active) .12f else 0f),
+    focusedColor = if (filled) SpaceWhite else SpaceWhite.copy(alpha = (if (active) .12f else 0f) + .13f),
+    borderRestColor = Color.Transparent,
+    borderFocusedColor = if (showFocusOutline) SpaceIce else Color.Transparent,
+)
+
+/** Shared paint owner for Space controls, settings rows, and outlined actions. */
+internal fun Modifier.spaceAnimatedSurface(emphasis: State<Float>, shape: Shape,
+    restColor: Color, focusedColor: Color, borderRestColor: Color,
+    borderFocusedColor: Color): Modifier = drawWithCache {
+    val outline = shape.createOutline(size, layoutDirection, this)
+    val borderWidth = 1.dp.toPx()
+    val border = shape.createOutline(Size((size.width - borderWidth).coerceAtLeast(0f),
+        (size.height - borderWidth).coerceAtLeast(0f)), layoutDirection, this)
+    val stroke = Stroke(borderWidth)
+    onDrawWithContent {
+        val opacity = emphasis.value
+        val background = androidx.compose.ui.graphics.lerp(restColor, focusedColor, opacity)
+        if (background.alpha > 0f) drawOutline(outline, background)
+        drawContent()
+        val borderColor = androidx.compose.ui.graphics.lerp(borderRestColor, borderFocusedColor, opacity)
+        if (borderColor.alpha > 0f) {
+            translate(borderWidth / 2, borderWidth / 2) {
+                drawOutline(border, borderColor, style = stroke)
+            }
+        }
+    }
 }
 
 /** Finite entrance on navigation/selection, cancelled immediately by the next navigation. */
 @Composable
 internal fun Modifier.spaceArrival(key: Any?, delayMillis: Int = 0): Modifier {
-    val reduceMotion = LocalReduceMotion.current
+    val reduceMotion = LocalReduceForegroundMotion.current
     val fast = LocalSpaceFastNavigation.current
     val progress = remember(key) { Animatable(if (reduceMotion) 1f else if (fast) .8f else 0f) }
     val distance = with(LocalDensity.current) { 24.dp.toPx() }
@@ -79,7 +129,7 @@ internal fun Modifier.spaceFocusFrame(active: Boolean, radius: Dp, hovered: Bool
     val directionalInput = LocalSpaceControllerConnected.current || LocalInputModeManager.current.inputMode == InputMode.Keyboard
     val engaged = active && LocalSpaceAnimatedFocusOutline.current && (hovered || directionalInput) &&
         androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
-    val reduced = LocalReduceMotion.current
+    val reduced = LocalReduceForegroundMotion.current
     val fast = LocalSpaceFastNavigation.current
     val reveal = animateFloatAsState(if (engaged) 1f else 0f,
         if (reduced) tween(0) else if (fast) tween(55) else androidx.compose.animation.core.spring(dampingRatio = .68f, stiffness = 420f),
@@ -108,27 +158,6 @@ internal fun Modifier.spaceFocusFrame(active: Boolean, radius: Dp, hovered: Bool
                 listOf(SpaceWhite.copy(alpha = .45f * opacity), SpaceWhite.copy(alpha = opacity), SpaceIce.copy(alpha = .65f * opacity)),
                 center - vector, center + vector), origin, frameSize, corner,
                 style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
-        }
-    }
-}
-
-/** A persistent selection cue, separate from the brighter transient input-focus frame. Fits the tile gutter. */
-@Composable
-internal fun Modifier.spaceSelectionMark(selected: Boolean): Modifier {
-    val reveal = animateFloatAsState(if (selected) 1f else 0f,
-        tween(if (LocalReduceMotion.current) 0 else if (LocalSpaceFastNavigation.current) 55 else 180), label = "space-selection")
-    return drawWithContent {
-        drawContent()
-        val progress = reveal.value
-        if (progress > 0f) {
-            val halfWidth = 12.dp.toPx().coerceAtMost(size.width / 4) * progress
-            val y = size.height + 6.dp.toPx()
-            val start = androidx.compose.ui.geometry.Offset(size.width / 2 - halfWidth, y)
-            val end = androidx.compose.ui.geometry.Offset(size.width / 2 + halfWidth, y)
-            drawLine(SpaceIce.copy(alpha = .14f * progress), start, end,
-                strokeWidth = 6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            drawLine(SpaceIce.copy(alpha = progress), start, end,
-                strokeWidth = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
         }
     }
 }

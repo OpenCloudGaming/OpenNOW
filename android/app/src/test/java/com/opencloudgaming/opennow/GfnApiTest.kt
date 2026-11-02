@@ -20,6 +20,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GfnApiTest {
+    @Test fun websiteModeKeepsStandardResolutionMobileBrowserAllocation() {
+        // 2.3.4 advertised Windows/DESKTOP for the free 1680x720 website profile;
+        // the reported session then returned and decoded 1366x768 instead of ultrawide.
+        for (browser in listOf(false, true)) {
+            for ((resolution, aspect) in listOf(
+                "1280x720" to "16:9",
+                "1680x720" to "21:9",
+                "1920x1080" to "16:9",
+                "1920x1200" to "16:10",
+            )) {
+                val settings = StreamSettings(resolution = resolution, aspectRatio = aspect,
+                    fps = 60, codec = VideoCodec.H265, maxBitrateMbps = 10, browserClientMode = browser)
+                val base = "https://np-sjc6-04.cloudmatchbeta.nvidiagrid.net"
+                val headers = cloudMatchHeaders("token", "client", "stable-device", includeOrigin = true,
+                    streamingBaseUrl = base, appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+                    preferBrowserMode = browser, preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+                    preferDesktopWebRtcMode = settings.prefersDesktopWebRtcCloudMatchMode())
+                assertEquals("$resolution browser=$browser", "ANDROID", headers["nv-device-os"])
+                assertEquals("PHONE", headers["nv-device-type"])
+                assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
+                assertEquals("WEBRTC", headers["nv-client-streamer"])
+                assertEquals("BROWSER", headers["nv-client-type"])
+                assertEquals("stable-device", headers["x-device-id"])
+
+                val request = buildMinimalClaimRequestBody("103053062", "stable-device", settings,
+                    streamingBaseUrl = base).getValue("sessionRequestData").jsonObject
+                assertEquals("browser", request.getValue("clientPlatformName").jsonPrimitive.content)
+                assertFalse(request.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+                val monitor = request.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+                val (width, height) = streamResolutionPixels(settings)
+                assertEquals(width, monitor.getValue("widthInPixels").jsonPrimitive.int)
+                assertEquals(height, monitor.getValue("heightInPixels").jsonPrimitive.int)
+                assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+                assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
+                assertFalse(monitor.containsKey("monitorId"))
+            }
+        }
+    }
+
     @Test fun highResolutionSdrWebRtcUsesConsistentDesktopBrowserAllocationWithoutNvst() {
         for (browser in listOf(false, true)) {
             for (tv in listOf(false, true)) {

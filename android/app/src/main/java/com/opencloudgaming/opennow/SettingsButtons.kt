@@ -1,6 +1,5 @@
 package com.opencloudgaming.opennow
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
@@ -10,6 +9,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 
@@ -34,12 +35,15 @@ private fun SettingsButtonSurface(outlined: Boolean, onClick: () -> Unit, modifi
         .onFocusChanged { focused = it.isFocused }.hoverable(motion.source, enabled) else Modifier
     val shape = if (space) RoundedCornerShape(4.dp) else ButtonDefaults.shape
     if (outlined) {
-        androidx.compose.material3.OutlinedButton(onClick, modifier.then(presentation), enabled,
+        val surface = if (motion != null) Modifier.clip(shape).spaceAnimatedSurface(motion.emphasis, shape,
+            SpaceWhite.copy(alpha = .035f), SpaceWhite.copy(alpha = .135f),
+            SpaceWhite.copy(alpha = .15f), SpaceWhite.copy(alpha = .65f)) else Modifier
+        androidx.compose.material3.OutlinedButton(onClick, modifier.then(presentation).then(surface), enabled,
             shape = shape,
             colors = if (space) ButtonDefaults.outlinedButtonColors(
-                containerColor = SpaceWhite.copy(alpha = .035f + .1f * (motion?.emphasis ?: 0f)),
+                containerColor = Color.Transparent,
                 contentColor = SpaceWhite) else ButtonDefaults.outlinedButtonColors(),
-            border = if (space) BorderStroke(1.dp, SpaceWhite.copy(alpha = .15f + .5f * (motion?.emphasis ?: 0f))) else ButtonDefaults.outlinedButtonBorder(enabled),
+            border = if (space) null else ButtonDefaults.outlinedButtonBorder(enabled),
             contentPadding = padding, interactionSource = motion?.source, content = content)
     } else {
         androidx.compose.material3.Button(onClick, modifier.then(presentation), enabled,

@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -54,6 +55,7 @@ internal fun SpaceGameHub(
     removeEnabled: Boolean,
     onRemove: (() -> Unit)?,
     onDismiss: () -> Unit,
+    tvProfile: Boolean = false,
 ) {
     val context = LocalContext.current
     val launch = rememberGameDetailsLaunchActions(game, defaultVariantId, onPlay, onChooseStore, onPlayOnTv, onDismiss)
@@ -84,6 +86,7 @@ internal fun SpaceGameHub(
         }.onKeyEvent { readScroll.handleVerticalKey(it, scrollStep) }.lockedFocusGroup()) {
             val compact = maxHeight < 500.dp
             val narrow = maxWidth < 600.dp
+            val portraitArtwork = shouldUseSpacePortraitArtwork(tvProfile, LocalConfiguration.current.smallestScreenWidthDp)
             val galleryWidth = minOf(if (narrow) 280.dp else 520.dp,
                 (maxHeight - if (compact) 212.dp else 276.dp).coerceAtLeast(120.dp) * (16f / 9f))
             SpaceSceneBackdrop(gameTvBannerImageUrl(context, game))
@@ -112,7 +115,12 @@ internal fun SpaceGameHub(
                         if (!gallery) {
                             Column(Modifier.fillMaxWidth().testTag("space-hub-hero"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                                    if (!narrow && !compact) UrlImage(catalogCardImageUrl(game, true), Modifier.size(128.dp).clip(RoundedCornerShape(20.dp)))
+                                    if (portraitArtwork || (!narrow && !compact)) {
+                                        UrlImage(catalogCardImageUrl(game, tvProfile = !portraitArtwork,
+                                            requestWidth = if (portraitArtwork) 512 else 272),
+                                            (if (portraitArtwork) Modifier.width(if (compact) 86.dp else 108.dp).aspectRatio(628f / 888f)
+                                            else Modifier.size(128.dp)).testTag("space-hub-artwork").clip(RoundedCornerShape(20.dp)))
+                                    }
                                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                         Text(game.title, color = SpaceWhite, fontSize = if (compact || narrow) 34.sp else 56.sp,
                                             lineHeight = if (compact || narrow) 40.sp else 62.sp, fontWeight = FontWeight.Light,

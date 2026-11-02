@@ -986,18 +986,43 @@ private fun Headers.Builder.putDesktopLcars(
     accept: String = "application/json",
     includeUserAgent: Boolean = false,
     includeEmptyTokenAuthorization: Boolean = false,
+    clientVersion: String = GFN_CLIENT_VERSION,
+    deviceOs: String = "WINDOWS",
 ): Headers.Builder {
     add("Accept", accept)
     if (token != null || includeEmptyTokenAuthorization) add("Authorization", gfnJwtAuthorization(token.orEmpty()))
     add("nv-client-id", LCARS_CLIENT_ID)
     add("nv-client-type", clientType)
-    add("nv-client-version", GFN_CLIENT_VERSION)
+    add("nv-client-version", clientVersion)
     add("nv-client-streamer", clientStreamer)
-    add("nv-device-os", "WINDOWS")
+    add("nv-device-os", deviceOs)
     add("nv-device-type", "DESKTOP")
     if (includeUserAgent) add("User-Agent", GFN_USER_AGENT)
     return this
 }
+
+/** MES uses the desktop web client's membership profile independently of stream transport. */
+private fun subscriptionHeaders(token: String): Headers =
+    Headers.Builder()
+        .putDesktopLcars(
+            token = token,
+            clientType = "BROWSER",
+            clientStreamer = "WEBRTC",
+            accept = "application/json, text/plain, */*",
+            clientVersion = "2.0.89.154",
+            deviceOs = "MACOS",
+        )
+        .add("nv-browser-type", "CHROME")
+        .add("nv-device-make", "APPLE")
+        .add("nv-device-model", "UNKNOWN")
+        .add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
+        .add("Accept-Language", "en-CA,en-GB;q=0.9,en-US;q=0.8,en;q=0.7")
+        .add("Origin", GFN_PLAY_ORIGIN)
+        .add("Cache-Control", "no-cache")
+        .add("Pragma", "no-cache")
+        .add("sw-notify-fetch", "true")
+        .add("x-sw-cachebypass", "true")
+        .build()
 
 private fun desktopGraphQlHeaders(token: String? = null): Headers =
     Headers.Builder()
@@ -2765,19 +2790,32 @@ class GfnCatalogRepository(
     )
 }
 
+internal fun buildSubscriptionRequest(token: String, userId: String, vpcId: String): Request =
+    Request.Builder()
+        .url(
+            MES_URL.toHttpUrl().newBuilder()
+                .addQueryParameter("serviceName", "gfn_pc")
+                .addQueryParameter("languageCode", "en_GB")
+                .addQueryParameter("vpcId", vpcId)
+                .addQueryParameter("userId", userId)
+                .build(),
+        )
+        .headers(subscriptionHeaders(token))
+        .build()
+
 class GfnSubscriptionRepository(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
     suspend fun fetchSubscription(token: String, userId: String, vpcId: String = "NP-AMS-08"): SubscriptionInfo {
-        val url = "$MES_URL?serviceName=gfn_pc&languageCode=en_US&vpcId=${encoded(vpcId)}&userId=${encoded(userId)}"
-        val request = Request.Builder()
-            .url(url)
-            .headers(Headers.Builder().putDesktopLcars(token).build())
-            .build()
+        val request = buildSubscriptionRequest(token, userId, vpcId)
         val (code, text) = http.awaitText(request)
         // Do not turn a failed entitlement request into a confirmed Free membership. The setup
         // flow must be able to distinguish "Free and playable" from "not verified".
         if (code !in 200..299) return SubscriptionInfo(membershipTier = "")
+        return parseSubscriptionResponse(text)
+    }
+
+    internal fun parseSubscriptionResponse(text: String): SubscriptionInfo {
         val data = OpenNowJson.parseToJsonElement(text).jsonObject
         val allotted = data.double("allottedTimeInMinutes") ?: 0.0
         val purchased = data.double("purchasedTimeInMinutes") ?: 0.0
@@ -2808,7 +2846,14 @@ class GfnSubscriptionRepository(
             remainingHours = remaining / 60.0,
             totalHours = total / 60.0,
             state = data.obj("currentSubscriptionState")?.string("state"),
-            isGamePlayAllowed = data.obj("currentSubscriptionState")?.boolean("isGamePlayAllowed"),
+            // Free memberships can omit currentSubscriptionState entirely. MES also exposes
+            // the authoritative entitlement through streamingSupport; a tier alone is insufficient.
+            isGamePlayAllowed = data.obj("currentSubscriptionState")?.boolean("isGamePlayAllowed")
+                ?: when (data.string("streamingSupport")) {
+                    "ENABLED" -> true
+                    "DISABLED" -> false
+                    else -> null
+                },
             isUnlimited = data.string("subType") == "UNLIMITED",
             storageAddon = storageAddon,
             entitledResolutions = resolutions,

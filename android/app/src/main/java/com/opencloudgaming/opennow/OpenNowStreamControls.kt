@@ -818,7 +818,7 @@ internal fun StreamControlsPanel(
     var page by remember { mutableStateOf(StreamControlsPage.Main) }
     val compactHeight = LocalConfiguration.current.screenHeightDp < 480
     var expandedPanel by rememberSaveable { mutableStateOf(false) }
-    var advancedControlsVisible by rememberSaveable { mutableStateOf(true) }
+    var advancedControlsVisible by rememberSaveable { mutableStateOf(false) }
     val activity = LocalContext.current as? MainActivity
     DisposableEffect(activity, expandedPanel) {
         activity?.setStreamPanelExpanded(expandedPanel)
@@ -1044,6 +1044,106 @@ internal fun StreamControlsPanel(
                     )
                 }
             }
+            item {
+                ControlSection(stringResource(R.string.keyboard_overlay_category_mouse)) {
+                    ControlNavigationRow(
+                        label = stringResource(R.string.stream_panel_mouse_mode),
+                        onClick = {
+                            onButtonTone()
+                            page = StreamControlsPage.MouseMode
+                        },
+                        value = if (controllerMouseEmulationEnabled) {
+                            stringResource(R.string.stream_panel_mouse_mode_summary)
+                        } else {
+                            onOffLabel(false)
+                        },
+                    )
+
+                    if (tvProfile) {
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_controller_mouse),
+                            checked = controllerMouseAssistEnabled,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onControllerMouseAssistToggle()
+                            },
+                            value = if (controllerMouseAssistEnabled) {
+                                stringResource(R.string.stream_panel_controller_mouse_summary)
+                            } else {
+                                onOffLabel(false)
+                            },
+                            description = stringResource(R.string.stream_panel_controller_mouse_description),
+                        )
+                    } else {
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_finger_mouse),
+                            checked = settings.androidTouch.mousePad,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onMousePadToggle()
+                            },
+                            value = onOffLabel(settings.androidTouch.mousePad),
+                        )
+                        if (settings.androidTouch.mousePad) {
+                            TouchMouseSensitivitySlider(settings.stream, onTouchMouseSensitivityChange)
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_mouse_with_touch_controller),
+                                checked = settings.androidTouch.mouseWithTouchController,
+                                onCheckedChange = { enabled ->
+                                    onButtonTone()
+                                    onTouchSettingsChange(settings.androidTouch.copy(mouseWithTouchController = enabled))
+                                },
+                                value = onOffLabel(settings.androidTouch.mouseWithTouchController),
+                                description = stringResource(R.string.stream_mouse_with_touch_controller_description),
+                                indentLevel = 1,
+                            )
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_direct_click),
+                                checked = settings.androidTouch.mouseDirectClick,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onMouseDirectClickToggle()
+                                },
+                                value = onOffLabel(settings.androidTouch.mouseDirectClick),
+                                // Reads as a child of Finger mouse; replaces a hand-written Box.
+                                indentLevel = 1,
+                            )
+
+                            val scrollHint = when {
+                                settings.stream.mouseScrollSensitivity <= 20 -> "Fast"
+                                settings.stream.mouseScrollSensitivity <= 40 -> "Normal"
+                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                                else -> "Slow"
+                            }
+
+                            ControlActionRow(
+                                label = "Scroll sensitivity",
+                                actionLabel = scrollHint,
+                                onClick = {
+                                    onButtonTone()
+                                    val next = when {
+                                        settings.stream.mouseScrollSensitivity <= 20 -> 40
+                                        settings.stream.mouseScrollSensitivity <= 40 -> 60
+                                        settings.stream.mouseScrollSensitivity <= 60 -> 80
+                                        else -> 20
+                                    }
+                                    onMouseScrollSensitivityChange(next)
+                                },
+                                indentLevel = 1
+                            )
+                        }
+                    }
+                }
+            }
+            item {
+                ControlActionRow(
+                    label = if (advancedControlsVisible) stringResource(R.string.stream_panel_less_controls)
+                        else stringResource(R.string.stream_panel_more_controls),
+                    actionLabel = if (advancedControlsVisible) stringResource(R.string.action_close)
+                        else stringResource(R.string.action_open),
+                    onClick = { advancedControlsVisible = !advancedControlsVisible },
+                )
+            }
             if (!compactHeight || advancedControlsVisible) item {
                 ControlSection(stringResource(R.string.stream_panel_section_display)) {
                     if (advancedControlsVisible) {
@@ -1099,7 +1199,7 @@ internal fun StreamControlsPanel(
                     }
                 }
             }
-            item {
+            if (advancedControlsVisible || microphoneRequested) item {
                 ControlSection(stringResource(R.string.stream_panel_section_input)) {
                     if (advancedControlsVisible) ControlSliderRow(
                         label = stringResource(R.string.settings_physical_stick_dead_zone),
@@ -1152,105 +1252,8 @@ internal fun StreamControlsPanel(
                                 onBackspace()
                             }
                         }
-                        if (tvProfile) {
-                            ControlSwitchRow(
-                                label = stringResource(R.string.stream_panel_controller_mouse),
-                                checked = controllerMouseAssistEnabled,
-                                onCheckedChange = {
-                                    onButtonTone()
-                                    onControllerMouseAssistToggle()
-                                },
-                                value = if (controllerMouseAssistEnabled) {
-                                    stringResource(R.string.stream_panel_controller_mouse_summary)
-                                } else {
-                                    onOffLabel(false)
-                                },
-                                description = stringResource(R.string.stream_panel_controller_mouse_description),
-                            )
-                        } else {
-                            ControlSwitchRow(
-                                label = stringResource(R.string.stream_panel_finger_mouse),
-                                checked = settings.androidTouch.mousePad,
-                                onCheckedChange = {
-                                    onButtonTone()
-                                    onMousePadToggle()
-                                },
-                                value = onOffLabel(settings.androidTouch.mousePad),
-                            )
-                            if (settings.androidTouch.mousePad) {
-                                TouchMouseSensitivitySlider(settings.stream, onTouchMouseSensitivityChange)
-                                ControlSwitchRow(
-                                    label = stringResource(R.string.stream_mouse_with_touch_controller),
-                                    checked = settings.androidTouch.mouseWithTouchController,
-                                    onCheckedChange = { enabled ->
-                                        onButtonTone()
-                                        onTouchSettingsChange(settings.androidTouch.copy(mouseWithTouchController = enabled))
-                                    },
-                                    value = onOffLabel(settings.androidTouch.mouseWithTouchController),
-                                    description = stringResource(R.string.stream_mouse_with_touch_controller_description),
-                                    indentLevel = 1,
-                                )
-                                ControlSwitchRow(
-                                    label = stringResource(R.string.stream_panel_direct_click),
-                                    checked = settings.androidTouch.mouseDirectClick,
-                                    onCheckedChange = {
-                                        onButtonTone()
-                                        onMouseDirectClickToggle()
-                                    },
-                                    value = onOffLabel(settings.androidTouch.mouseDirectClick),
-                                    // Reads as a child of Finger mouse; replaces a hand-written Box.
-                                    indentLevel = 1,
-                                )
-
-                                val scrollHint = when {
-                                    settings.stream.mouseScrollSensitivity <= 20 -> "Fast"
-                                    settings.stream.mouseScrollSensitivity <= 40 -> "Normal"
-                                    settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
-                                    else -> "Slow"
-                                }
-
-                                ControlActionRow(
-                                    label = "Scroll sensitivity",
-                                    actionLabel = scrollHint,
-                                    onClick = {
-                                        onButtonTone()
-                                        val next = when {
-                                            settings.stream.mouseScrollSensitivity <= 20 -> 40
-                                            settings.stream.mouseScrollSensitivity <= 40 -> 60
-                                            settings.stream.mouseScrollSensitivity <= 60 -> 80
-                                            else -> 20
-                                        }
-                                        onMouseScrollSensitivityChange(next)
-                                    },
-                                    indentLevel = 1
-                                )
-                            }
-                        }
                     }
-                    // Mouse mode (Left stick): shown for all profiles — works with both physical
-                    // gamepad and touch controller.
-                    ControlNavigationRow(
-                        label = stringResource(R.string.stream_panel_mouse_mode),
-                        onClick = {
-                            onButtonTone()
-                            page = StreamControlsPage.MouseMode
-                        },
-                        value = if (controllerMouseEmulationEnabled) {
-                            stringResource(R.string.stream_panel_mouse_mode_summary)
-                        } else {
-                            onOffLabel(false)
-                        },
-                    )
                 }
-            }
-            item {
-                ControlActionRow(
-                    label = if (advancedControlsVisible) stringResource(R.string.stream_panel_less_controls)
-                        else stringResource(R.string.stream_panel_more_controls),
-                    actionLabel = if (advancedControlsVisible) stringResource(R.string.action_close)
-                        else stringResource(R.string.action_open),
-                    onClick = { advancedControlsVisible = !advancedControlsVisible },
-                )
             }
             item {
                 ControlSection(stringResource(R.string.stream_panel_section_support)) {

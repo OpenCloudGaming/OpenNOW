@@ -6,6 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SpaceUiTest {
+    @Test fun tallArtworkIsLimitedToTvAndTabletProfiles() {
+        assertFalse(shouldUseSpacePortraitArtwork(tvProfile = false, smallestScreenWidthDp = 392))
+        assertFalse(shouldUseSpacePortraitArtwork(tvProfile = false, smallestScreenWidthDp = 599))
+        assertTrue(shouldUseSpacePortraitArtwork(tvProfile = false, smallestScreenWidthDp = 600))
+        assertTrue(shouldUseSpacePortraitArtwork(tvProfile = false, smallestScreenWidthDp = 800))
+        assertTrue(shouldUseSpacePortraitArtwork(tvProfile = true, smallestScreenWidthDp = 540))
+    }
+
     @Test fun rapidSelectionAcceleratesButPausesAndRepeatedIdsDoNot() {
         val cadence = SpaceSelectionCadence()
         assertFalse(cadence.changed("1", 1000))

@@ -29,6 +29,10 @@ import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 
 internal val LocalSpaceUiPresentation = staticCompositionLocalOf { false }
 
+/** Classify the device/window independently of landscape width so phones retain square artwork. */
+internal fun shouldUseSpacePortraitArtwork(tvProfile: Boolean, smallestScreenWidthDp: Int): Boolean =
+    tvProfile || smallestScreenWidthDp >= 600
+
 /** A single visual system across discovery, game hubs, settings, and session launch. */
 @Composable
 internal fun SpaceUiTheme(enabled: Boolean = true,

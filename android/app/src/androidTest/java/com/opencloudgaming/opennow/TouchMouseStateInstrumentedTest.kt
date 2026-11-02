@@ -98,9 +98,11 @@ class TouchMouseStateInstrumentedTest {
         tap(1100)
         assertTrue(output.positions.isEmpty())
         tap(1200, buttons = false)
-        tap(1300, buttons = false)
         assertTrue(output.positions.isEmpty())
+        tap(1300, buttons = false)
+        assertEquals(listOf(AbsoluteMousePosition(100, 100, 1920, 1080)), output.positions)
         assertTrue(output.buttons.isEmpty())
+        assertEquals(0, output.taps)
         // With Direct click off, the experiment leaves ordinary touchpad taps intact.
         state.event(output, MotionEvent.ACTION_DOWN, 1400, combined = true, buttonsEnabled = true)
         state.event(output, MotionEvent.ACTION_UP, 1440, combined = true, buttonsEnabled = true)
@@ -109,6 +111,30 @@ class TouchMouseStateInstrumentedTest {
         state.event(output, MotionEvent.ACTION_DOWN, 1500, direct = true, buttonsEnabled = true)
         state.event(output, MotionEvent.ACTION_CANCEL, 1540, direct = true, buttonsEnabled = true)
         assertEquals(listOf(true, false), output.buttons)
+    }
+
+    @Test fun combinedCursorOnlyDoubleTapPositionsAtTheSecondTapAfterSliding() {
+        val output = Output()
+        val state = TouchMouseState()
+        fun event(action: Int, time: Long, x: Float) = state.event(
+            output, action, time, x = x, direct = true, combined = true, buttonsEnabled = false,
+        )
+        event(MotionEvent.ACTION_DOWN, 1000, 100f)
+        event(MotionEvent.ACTION_MOVE, 1020, 150f)
+        event(MotionEvent.ACTION_UP, 1040, 180f)
+        assertEquals(80, output.moves.sumOf { it.first })
+        event(MotionEvent.ACTION_DOWN, 1100, 700f)
+        event(MotionEvent.ACTION_UP, 1140, 700f)
+        assertTrue(output.positions.isEmpty())
+        event(MotionEvent.ACTION_DOWN, 1200, 710f)
+        event(MotionEvent.ACTION_UP, 1240, 712f)
+        assertEquals(listOf(AbsoluteMousePosition(712, 100, 1920, 1080)), output.positions)
+        assertTrue(output.buttons.isEmpty())
+        assertEquals(0, output.taps)
+        // The completed pair is consumed; another isolated tap must not jump the cursor.
+        event(MotionEvent.ACTION_DOWN, 1300, 720f)
+        event(MotionEvent.ACTION_UP, 1340, 720f)
+        assertEquals(1, output.positions.size)
     }
 
     @Test fun combinedModeScrollsWithoutClickingOrArmingADoubleTap() {

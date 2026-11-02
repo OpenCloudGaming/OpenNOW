@@ -42,7 +42,8 @@ internal enum class SetupGfnMembershipStatus {
 }
 
 /**
- * MES owns the decision about whether this account may start gameplay. A tier label alone is not
+ * MES owns the decision about whether this account may start gameplay. The subscription parser
+ * normalizes currentSubscriptionState.isGamePlayAllowed and streamingSupport. A tier label alone is not
  * enough: newly created NVIDIA accounts can report a user identity before the user has selected
  * even the Free GFN membership.
  */

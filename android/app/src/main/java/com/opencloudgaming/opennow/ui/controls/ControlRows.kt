@@ -68,6 +68,7 @@ internal fun ControlSwitchRow(
     ControlRow(
         modifier = modifier,
         onClick = toggle,
+        onLongClick = if (description.isNullOrBlank()) null else ({ descriptionExpanded = !descriptionExpanded }),
         enabled = enabled,
         indentLevel = indentLevel,
         style = style,

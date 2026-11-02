@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.key
@@ -182,7 +183,7 @@ class SpaceUiInstrumentedTest {
             val manager = LocalInputModeManager.current
             SideEffect { inputModeManager = manager }
             MaterialTheme {
-                CompositionLocalProvider(LocalReduceMotion provides true) {
+                CompositionLocalProvider(LocalReduceMotion provides true, LocalReduceForegroundMotion provides true) {
                     SpaceUiScreen(OpenNowUiState(page = AppPage.Library, libraryGames = games),
                         onNavigate = {}, onSelectGame = {}, onRefresh = {}, onSearchChange = {}, onResumeSession = {},
                         inputEnabled = true, settingsContent = {})
@@ -214,7 +215,7 @@ class SpaceUiInstrumentedTest {
             settings = AppSettings(showPremiumMarker = false)))
         val marker = InstrumentationRegistry.getInstrumentation().targetContext.getString(R.string.catalog_premium_marker)
         compose.setContent {
-            CompositionLocalProvider(LocalReduceMotion provides true) {
+            CompositionLocalProvider(LocalReduceMotion provides true, LocalReduceForegroundMotion provides true) {
                 SpaceUiTheme {
                     SpaceUiScreen(state, onNavigate = {}, onSelectGame = {}, onRefresh = {}, onSearchChange = {},
                         onResumeSession = {}, inputEnabled = true, settingsContent = {})
@@ -507,7 +508,7 @@ class SpaceUiInstrumentedTest {
         var position by mutableIntStateOf(12)
         var reduced by mutableStateOf(false)
         compose.setContent {
-            CompositionLocalProvider(LocalReduceMotion provides reduced) {
+            CompositionLocalProvider(LocalReduceMotion provides reduced, LocalReduceForegroundMotion provides reduced) {
                 SpaceLaunchScreen(OpenNowUiState(streamGame = games.first(), streamStatus = "queue"),
                     status = "Queue position: $position", queuePosition = position, onMinimize = {}, onCancel = {})
             }
@@ -545,6 +546,32 @@ class SpaceUiInstrumentedTest {
         compose.onNodeWithTag("space-queue-status").assertTextEquals("Queue position: 3")
     }
 
+    @Test fun lowPowerQueueSpinnerMovesAndExplicitReducedMotionStopsIt() {
+        compose.mainClock.autoAdvance = false
+        var explicitReduceMotion by mutableStateOf(false)
+        compose.setContent {
+            // The Chromecast's automatic low-power policy keeps decorative animation off.
+            CompositionLocalProvider(LocalReduceMotion provides true,
+                LocalReduceForegroundMotion provides explicitReduceMotion) {
+                SpaceLaunchScreen(OpenNowUiState(streamGame = games.first(), streamStatus = "queue"),
+                    status = "Queue position: 12", queuePosition = 12, onMinimize = {}, onCancel = {})
+            }
+        }
+        compose.waitUntil(5_000) { compose.activity.hasWindowFocus() }
+        compose.mainClock.advanceTimeBy(1_000)
+        val indicator = compose.onNodeWithTag("space-launch-progress", useUnmergedTree = true)
+        val before = indicator.captureToImage().asAndroidBitmap()
+        compose.mainClock.advanceTimeBy(250)
+        assertFalse("Low-power mode must keep the queue spinner moving",
+            before.sameAs(indicator.captureToImage().asAndroidBitmap()))
+        compose.runOnIdle { explicitReduceMotion = true }
+        compose.mainClock.advanceTimeBy(1_000)
+        val reduced = indicator.captureToImage().asAndroidBitmap()
+        compose.mainClock.advanceTimeBy(1_000)
+        assertTrue("The user's reduced-motion setting must still stop the spinner",
+            reduced.sameAs(indicator.captureToImage().asAndroidBitmap()))
+    }
+
     @Test fun minimizedQueueUsesTheTopRailAndKeepsRestoreAndCancelActions() {
         var restores = 0
         var cancels = 0
@@ -573,7 +600,7 @@ class SpaceUiInstrumentedTest {
         compose.mainClock.autoAdvance = false
         var progress by mutableFloatStateOf(0f)
         compose.setContent {
-            CompositionLocalProvider(LocalReduceMotion provides true) {
+            CompositionLocalProvider(LocalReduceMotion provides true, LocalReduceForegroundMotion provides true) {
                 SpaceLaunchScreen(OpenNowUiState(streamGame = games.first(), streamStatus = "connecting"),
                     status = "Setting up rig", connectingProgress = { progress }, onMinimize = {}, onCancel = {})
             }

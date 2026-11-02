@@ -297,7 +297,7 @@ import com.opencloudgaming.opennow.ui.controls.ControlSwitchRow
 import com.opencloudgaming.opennow.ui.controls.LocalControlRowStyle
 import com.opencloudgaming.opennow.ui.controls.LocalControlSectionStyle
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
-import com.opencloudgaming.opennow.ui.theme.LocalReduceControllerFocusMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
@@ -495,8 +495,8 @@ fun OpenNowTheme(
         lowRamDevice = lowRamDevice,
     )
     // Honour the system switch, the app preference, and the existing runtime capability probe.
-    // This uses the same calm rendering path for constrained devices instead of maintaining a
-    // second set of animation predicates that can drift apart.
+    // Constrained devices keep a calm background while essential foreground feedback follows
+    // the explicit user/system preference.
     val userOrSystemReduceMotion = remember(settings.controllerBackgroundAnimations, context) {
         val systemScale = runCatching {
             Settings.Global.getFloat(
@@ -517,7 +517,7 @@ fun OpenNowTheme(
     )
     CompositionLocalProvider(
         LocalReduceMotion provides reduceMotion,
-        LocalReduceControllerFocusMotion provides userOrSystemReduceMotion,
+        LocalReduceForegroundMotion provides userOrSystemReduceMotion,
         LocalOpenNowHaptics provides openNowHaptics,
         LocalActiveSelectionColor provides selectionEffectStyle.color,
         LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
@@ -1167,11 +1167,12 @@ private fun MainShell(
                     },
             ) {
                 if (spaceUi) {
-                    Box(Modifier.fillMaxSize().padding(screenEdgePadding)) {
+                    Box(Modifier.fillMaxSize()) {
                         spaceUiStateHolder.SaveableStateProvider("space-ui") {
                             SpaceUiTheme {
                                 SpaceUiScreen(
                                     state = state,
+                                    safeAreaPadding = screenEdgePadding,
                                     onNavigate = ::navigateFromAppChrome,
                                     onSelectGame = { viewModel.selectGame(it) },
                                     onRefresh = viewModel::refreshGames,
@@ -1488,6 +1489,7 @@ private fun MainShell(
                         // banner share coordinates and the first visible frame follows the haptic.
                         if (spaceUi) SpaceGameHub(
                             game = game,
+                            tvProfile = tvProfile,
                             favorite = game.id in state.settings.favoriteGameIds,
                             defaultVariantId = state.settings.defaultGameVariantIds[game.id],
                             onPlay = viewModel::play,

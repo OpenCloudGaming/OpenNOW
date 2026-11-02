@@ -4,7 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.opencloudgaming.opennow.ui.theme.LocalReduceControllerFocusMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -16,7 +16,7 @@ class SelectionEffectColorsInstrumentedTest {
         var settings by mutableStateOf(AppSettings(uiAccent = UiAccent.Violet))
         compose.setContent {
             MaterialTheme {
-                CompositionLocalProvider(LocalReduceControllerFocusMotion provides true) {
+                CompositionLocalProvider(LocalReduceForegroundMotion provides true) {
                     SelectionEffectColorSetting(settings) { settings = settings.copy(selectionEffectColors = it) }
                 }
             }

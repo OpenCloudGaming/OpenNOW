@@ -765,6 +765,10 @@
     "settings_video_output_desc": "Applies the next time you start or resume a stream."
   },
   "androidSetup": {
+    "discord_community_rules_notice": "BE POLITE, OBSERVE PROPER ETIQUETTE, AND DO NOT BRING UP POLITICS, ISSUES RELATED TO RACE, RELIGION, OR ETHNICITY, OR ADULT CONTENT!!",
+    "discord_community_rules_enforcement": "By joining our Discord server community, you are agreeing to follow my rules. There will be zero tolerance for causing chaos, posting sensitive content, or provoking others—I will immediately kick you from my server!!",
+    "discord_community_rules_remember": "I agree with your statement; please don’t post it again.",
+    "discord_community_rules_yes": "Yes",
     "dev_demo_section": "Demonstrations",
     "dev_demo_mode": "Demo mode",
     "dev_demo_mode_summary": "Hide account details, show all stores as connected, and show all loaded games as owned. For display only.",

@@ -420,6 +420,7 @@ internal fun AnimatedQueueStatusText(
     modifier: Modifier = Modifier,
     style: TextStyle? = null,
     contentColor: Color = TextMuted,
+    reduceMotion: Boolean = LocalReduceMotion.current,
 ) {
     val textStyle = style ?: (if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium)
         .copy(fontWeight = FontWeight.Normal)
@@ -441,7 +442,6 @@ internal fun AnimatedQueueStatusText(
     var numberTo by remember { mutableStateOf(queuePosition.toString()) }
     val heat = queueUrgency(queuePosition)
     val hotQueue = queuePosition < 10
-    val reduceMotion = LocalReduceMotion.current
     val glow: State<Float>
     val moleculePhase: State<Float>
     val animate = !reduceMotion && androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused

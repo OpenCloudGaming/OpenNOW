@@ -1215,8 +1215,13 @@ internal class TouchMouseState {
             if (doubleTapDirectClick.isSliding && !scrollGestureOccurred && !twoFingerTapCandidate) {
                 sendMouseDelta(x - lastX, y - lastY, event.eventTime, client, force = true)
             }
-            if (click && clickEnabled) {
-                positionAt(index)?.let(client::sendDirectClickMouseClick)
+            if (click) {
+                positionAt(index)?.let { position ->
+                    // K&M overlay buttons own clicks, but a double tap must still position the
+                    // cursor for those buttons, just like ordinary cursor-only Direct click.
+                    if (clickEnabled) client.sendDirectClickMouseClick(position)
+                    else client.sendDirectClickMousePosition(position)
+                }
             }
             activePointerId = -1
             twoFingerTapCandidate = false

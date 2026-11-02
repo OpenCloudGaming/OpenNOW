@@ -307,7 +307,10 @@ internal fun ChoiceMenuRow(
             }
         }
     }
-    ControlRow(onClick = { expanded = true }) {
+    ControlRow(
+        onClick = { expanded = true },
+        onLongClick = if (description.isNullOrBlank()) null else ({ descriptionExpanded = !descriptionExpanded }),
+    ) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // Compare natural text widths before the button can squeeze the weighted label.
             // Include the button's horizontal padding and the optional help touch target.

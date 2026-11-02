@@ -791,10 +791,10 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
 internal fun StreamSettings.requiresNativeAndroidCloudMatchMode(): Boolean =
     streamResolutionPixels(this) == parseResolutionPixels(PORTAL_STREAM_RESOLUTION)
 
-/** Keep desktop WebRTC allocation separate from native NVST and touch/Portal identities. */
+/** Use desktop WebRTC only for profiles outside the mobile mode matrix. */
 internal fun StreamSettings.prefersDesktopWebRtcCloudMatchMode(): Boolean =
     !experimentalNvst && !requiresNativeAndroidCloudMatchMode() &&
-        (browserClientMode || (!hdrEnabled && requiresNativeDesktopCloudMatchMode()))
+        requiresNativeDesktopCloudMatchMode() && (browserClientMode || !hdrEnabled)
 
 internal fun StreamSettings.requiresNativeDesktopCloudMatchMode(): Boolean {
     val (width, height) = streamResolutionPixels(this)

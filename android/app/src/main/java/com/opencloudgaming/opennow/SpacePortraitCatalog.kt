@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
 
 /** Library grid fallback for compact multi-window configurations. Discover stays a horizontal rail. */
 @Composable
@@ -45,7 +45,7 @@ internal fun SpacePortraitCatalog(
     libraryContent: @Composable () -> Unit,
     onResumeSession: () -> Unit,
 ) {
-    val reduceMotion = LocalReduceMotion.current
+    val reduceMotion = LocalReduceForegroundMotion.current
     val library = state.page == AppPage.Library
     LazyVerticalGrid(columns = if (library) GridCells.Adaptive(132.dp) else GridCells.Fixed(2), state = gridState,
         modifier = modifier.fillMaxWidth().testTag(if (library) "space-library-grid" else "space-portrait-discover"),

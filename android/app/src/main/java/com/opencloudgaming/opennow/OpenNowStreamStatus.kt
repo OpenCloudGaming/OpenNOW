@@ -379,8 +379,7 @@ internal fun ActiveStreamModePill(
 ) {
     val context = LocalContext.current
     val appLocale = currentAndroidAppLocale(context)
-    // Only the changes that still raise a notice. Resolution and colour negotiation is recorded
-    // silently — see activeStreamModeNoticeChanges.
+    // Only the changes that still raise a notice — see activeStreamModeNoticeChanges.
     val changes = remember(status) { activeStreamModeNoticeChanges(status) }
     if (changes.isEmpty()) return
     val causeAssessment = remember(status, recoveryReason) {
@@ -677,14 +676,13 @@ internal data class ActiveStreamModeDisplayChange(
 /**
  * Changes the player is worth interrupting for.
  *
- * Resolution and colour-depth differences are routine session negotiation — the cloud allocates a
- * mode, the decoder reports another — and every one of them was raising an in-stream notice whose
- * only action is uploading a diagnostic report. They stay in the session report and the debug log,
- * where they are useful, and no longer prompt.
+ * Resolution and colour-depth negotiation and sharpening compatibility adjustments stay in
+ * diagnostics without raising an in-stream notice or prompting for a developer report.
  */
 private val SILENT_ACTIVE_STREAM_MODE_CHANGES = setOf(
     ActiveStreamModeChangeKind.Resolution,
     ActiveStreamModeChangeKind.Color,
+    ActiveStreamModeChangeKind.Sharpening,
 )
 
 internal fun activeStreamModeNoticeChanges(status: ActiveStreamModeStatus): List<ActiveStreamModeDisplayChange> =
