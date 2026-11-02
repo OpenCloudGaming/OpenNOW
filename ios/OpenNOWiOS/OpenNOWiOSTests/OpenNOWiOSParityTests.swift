@@ -1752,6 +1752,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(StreamSettingsResolver.selectingColor(.eightBit420,in:initial).hdrEnabled)
     }
 
+    func testDisplayClockRequestsFixedStreamCadenceWithinScreenLimit() {
+        for (streamFPS, displayFPS, expected) in [
+            (60, 60, 60), (60, 120, 60), (120, 120, 120), (240, 120, 120),
+            (120, 60, 60), (30, 120, 30), (60, 30, 30), (0, 60, 1), (60, 0, 1)
+        ] {
+            let range = nativeStreamDisplayFrameRateRange(streamFPS: streamFPS, displayMaximumFPS: displayFPS)
+            XCTAssertEqual(range.minimum, Float(expected))
+            XCTAssertEqual(range.maximum, Float(expected))
+            XCTAssertEqual(range.preferred, Float(expected))
+        }
+    }
+
     func testPresentationRatesCountActualDisplayedFramesAndExpire() throws {
         var meter = NativeStreamPresentationRateMeter()
         XCTAssertNil(meter.snapshot(now: 100))
@@ -4459,9 +4471,9 @@ final class OpenNOWiOSParityTests: XCTestCase {
         settings.streamTutorialCompleted = true
         settings.streamerPreferences.touchControllerVisible = true
         var saved: [Bool] = []
-        let coordinator = makeTouchControlsCoordinator(settings: settings) {
+        let coordinator = makeTouchControlsCoordinator(settings: settings, onPreferencesChange: {
             saved.append($0.touchControllerVisible)
-        }
+        })
         XCTAssertTrue(coordinator.shouldShowVirtualController)
         XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton)
         for _ in 0..<3 {
@@ -4484,7 +4496,50 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeTerminationStopsOnceAndIgnoresLateTransportFailures() {
+        var events: [NvstSeatTermination] = []
+        var failures = 0
+        let coordinator = makeTouchControlsCoordinator(settings: .default,
+            onTermination: { events.append($0) }, onTransportFailure: { failures += 1 })
+        let event = NvstSeatTermination(result: 0x8003_0014, payload: Data())
+        coordinator.handleNativeStreamTermination(event)
+        coordinator.handleNativeStreamTermination(event)
+        coordinator.handleNativeStreamFailure(reason: "late close")
+        XCTAssertEqual(events, [event])
+        XCTAssertEqual(failures, 0)
+        XCTAssertFalse(coordinator.retryAvailable)
+    }
+
+    @MainActor
+    func testNativeFailureReconcilesOnceAndCanStillAcceptHostTermination() {
+        var events: [NvstSeatTermination] = []
+        var failures = 0
+        let coordinator = makeTouchControlsCoordinator(settings: .default,
+            onTermination: { events.append($0) }, onTransportFailure: { failures += 1 })
+        coordinator.handleNativeStreamFailure(reason: "connection lost")
+        coordinator.handleNativeStreamFailure(reason: "duplicate close")
+        XCTAssertEqual(failures, 1)
+        XCTAssertEqual(coordinator.detailText, "connection lost")
+        let event = NvstSeatTermination(result: 0x8003_0014, payload: Data())
+        coordinator.handleNativeStreamTermination(event)
+        coordinator.handleNativeStreamFailure(reason: "late close")
+        XCTAssertEqual(events, [event])
+        XCTAssertEqual(failures, 1)
+    }
+
+    @MainActor
+    func testLocalStopIgnoresLateNativeTermination() {
+        var events: [NvstSeatTermination] = []
+        let coordinator = makeTouchControlsCoordinator(settings: .default, onTermination: { events.append($0) })
+        coordinator.stop()
+        coordinator.handleNativeStreamTermination(.init(result: 0x8003_0014, payload: Data()))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    @MainActor
     private func makeTouchControlsCoordinator(settings: AppSettings,
+        onTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
+        onTransportFailure: @escaping () -> Void = {},
         onPreferencesChange: @escaping (StreamerPreferences) -> Void = { _ in }) -> NativeStreamCoordinator {
         NativeStreamCoordinator(
             session: Self.makeActiveSession(game: Self.makeGame(title: "Touch controls", controls: []), status: 3),
@@ -4493,7 +4548,8 @@ final class OpenNOWiOSParityTests: XCTestCase {
             onStreamSharpeningChange: { _, _ in }, onFingerMouseEnabledChange: { _ in },
             onPhoneRumbleFallbackChange: { _ in }, onStreamTutorialCompleted: {},
             onControllerTouchPromptDismissed: {}, onStatsOverlayChange: { _ in },
-            onTransportStable: {}, onSelectedVideoProfileRetry: { _ in }, onRuntimeSample: { _ in },
+            onTransportStable: {}, onStreamTermination: onTermination, onTransportFailure: onTransportFailure,
+            onSelectedVideoProfileRetry: { _ in }, onRuntimeSample: { _ in },
             onSettingsChange: { _ in }, onBuildBugReportDeck: { BugReportPreflightDeck() },
             onSubmitBugReport: { _, _ in .failure(BugReportError.invalid("Test")) }, onClose: {}, onRetry: nil)
     }

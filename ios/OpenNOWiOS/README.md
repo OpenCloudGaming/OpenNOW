@@ -41,6 +41,10 @@ The native NVST receiver requires an advertised RTSPS endpoint and compatible ha
 
 Native microphone carriage requires a host bundle offering it and the microphone option enabled. Protocol provenance, pinned dependencies and licenses are in [NVST](OpenNOWiOS/NVST/README.md).
 
+The filtered Metal renderer requests a fixed display-link cadence matching the stream profile, capped by the attached screen's refresh limit. A 60 FPS stream requests 60 Hz rather than permitting a 30 Hz callback rate. iOS still controls the actual refresh rate under power or thermal limits. Stream FPS counts real decoded frames, and Displayed FPS counts actual drawable presentations; neither counter is padded by repeating frames. This does not enable adaptive resolution or guarantee a constant incoming frame rate.
+
+Native host game-exit and intended-end notifications close the stream and remove the ended allocation from local session surfaces and persistence. Explicit host errors remain visible. Pause, network failure, another-client disconnect and unknown reasons retain the allocation until an exact provider status check confirms it ended; a transport failure alone is not treated as a game exit.
+
 ## Checks
 
 Run the simulator test scheme `OpenNOWiOS`, plus the GPU validation commands in [METAL4.md](METAL4.md). Simulator and Mac checks cannot establish iPhone/iPad performance. Build 149 verified the visible iPhone block repair; consistent 120 FPS, the separate decoder recovery event and physical iPad behavior remain separate validation targets.

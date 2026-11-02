@@ -46,6 +46,11 @@ func nativeStreamShouldUseFilteredRenderer(
     isSimulator || osMajorVersion >= 26 || videoCodec == .h265 || streamSharpeningEnabled
 }
 
+func nativeStreamDisplayFrameRateRange(streamFPS: Int, displayMaximumFPS: Int) -> CAFrameRateRange {
+    let rate = Float(min(max(1, streamFPS), max(1, displayMaximumFPS)))
+    return CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+}
+
 enum NativeStreamTransportPolicy {
     static let offerTimeout: TimeInterval = 12
     static let iceDisconnectedGrace: TimeInterval = 3.5
@@ -605,6 +610,8 @@ struct StreamerView: View {
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onTransportStable: @escaping () -> Void = {},
+        onStreamTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
+        onTransportFailure: @escaping () -> Void = {},
         onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
@@ -631,6 +638,8 @@ struct StreamerView: View {
                 onControllerTouchPromptDismissed: onControllerTouchPromptDismissed,
                 onStatsOverlayChange: onStatsOverlayChange,
                 onTransportStable: onTransportStable,
+                onStreamTermination: onStreamTermination,
+                onTransportFailure: onTransportFailure,
                 onSelectedVideoProfileRetry: onSelectedVideoProfileRetry,
                 onRuntimeSample: onRuntimeSample,
                 onSettingsChange: onSettingsChange,
@@ -887,6 +896,8 @@ struct StreamerView: View {
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onTransportStable: @escaping () -> Void = {},
+        onStreamTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
+        onTransportFailure: @escaping () -> Void = {},
         onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
@@ -911,6 +922,8 @@ struct StreamerView: View {
         _ = onControllerTouchPromptDismissed
         _ = onStatsOverlayChange
         _ = onTransportStable
+        _ = onStreamTermination
+        _ = onTransportFailure
         _ = onSelectedVideoProfileRetry
         _ = onNativeFallbackRequiresFreshEndpoint
         _ = onRuntimeSample
@@ -2688,6 +2701,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private let onControllerTouchPromptDismissed: () -> Void
     private let onStatsOverlayChange: (Bool) -> Void
     private let onTransportStable: () -> Void
+    private let onStreamTermination: (NvstSeatTermination) -> Void
+    private let onTransportFailure: () -> Void
     private let onSelectedVideoProfileRetry: (String) -> Void
     /// Fired roughly once a second with the numbers behind the HUD, so the store can accumulate
     /// them into a session report. Deliberately a plain closure rather than a Combine publisher —
@@ -2706,6 +2721,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var nativeNVST: (any NativeStreamNVSTTransport)?
     private var nativeNVSTStart: Task<Void, Never>?
     private var nativeNVSTFailed = false
+    private var nativeNVSTFinished = false
 
     private let networkMonitor = NWPathMonitor()
     private let networkMonitorQueue = DispatchQueue(label: "OpenNOW.NativeStreamer.Network")
@@ -2819,6 +2835,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         onControllerTouchPromptDismissed: @escaping () -> Void,
         onStatsOverlayChange: @escaping (Bool) -> Void,
         onTransportStable: @escaping () -> Void,
+        onStreamTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
+        onTransportFailure: @escaping () -> Void = {},
         onSelectedVideoProfileRetry: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void,
         onSettingsChange: @escaping (AppSettings) -> Void,
@@ -2870,6 +2888,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onControllerTouchPromptDismissed = onControllerTouchPromptDismissed
         self.onStatsOverlayChange = onStatsOverlayChange
         self.onTransportStable = onTransportStable
+        self.onStreamTermination = onStreamTermination
+        self.onTransportFailure = onTransportFailure
         self.onSelectedVideoProfileRetry = onSelectedVideoProfileRetry
         self.onRuntimeSample = onRuntimeSample
         self.onSettingsChange = onSettingsChange
@@ -3043,12 +3063,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 self.updateNativeNVSTStats(sample)
             } },
             onFailure: { [weak self] reason in Task { @MainActor in
-                guard let self, !self.stopped else { return }
-                self.nativeNVSTFailed = true
-                StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.lastFailure = "native_transport_failure at=\($0.stage)"; $0.stage = "nvst_failed" }
-                self.markMediaTransportDisconnected()
-                self.updateStatus("Native NVST failed", detail: reason)
-                self.retryAvailable = self.onRetry != nil
+                self?.handleNativeStreamFailure(reason: reason)
+            } },
+            onTermination: { [weak self] event in Task { @MainActor in
+                self?.handleNativeStreamTermination(event)
             } },
             onHaptics: { [weak self] events in Task { @MainActor in
                 guard let self, !self.stopped else { return }
@@ -3058,7 +3076,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 }
             } },
             onProgress: { [weak self] stage in Task { @MainActor in
-                guard let self, !self.stopped, !self.nativeNVSTFailed, !self.mediaTransportConnected else { return }
+                guard let self, !self.stopped, !self.nativeNVSTFinished, !self.nativeNVSTFailed,
+                      !self.mediaTransportConnected else { return }
                 StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.stage = "nvst_\(stage.rawValue)" }
                 self.updateStatus("Connecting native NVST", detail: stage.rawValue)
             } })
@@ -3066,18 +3085,39 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         nativeNVSTStart = Task { [weak self] in
             do {
                 try await transport.start()
-                guard let self, !self.stopped, !Task.isCancelled else { return }
+                guard let self, !self.stopped, !self.nativeNVSTFinished, !self.nativeNVSTFailed,
+                      !Task.isCancelled else { return }
                 StreamConnectionDiagnostics.shared.update(diagnosticID) { $0.stage = "nvst_negotiated" }
                 self.markMediaTransportConnected()
             }
             catch {
-                guard let self, !self.stopped, !Task.isCancelled else { return }
-                self.nativeNVSTFailed = true
+                guard let self, !self.stopped, !self.nativeNVSTFinished, !self.nativeNVSTFailed,
+                      !Task.isCancelled, !OpenNOWErrorPresenter.isCancellation(error) else { return }
                 StreamConnectionDiagnostics.shared.failure(diagnosticID, error: error)
-                self.updateStatus("Native NVST failed", detail: error.localizedDescription)
-                self.retryAvailable = self.onRetry != nil
+                self.handleNativeStreamFailure(reason: error.localizedDescription)
             }
         }
+    }
+
+    func handleNativeStreamTermination(_ event: NvstSeatTermination) {
+        guard !stopped, !nativeNVSTFinished else { return }
+        nativeNVSTFinished = true
+        stop()
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) { $0.stage = "nvst_host_terminated" }
+        onStreamTermination(event)
+    }
+
+    func handleNativeStreamFailure(reason: String) {
+        guard !stopped, !nativeNVSTFinished, !nativeNVSTFailed else { return }
+        nativeNVSTFailed = true
+        StreamConnectionDiagnostics.shared.update(connectionDiagnosticID) {
+            $0.lastFailure = "native_transport_failure at=\($0.stage)"
+            $0.stage = "nvst_failed"
+        }
+        markMediaTransportDisconnected()
+        updateStatus("Native NVST failed", detail: reason)
+        retryAvailable = onRetry != nil
+        onTransportFailure()
     }
 
     private func updateNativeNVSTStats(_ sample: NativeStreamNVSTSample) {
@@ -3765,6 +3805,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             pictureInPictureBridge.attach(displayLayer: renderer.pictureInPictureDisplayLayer)
         }
         self.renderer = renderer
+        renderer.setStreamFrameRate(streamProfile.fps)
         renderer.setVideoCodec(selectedCodec)
         renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
         renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
@@ -6087,6 +6128,7 @@ private final class NativeStreamRenderView: UIView {
     private var streamSharpeningAmount = 0.25
     private var metal4Enabled = false
     private var upscalingEnabled = false
+    private var streamFPS = 60
     var videoEffectsStatus: String { filteredMetalView?.videoEffectsStatus ?? "" }
     var presentationRates: NativeStreamPresentationRates? {
         filteredRendererActive ? filteredMetalView?.presentationRates : nil
@@ -6098,6 +6140,11 @@ private final class NativeStreamRenderView: UIView {
         rendererStateLock.unlock()
         if shouldRequestFilteredRenderer { ensureFilteredMetalView() }
         updateRendererVisibility()
+    }
+
+    func setStreamFrameRate(_ fps: Int) {
+        streamFPS = fps
+        filteredMetalView?.setStreamFrameRate(fps)
     }
 
     func setVideoEffects(upscaling: Bool, metal4: Bool) {
@@ -6256,6 +6303,7 @@ private final class NativeStreamRenderView: UIView {
         filtered.frame = videoContainerView.bounds
         filtered.stretchToFill = stretchStreamToFill
         filtered.sharpeningAmount = streamSharpeningEnabled ? streamSharpeningAmount : 0
+        filtered.setStreamFrameRate(streamFPS)
         filtered.setVideoEffects(upscaling: upscalingEnabled, metal4: metal4Enabled)
         filtered.isHidden = true
         videoContainerView.addSubview(filtered)
@@ -6449,6 +6497,7 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private let frames = NativeStreamLatestFrameMailbox<RTCVideoFrame>(maximumInFlight: 3)
     private let gpuAdmission = DispatchSemaphore(value: 3)
     private let presentations = NativeStreamPresentationTracker()
+    private var streamFPS = 60
     private var displayLink: CADisplayLink?
     private lazy var displayClock = DisplayClock(owner: self)
 
@@ -6481,7 +6530,6 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
         if let layer = mtkView.layer as? CAMetalLayer {
             layer.maximumDrawableCount = 3
         }
-        mtkView.preferredFramesPerSecond = 120
         super.init(frame: .zero)
         isOpaque = true
         backgroundColor = .black
@@ -6535,12 +6583,18 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
 
     private func updateDisplayFrameRate() {
         guard let displayLink, let screen = window?.windowScene?.screen else { return }
-        let screenMax = Float(max(1, screen.maximumFramesPerSecond))
-        let range = CAFrameRateRange(minimum: min(screenMax, screenMax > 60 ? 60 : 30),
-                                     maximum: screenMax, preferred: screenMax)
-        if displayLink.preferredFrameRateRange.maximum != screenMax {
+        let range = nativeStreamDisplayFrameRateRange(streamFPS: streamFPS,
+            displayMaximumFPS: screen.maximumFramesPerSecond)
+        let current = displayLink.preferredFrameRateRange
+        if current.minimum != range.minimum || current.maximum != range.maximum || current.preferred != range.preferred {
             displayLink.preferredFrameRateRange = range
         }
+    }
+
+    func setStreamFrameRate(_ fps: Int) {
+        guard streamFPS != fps else { return }
+        streamFPS = fps
+        updateDisplayFrameRate()
     }
 
     private func displayTick(_ link: CADisplayLink) {
