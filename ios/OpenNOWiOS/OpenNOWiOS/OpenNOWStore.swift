@@ -6481,7 +6481,9 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var isEndingSession = false
     @Published var showStreamLoading: Bool = false
     @Published var queueOverlayVisible: Bool = false
-    @Published var streamSession: ActiveSession?
+    @Published var streamSession: ActiveSession? {
+        didSet { streamPresentationGeneration = UUID() }
+    }
     @Published var lastError: String?
     @Published private(set) var authError: String?
     @Published private(set) var accountError: String?
@@ -6522,8 +6524,10 @@ final class OpenNOWStore: ObservableObject {
     private var authSession: AuthSession?
     private var authGeneration = UUID()
     private var sessionOperationGeneration = UUID()
+    private var streamPresentationGeneration = UUID()
     private var sessionPollTask: Task<Void, Never>?
     private var sessionReconciliationTask: Task<Void, Never>?
+    private var endedSessionIDs: [String] = []
     private var launchTask: Task<Void, Never>?
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
     private var sessionReportSessionId: String?
@@ -7284,6 +7288,7 @@ final class OpenNOWStore: ObservableObject {
         libraryGames = []
         importedGames = []
         resumableSessions = []
+        endedSessionIDs = []
         activeSession = nil
         activeStreamSettings = nil
         remoteSessionsSnapshotLoaded = false
@@ -8181,6 +8186,7 @@ final class OpenNOWStore: ObservableObject {
 
     func resumeSession(candidate: RemoteSessionCandidate) async {
         guard !isEndingSession, !isLaunchingSession else { return }
+        guard !endedSessionIDs.contains(candidate.id) else { return }
         let generation = authGeneration
         let operation = sessionOperationGeneration
         guard supportsEmbeddedStreamer else {
@@ -8543,7 +8549,74 @@ final class OpenNOWStore: ObservableObject {
         startSessionReconciliation()
     }
 
-    func handleEndedSession(id: String) {
+    func handleNativeStreamTermination(id: String, event: NvstSeatTermination) {
+        guard activeSession?.id == id, streamSession?.id == id else { return }
+        recordDebugEvent("stream", "Host termination \(event.summary)")
+        switch SessionLifecyclePolicy.nativeTerminationDisposition(event) {
+        case .ended:
+            handleEndedSession(id: id, message: nil)
+        case .failed:
+            handleEndedSession(id: id, message: "The cloud host ended this session: \(event.summary)")
+        case .paused, .disconnected:
+            dismissStreamer()
+            lastError = event.isSessionPause ? nil : "The host disconnected this stream: \(event.summary). Check the session to reconnect."
+            sessionError = lastError
+        }
+    }
+
+    func reconcileStreamFailure(id: String) async -> Bool {
+        let generation = authGeneration
+        let operation = sessionOperationGeneration
+        let presentation = streamPresentationGeneration
+        while !Task.isCancelled {
+            guard generation == authGeneration, operation == sessionOperationGeneration,
+                  presentation == streamPresentationGeneration,
+                  activeSession?.id == id, streamSession?.id == id,
+                  let active = activeSession, let auth = authSession else { return false }
+            guard currentScenePhase == .active else {
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { return false }
+                continue
+            }
+            do {
+                let refreshed = try await api.refreshSession(auth)
+                try Task.checkCancellation()
+                guard generation == authGeneration, operation == sessionOperationGeneration,
+                      presentation == streamPresentationGeneration else { return false }
+                authSession = refreshed
+                persistAuthSession(refreshed)
+                guard currentScenePhase == .active else { continue }
+                let polled = try await api.pollSession(session: refreshed, activeSession: active, settings: currentStreamerSettings)
+                try Task.checkCancellation()
+                guard generation == authGeneration, operation == sessionOperationGeneration,
+                      presentation == streamPresentationGeneration, activeSession?.id == id else { return false }
+                activeSession = polled
+                sessionAvailability = SessionLifecyclePolicy.isLaunchable(polled.status) ? .available : .unverified
+                syncTrackedSessionSurface()
+            } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                return false
+            } catch {
+                guard generation == authGeneration, operation == sessionOperationGeneration,
+                      presentation == streamPresentationGeneration, activeSession?.id == id else { return false }
+                if SessionLifecyclePolicy.isEnded(error) {
+                    handleEndedSession(id: id, message: nil)
+                    return true
+                }
+                sessionAvailability = .unverified
+                syncTrackedSessionSurface()
+            }
+            do { try await Task.sleep(for: .seconds(15)) }
+            catch { return false }
+        }
+        return false
+    }
+
+    func handleEndedSession(id: String, message: String? = RemoteSessionEndedError(status: nil).localizedDescription) {
+        guard activeSession?.id == id || resumableSessions.contains(where: { $0.id == id }) else { return }
+        if !endedSessionIDs.contains(id) {
+            endedSessionIDs.append(id)
+            if endedSessionIDs.count > 32 { endedSessionIDs.removeFirst() }
+        }
         resumableSessions.removeAll { $0.id == id }
         if activeSession?.id == id {
             showStreamLoading = false
@@ -8555,7 +8628,7 @@ final class OpenNOWStore: ObservableObject {
             showStreamLoading = false
             queueOverlayVisible = false
         }
-        lastError = RemoteSessionEndedError(status: nil).localizedDescription
+        lastError = message
         sessionError = lastError
     }
 
@@ -9317,7 +9390,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func remoteSessionIsAllowed(_ candidate: RemoteSessionCandidate) -> Bool {
-        !StreamZonePolicy.isBlocked(candidate.serverIp)
+        !endedSessionIDs.contains(candidate.id) && !StreamZonePolicy.isBlocked(candidate.serverIp)
     }
 
     private func remoteSession(

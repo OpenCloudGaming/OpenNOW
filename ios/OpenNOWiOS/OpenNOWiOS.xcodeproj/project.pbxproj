@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A184D2000000000000000001 /* SessionLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D2000000000000000002; };
 		A184D1000000000000000001 /* SessionConnectionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D1000000000000000002; };
 		A184D1000000000000000003 /* SessionLifecyclePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A184D1000000000000000004; };
 		A16E9C000000000000000001 /* NativeStreamVirtualStick.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16E9C000000000000000002; };
@@ -209,6 +210,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A184D2000000000000000002 /* SessionLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLifecycleTests.swift; sourceTree = "<group>"; };
 		A184D1000000000000000002 /* SessionConnectionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionConnectionPolicy.swift; sourceTree = "<group>"; };
 		A184D1000000000000000004 /* SessionLifecyclePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLifecyclePolicy.swift; sourceTree = "<group>"; };
 		A16E9C000000000000000002 /* NativeStreamVirtualStick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamVirtualStick.swift; sourceTree = "<group>"; };
@@ -593,6 +595,7 @@
 				591060B0D79911A8C82016B5 /* NVST/NvstSctpAssociationTests.swift */,
 				569C0ADC474B85350859646A /* NVST/NvstDtlsHandshakeTests.swift */,
 				F10000000000000000000011 /* OpenNOWiOSParityTests.swift */,
+				A184D2000000000000000002 /* SessionLifecycleTests.swift */,
 			);
 			path = OpenNOWiOSTests;
 			sourceTree = "<group>";
@@ -886,6 +889,7 @@
 				69D8855CDF5917C51CB99E24 /* NVST/NvstDtlsHandshakeTests.swift in Sources */,
 				22D0B32C8458038A33A4ACE0 /* NVST/SrtpCryptographyTests.swift in Sources */,
 				F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */,
+				A184D2000000000000000001 /* SessionLifecycleTests.swift in Sources */,
 				CC0000000000000000000008 /* QueueLiveActivityWidget.swift in Tests */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

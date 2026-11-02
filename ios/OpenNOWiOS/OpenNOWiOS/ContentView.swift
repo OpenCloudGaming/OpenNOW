@@ -674,6 +674,20 @@ struct MainTabView: View {
             onTransportStable: {
                 streamerAutoRetryCount = 0
             },
+            onStreamTermination: { event in
+                guard presentedStreamerSession?.id == session.id, store.activeSession?.id == session.id else { return }
+                presentedStreamerSession = nil
+                streamerAutoRetryCount = 0
+                store.handleNativeStreamTermination(id: session.id, event: event)
+            },
+            onTransportFailure: {
+                Task { @MainActor in
+                    let ended = await store.reconcileStreamFailure(id: session.id)
+                    guard ended, presentedStreamerSession?.id == session.id else { return }
+                    presentedStreamerSession = nil
+                    streamerAutoRetryCount = 0
+                }
+            },
             onSelectedVideoProfileRetry: { reason in
                 store.recordStreamRecovery(reason: reason)
             },

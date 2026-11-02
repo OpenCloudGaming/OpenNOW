@@ -28,6 +28,27 @@ struct SessionTerminationConfirmation {
 }
 
 enum SessionLifecyclePolicy {
+    enum NativeTerminationDisposition: Equatable {
+        case ended
+        case failed
+        case paused
+        case disconnected
+    }
+
+    static func nativeTerminationDisposition(_ event: NvstSeatTermination) -> NativeTerminationDisposition {
+        switch event.result {
+        case 0x8003_0000, 0x8003_0014:
+            return .ended
+        case NvstSeatTermination.sessionPauseResult:
+            return .paused
+        case 0x8003_0003, 0x8003_000b...0x8003_000d, 0x8003_000f, 0x8003_0013,
+             0x8003_0015...0x8003_001d, 0x8003_001f...0x8003_0021:
+            return .failed
+        default:
+            return .disconnected
+        }
+    }
+
     static func allocatedAppID(in session: [String: Any], fallback: String? = nil) -> String? {
         let value = (session["sessionRequestData"] as? [String: Any])?["appId"]
         if let value = value as? String {

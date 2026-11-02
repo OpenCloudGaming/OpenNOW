@@ -72,6 +72,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
     private let onFrame: @Sendable (RTCVideoFrame) -> Void
     private let onSample: @Sendable (NativeStreamNVSTSample) -> Void
     private let onFailure: @Sendable (String) -> Void
+    private let onTermination: @Sendable (NvstSeatTermination) -> Void
     private let onHaptics: @Sendable ([NvstHapticEvent]) -> Void
     private let onProgress: @Sendable (NvstRtspStage) -> Void
     private let clock = NvstSessionClock()
@@ -102,7 +103,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
     private var controlKeyframeRequests = 0
     private var udpKeyframeRequests = 0
     private var videoLiveness = NativeStreamVideoLiveness(now: DispatchTime.now().uptimeNanoseconds)
-    private var didFail = false
+    private var didFinish = false
     private var touchPacketsSent = 0
     private var touchRecordsSent = 0
     private var touchSendFailures = 0
@@ -112,11 +113,13 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
          onFrame: @escaping @Sendable (RTCVideoFrame) -> Void,
          onSample: @escaping @Sendable (NativeStreamNVSTSample) -> Void,
          onFailure: @escaping @Sendable (String) -> Void,
+         onTermination: @escaping @Sendable (NvstSeatTermination) -> Void,
          onHaptics: @escaping @Sendable ([NvstHapticEvent]) -> Void,
          onProgress: @escaping @Sendable (NvstRtspStage) -> Void) {
         self.allocation = allocation; self.settings = settings; self.profile = profile
         self.codec = codec; self.displayFPS = displayFPS
         self.onFrame = onFrame; self.onSample = onSample; self.onFailure = onFailure; self.onHaptics = onHaptics
+        self.onTermination = onTermination
         self.onProgress = onProgress
     }
 
@@ -142,7 +145,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
                     guard let self else { throw CancellationError() }
                     try await self.startVideo(handoff)
                 }, onAnnounceReady: { [weak self] _ in await self?.punchBeforePlay() })
-            if stopped || Task.isCancelled {
+            if stopped || didFinish || Task.isCancelled {
                 await negotiated.release("cancelled")
                 throw CancellationError()
             }
@@ -174,7 +177,7 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
             nativeBundle.onFeedbackChannelOpen = { [weak self] in Task { await self?.ifCurrent(generation) { $0.feedbackOpened() } } }
             nativeBundle.onInputProtocolNegotiated = { [weak self] _ in Task { await self?.ifCurrent(generation) { $0.activateInput() } } }
             nativeBundle.onSeatTermination = { [weak self] event in
-                Task { await self?.ifCurrent(generation) { $0.fail("The host closed the native stream: \(event.summary)") } }
+                Task { await self?.ifCurrent(generation) { $0.terminate(event) } }
             }
             nativeBundle.onFailure = { [weak self] reason in Task { await self?.ifCurrent(generation) { $0.fail(reason) } } }
             nativeBundle.onHapticEvents = { [weak self] events in Task { await self?.ifCurrent(generation) { $0.onHaptics(events) } } }
@@ -415,9 +418,16 @@ actor NativeStreamNVST: NativeStreamNVSTTransport {
     }
 
     private func fail(_ reason: String) {
-        guard !stopped, !didFail else { return }
-        didFail = true
+        guard !stopped, !didFinish else { return }
+        didFinish = true
         onFailure(reason)
+        Task { await self.close() }
+    }
+
+    private func terminate(_ event: NvstSeatTermination) {
+        guard !stopped, !didFinish else { return }
+        didFinish = true
+        onTermination(event)
         Task { await self.close() }
     }
 
