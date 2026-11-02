@@ -489,7 +489,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val sessionTimerAnchorStore = SessionTimerAnchorStore(application)
     private val authStore = openNowApplication.authStore
     private val authRepository = openNowApplication.authRepository
-    private val catalogRepository = GfnCatalogRepository(http) {
+    private val serverInfoRepository = openNowApplication.serverInfoRepository
+    private val catalogRepository = GfnCatalogRepository(http, serverInfoRepository) {
         gfnLocaleForAndroidLanguageTag(currentAndroidAppLocale(getApplication()).effectiveLanguageTag)
     }
     private val catalogCacheStore = CatalogCacheStore(application)
@@ -502,6 +503,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val sessionRepository = GfnSessionRepository(
         authStore = authStore,
         http = http,
+        serverInfoRepository = serverInfoRepository,
         physicalDisplayResolutionProvider = { application.physicalStreamDisplayResolution() },
         diagnosticsSink = { response -> recordSessionDiagnosticResponse(response) },
         isAndroidTv = isAndroidTvProfile(application),
@@ -2488,8 +2490,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }.getOrNull()
             }
             val regions = async {
-                runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }
-                    .getOrDefault(emptyList())
+                serverInfoRepository.regions(token, session.provider.streamingServiceUrl)
             }
             val fetchedSubscription = subscription.await()
             val enrichedSession = persistSubscriptionTier(session, fetchedSubscription)
@@ -2940,7 +2941,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     regions = state.value.regions,
                     refreshRegions = {
                         withContext(Dispatchers.IO) {
-                            fetchDynamicRegions(http, token, auth.provider.streamingServiceUrl).first
+                            serverInfoRepository.regions(token, auth.provider.streamingServiceUrl)
                         }
                     },
                 )
@@ -4563,7 +4564,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         val regionsJob = viewModelScope.launch {
             val regions = withContext(Dispatchers.IO) {
-                runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }.getOrDefault(emptyList())
+                serverInfoRepository.regions(token, session.provider.streamingServiceUrl)
             }
             _state.update { it.copy(regions = regions) }
         }
@@ -4953,7 +4954,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val queue = async { printedWasteRepository.fetchQueue() }
                 val mapping = async { printedWasteRepository.fetchServerMapping() }
                 val providerRegions = async {
-                    fetchDynamicRegions(http, token, auth.provider.streamingServiceUrl).first
+                    serverInfoRepository.regions(token, auth.provider.streamingServiceUrl)
                         .ifEmpty { state.value.regions }
                 }
                 val queueData = queue.await()

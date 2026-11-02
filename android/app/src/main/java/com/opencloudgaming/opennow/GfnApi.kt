@@ -2110,15 +2110,13 @@ internal fun catalogResultWithGfnThursdayGames(
 
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
+    private val serverInfoRepository: GfnServerInfoRepository = GfnServerInfoRepository(http),
     private val localeProvider: () -> String = { DEFAULT_LOCALE },
 ) {
-    private data class CachedVpcId(val value: String, val expiresAtElapsedMs: Long)
     private data class CachedCatalogDefinitions(val value: CatalogDefinitions, val expiresAtElapsedMs: Long)
     private data class CachedPublicGames(val value: List<GameInfo>, val expiresAtElapsedMs: Long)
 
     private val libraryRevision = AtomicLong()
-    private val vpcIdMutex = Mutex()
-    private val vpcIdCache = mutableMapOf<String, CachedVpcId>()
     private val catalogDefinitionsMutex = Mutex()
     private val catalogDefinitionsCache = mutableMapOf<String, CachedCatalogDefinitions>()
     private val publicGamesMutex = Mutex()
@@ -2426,44 +2424,10 @@ class GfnCatalogRepository(
         return meta.firstOrNull()?.let(::resolveNumericAppId)
     }
 
-    suspend fun getVpcId(token: String, providerStreamingBaseUrl: String): String {
-        val base = normalizeStreamingServiceUrl(providerStreamingBaseUrl) ?: DEFAULT_STREAMING_SERVICE_URL
-        val cacheKey = base.lowercase(Locale.US)
-        return vpcIdMutex.withLock {
-            val now = SystemClock.elapsedRealtime()
-            vpcIdCache[cacheKey]
-                ?.takeIf { it.expiresAtElapsedMs > now }
-                ?.value
-                ?.let { return@withLock it }
-
-            val resolved = runCatching {
-                val request = Request.Builder()
-                    .url("${base}v2/serverInfo")
-                    .headers(
-                        Headers.Builder()
-                            .putDesktopLcars(token, includeUserAgent = true, includeEmptyTokenAuthorization = true)
-                            .build(),
-                    )
-                    .build()
-                val (code, text) = http.awaitText(request)
-                if (code !in 200..299) {
-                    "GFN-PC"
-                } else {
-                    OpenNowJson.parseToJsonElement(text).jsonObject.obj("requestStatus")?.string("serverId") ?: "GFN-PC"
-                }
-            }.getOrDefault("GFN-PC")
-            // Catalog, library, and subscription refreshes start together. Share their
-            // server identity instead of issuing the same request several times. Do not
-            // cache the fallback so a transient network failure can recover immediately.
-            if (resolved != "GFN-PC") {
-                vpcIdCache[cacheKey] = CachedVpcId(resolved, now + VPC_ID_CACHE_TTL_MS)
-            }
-            resolved
-        }
-    }
+    suspend fun getVpcId(token: String, providerStreamingBaseUrl: String): String =
+        serverInfoRepository.get(token, providerStreamingBaseUrl).vpcId
 
     private companion object {
-        const val VPC_ID_CACHE_TTL_MS = 5 * 60 * 1_000L
         const val CATALOG_DEFINITIONS_CACHE_TTL_MS = 30 * 60 * 1_000L
         const val PUBLIC_GAMES_CACHE_TTL_MS = 6 * 60 * 60 * 1_000L
     }
@@ -3179,6 +3143,7 @@ class GfnSessionRepository(
     private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
     private val isAndroidTv: Boolean = false,
     private val useDesktopNativeTvIdentity: Boolean = isAndroidTv,
+    private val serverInfoRepository: GfnServerInfoRepository = GfnServerInfoRepository(http),
 ) {
     private val sessionConnections = GfnSessionConnectionResolver()
 
@@ -3296,7 +3261,7 @@ class GfnSessionRepository(
     }
 
     suspend fun getActiveSessions(token: String, streamingBaseUrl: String, settings: StreamSettings): List<ActiveSessionInfo> {
-        val base = streamingBaseUrl.trim().trimEnd('/')
+        val base = serverInfoRepository.streamingBaseUrl(token, streamingBaseUrl).trimEnd('/')
         val host = Uri.parse(base).host.orEmpty()
         val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val request = Request.Builder()
@@ -3815,8 +3780,8 @@ class GfnSessionRepository(
         value.contains("cloudmatchbeta.nvidiagrid.net") || value.contains("cloudmatch.nvidiagrid.net")
 
     private suspend fun resolveLaunchSessionBaseUrl(token: String, base: String): String {
-        if (!isProviderRootStreamingBase(base)) return base
-        val regions = fetchDynamicRegions(http, token, base).first
+        if (!isProviderRootStreamingBase(base)) return serverInfoRepository.streamingBaseUrl(token, base).trimEnd('/')
+        val regions = serverInfoRepository.regions(token, base)
         return providerLaunchBaseUrl(base, regions)
     }
 
@@ -3877,37 +3842,24 @@ internal fun providerLaunchBaseUrl(providerBase: String, regions: List<StreamReg
     return if (regionUrls.size == 1) regionUrls.first() else normalizedBase
 }
 
-suspend fun fetchDynamicRegions(
+internal suspend fun requestGfnServerInfo(
     http: OkHttpClient,
     token: String?,
-    streamingBaseUrl: String,
-): Pair<List<StreamRegion>, String?> {
-    val base = normalizeStreamingServiceUrl(streamingBaseUrl) ?: return emptyList<StreamRegion>() to null
-    return runCatching {
-        val request = Request.Builder()
-            .url("${base}v2/serverInfo")
-            .headers(
-                Headers.Builder()
-                    .putDesktopLcars(token, clientType = "BROWSER", clientStreamer = "WEBRTC")
-                    .build(),
-            )
-            .build()
-        val (code, text) = http.awaitText(request)
-        if (code !in 200..299) return@runCatching emptyList<StreamRegion>() to null
-        val data = OpenNowJson.parseToJsonElement(text).jsonObject
-        val vpcId = data.obj("requestStatus")?.string("serverId")
-        val regions = data.arr("metaData")?.mapNotNull {
-            val obj = it.asObject() ?: return@mapNotNull null
-            val key = obj.string("key") ?: return@mapNotNull null
-            val value = obj.string("value") ?: return@mapNotNull null
-            val regionUrl = normalizeStreamingServiceUrl(value) ?: return@mapNotNull null
-            if (key == "gfn-regions" || key.startsWith("gfn-")) null else StreamRegion(key, regionUrl)
-        }?.sortedBy { it.name }.orEmpty()
-        regions to vpcId
-    }.getOrElse { error ->
-        if (error is CancellationException) throw error
-        emptyList<StreamRegion>() to null
-    }
+    base: String,
+): GfnServerInfo {
+    val request = Request.Builder()
+        .url("${base}v2/serverInfo")
+        .headers(
+            Headers.Builder()
+                .putDesktopLcars(token, clientType = "BROWSER", clientStreamer = "WEBRTC")
+                .build(),
+        )
+        .build()
+    // Discovery includes bounded regional probes on cold-start failure. Share the HTTP pools,
+    // but bound each probe so an unreachable alternative cannot hold startup indefinitely.
+    val discoveryHttp = http.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
+    val (code, text) = discoveryHttp.awaitText(request)
+    return parseGfnServerInfo(code, text)
 }
 
 private val NON_ALNUM_RUN = Regex("[^a-z0-9]+")

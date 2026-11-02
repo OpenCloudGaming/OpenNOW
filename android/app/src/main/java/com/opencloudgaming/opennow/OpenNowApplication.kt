@@ -27,6 +27,7 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
     private val startupDataReady = CompletableDeferred<Unit>()
     @Volatile private var artworkImageLoader: ImageLoader? = null
     internal val httpClient by lazy(::defaultHttpClient)
+    internal val serverInfoRepository by lazy { GfnServerInfoRepository(httpClient) }
     internal val authStore by lazy { AuthStore(this) }
     internal val authRepository by lazy { GfnAuthRepository(this, authStore, httpClient) }
     internal val localTvConnector by lazy { LocalTvConnector() }
