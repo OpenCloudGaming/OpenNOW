@@ -700,6 +700,44 @@ struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
     let fps: Int?
     var colorQuality: StreamColorQuality? = nil
     var hdrEnabled: Bool? = nil
+    var sessionControlBaseUrl: String? = nil
+
+    func matchesStreamSettings(_ settings: AppSettings, profile: StreamVideoProfile) -> Bool {
+        guard streamSettingsSignature?.trimmingCharacters(in: .whitespacesAndNewlines)
+                == StreamSettingsResolver.sessionSignature(for: settings, profile: profile) else { return false }
+        if status != 1 || resolution != nil {
+            guard resolution?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == "\(profile.width)x\(profile.height)" else { return false }
+        }
+        if status != 1 || fps != nil {
+            guard fps == profile.fps else { return false }
+        }
+        return StreamSettingsResolver.remoteColorMatches(color: colorQuality, hdr: hdrEnabled, settings: settings)
+    }
+}
+
+struct CloudMatchSessionLimitError: LocalizedError {
+    let sessions: [RemoteSessionCandidate]
+    let code: String?
+
+    var errorDescription: String? { "Another cloud session is already running or queued." }
+
+    static func isSessionLimit(_ payload: [String: Any]) -> Bool {
+        let status = payload["requestStatus"] as? [String: Any] ?? payload
+        let description = status["statusDescription"] as? String ?? ""
+        return SessionConnectionPolicy.integer(status["statusCode"]) == 11
+            || SessionConnectionPolicy.integer(status["unifiedErrorCode"]) == 0x4AF1_201A
+            || description.uppercased().hasPrefix("SESSION_LIMIT_EXCEEDED_STATUS")
+    }
+
+    static func code(in payload: [String: Any]) -> String? {
+        let status = payload["requestStatus"] as? [String: Any] ?? payload
+        if let value = SessionConnectionPolicy.integer(status["unifiedErrorCode"]),
+           let code = UInt32(exactly: value), code != 0 {
+            return String(format: "%08X", code)
+        }
+        return SessionConnectionPolicy.integer(status["statusCode"]).map(String.init)
+    }
 }
 
 struct StorageAddon: Codable, Equatable {
@@ -3291,7 +3329,7 @@ enum CloudMatchStreamingFeatureRequest {
     }
 }
 
-private actor GFNAPIClient {
+actor GFNAPIClient {
     #if os(tvOS)
     private enum OAuthCallbackSource: String {
         case authSession = "ASWebAuthenticationSession"
@@ -3339,11 +3377,17 @@ private actor GFNAPIClient {
         let authURL: URL
     }
 
-    private let session: URLSession = {
+    private let session: URLSession
+
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+            return
+        }
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
-        return URLSession(configuration: config)
-    }()
+        self.session = URLSession(configuration: config)
+    }
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "GFNAPI")
 
     private func request(
@@ -4442,6 +4486,12 @@ private actor GFNAPIClient {
             body: body,
             sessionSettings: settings
         )
+        if let payload = try? parseJSON(data), CloudMatchSessionLimitError.isSessionLimit(payload) {
+            throw CloudMatchSessionLimitError(
+                sessions: Self.remoteSessionCandidates(in: payload["otherUserSessions"] as? [[String: Any]] ?? []),
+                code: CloudMatchSessionLimitError.code(in: payload)
+            )
+        }
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
             throw NSError(domain: "OpenNOW.Session", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: text])
@@ -4720,7 +4770,8 @@ private actor GFNAPIClient {
             streamingBaseUrl: streamingBaseUrl,
             vpcId: vpcId
         )
-        let url = URL(string: "https://\(targetHost)/v2/session/\(candidate.id)")!
+        let base = candidate.sessionControlBaseUrl ?? "https://\(targetHost)"
+        let url = URL(string: "\(base)/v2/session/\(candidate.id)")!
         let (_, response) = try await request(
             url: url,
             method: "DELETE",
@@ -4774,18 +4825,23 @@ private actor GFNAPIClient {
                             ?? "Active sessions could not be refreshed."])
         }
         let sessions = json["sessions"] as? [[String: Any]] ?? []
-        return sessions.compactMap { item in
-            let status = item["status"] as? Int ?? 0
+        return Self.remoteSessionCandidates(in: sessions)
+    }
+
+    static func remoteSessionCandidates(in sessions: [[String: Any]]) -> [RemoteSessionCandidate] {
+        sessions.compactMap { item in
+            let status = SessionConnectionPolicy.integer(item["status"]) ?? 0
             guard status == 1 || status == 2 || status == 3 else { return nil }
             guard let sessionId = item["sessionId"] as? String else { return nil }
             let sessionRequestData = item["sessionRequestData"] as? [String: Any]
-            let appId = sessionRequestData?["appId"].flatMap { "\($0)" }
+            let appId = SessionLifecyclePolicy.allocatedAppID(in: item)
             let serverIp = Self.extractServerIp(sessionObj: item)
             let streamSettingsSignature = Self.metadataValue(
                 key: GFNConstants.streamSettingsMetadataKey,
                 in: sessionRequestData?["metaData"] as? [[String: Any]]
             )
             let negotiatedProfile = Self.extractNegotiatedStreamProfile(sessionObj: item)
+            let control = item["sessionControlInfo"] as? [String: Any]
             return RemoteSessionCandidate(
                 id: sessionId,
                 appId: appId,
@@ -4795,9 +4851,34 @@ private actor GFNAPIClient {
                 resolution: negotiatedProfile?.resolution,
                 fps: negotiatedProfile?.fps,
                 colorQuality: negotiatedProfile?.colorQuality,
-                hdrEnabled: Self.toBoolean((item["finalizedStreamingFeatures"] as? [String: Any])?["trueHdr"])
+                hdrEnabled: Self.toBoolean((item["finalizedStreamingFeatures"] as? [String: Any])?["trueHdr"]),
+                sessionControlBaseUrl: SessionControlRouting.baseURL(
+                    host: control?["ip"] as? String, port: SessionConnectionPolicy.integer(control?["port"])
+                )
             )
         }
+    }
+
+    func resumeQueuedSession(
+        session: AuthSession,
+        candidate: RemoteSessionCandidate,
+        game: CloudGame,
+        streamingBaseUrl: String,
+        vpcId: String,
+        settings: AppSettings,
+        deviceId: String
+    ) async throws -> ActiveSession {
+        var pending = ActiveSession(
+            id: candidate.id, game: game, startedAt: .now, status: candidate.status,
+            queuePosition: nil, seatSetupStep: nil, serverIp: candidate.serverIp,
+            mediaIp: nil, mediaPort: 0, signalingServer: nil, signalingUrl: nil,
+            iceServers: [], zone: vpcId, streamingBaseUrl: streamingBaseUrl,
+            clientId: UUID().uuidString, deviceId: deviceId, adState: nil
+        )
+        pending.sessionControlBaseUrl = candidate.sessionControlBaseUrl
+        pending.allocatedAppId = candidate.appId
+        let hydrated = try await pollSession(session: session, activeSession: pending, settings: settings)
+        return mergeQueueSessionState(previous: pending, next: hydrated)
     }
 
     func claimSession(
@@ -4829,7 +4910,6 @@ private actor GFNAPIClient {
             streamingBaseUrl: zoneBase,
             vpcId: vpcId
         )
-
         if Self.isZoneHostname(effectiveServerIp) {
             do {
                 let preflightURL = URL(string: "https://\(effectiveServerIp)/v2/session/\(candidate.id)")!
@@ -6445,6 +6525,7 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var activeSession: ActiveSession?
     @Published private(set) var sessionAvailability: SessionAvailability = .checking
     @Published private(set) var resumableSessions: [RemoteSessionCandidate] = []
+    @Published var sessionManagementPresented = false
     @Published private(set) var telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
     @Published private(set) var subscription: SubscriptionSnapshot?
     @Published private(set) var savedAccounts: [SavedAccount] = []
@@ -7288,6 +7369,7 @@ final class OpenNOWStore: ObservableObject {
         libraryGames = []
         importedGames = []
         resumableSessions = []
+        sessionManagementPresented = false
         endedSessionIDs = []
         activeSession = nil
         activeStreamSettings = nil
@@ -7696,8 +7778,6 @@ final class OpenNOWStore: ObservableObject {
             }
             let launchingCandidate = compatibleCandidates.first {
                 $0.appId == launchAppId && $0.status == 1
-            } ?? compatibleCandidates.first {
-                ($0.appId == nil || $0.appId?.isEmpty == true) && $0.status == 1
             }
 
             var started: ActiveSession
@@ -7712,45 +7792,30 @@ final class OpenNOWStore: ObservableObject {
                     deviceId: deviceId
                 )
             } else if let launchingCandidate {
-                let pending = ActiveSession(
-                    id: launchingCandidate.id,
-                    game: game,
-                    startedAt: .now,
-                    status: launchingCandidate.status,
-                    queuePosition: nil,
-                    seatSetupStep: nil,
-                    serverIp: launchingCandidate.serverIp,
-                    mediaIp: nil,
-                    mediaPort: 0,
-                    signalingServer: nil,
-                    signalingUrl: nil,
-                    iceServers: [],
-                    zone: cachedVpcId,
-                    streamingBaseUrl: baseUrl,
-                    clientId: UUID().uuidString,
-                    deviceId: deviceId,
-                    adState: nil
-                )
-                let hydrated = (try? await api.pollSession(
+                started = try await api.resumeQueuedSession(
                     session: refreshed,
-                    activeSession: pending,
-                    settings: launchSettings
-                )) ?? pending
-                started = mergeQueueSessionState(previous: pending, next: hydrated)
+                    candidate: launchingCandidate,
+                    game: game,
+                    streamingBaseUrl: baseUrl,
+                    vpcId: cachedVpcId,
+                    settings: launchSettings,
+                    deviceId: deviceId
+                )
             } else {
                 if let staleLaunchCandidate {
-                    do {
-                        try await api.stopRemoteSession(
-                            session: refreshed,
-                            candidate: staleLaunchCandidate,
-                            streamingBaseUrl: baseUrl,
-                            vpcId: cachedVpcId
-                        )
-                        resumableSessions.removeAll { $0.id == staleLaunchCandidate.id }
-                        logger.info("Stopped stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public)")
-                    } catch {
-                        logger.warning("Could not stop stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    if staleLaunchCandidate.status == 1 {
+                        throw CloudMatchSessionLimitError(sessions: [staleLaunchCandidate], code: nil)
                     }
+                    try await api.stopRemoteSession(
+                        session: refreshed,
+                        candidate: staleLaunchCandidate,
+                        streamingBaseUrl: baseUrl,
+                        vpcId: cachedVpcId
+                    )
+                    try Task.checkCancellation()
+                    guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
+                    resumableSessions.removeAll { $0.id == staleLaunchCandidate.id }
+                    logger.info("Stopped stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public)")
                 }
                 func startNewSession(using settings: AppSettings) async throws -> ActiveSession {
                     try Task.checkCancellation()
@@ -7771,7 +7836,26 @@ final class OpenNOWStore: ObservableObject {
                         accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
                     )
                 }
-                started = try await startNewSession(using: launchSettings)
+                do {
+                    started = try await startNewSession(using: launchSettings)
+                } catch let limit as CloudMatchSessionLimitError {
+                    try Task.checkCancellation()
+                    guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
+                    let blockingSessions = limit.sessions.filter {
+                        remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
+                    }
+                    if !blockingSessions.isEmpty { resumableSessions = blockingSessions }
+                    if let queued = compatibleRemoteSessions(blockingSessions, settings: launchSettings, session: refreshed)
+                        .first(where: { $0.appId == launchAppId && $0.status == 1 }) {
+                        started = try await api.resumeQueuedSession(
+                            session: refreshed, candidate: queued, game: game,
+                            streamingBaseUrl: baseUrl, vpcId: cachedVpcId,
+                            settings: launchSettings, deviceId: deviceId
+                        )
+                    } else {
+                        throw limit
+                    }
+                }
             }
             try Task.checkCancellation()
             guard generation == authGeneration, operation == sessionOperationGeneration else { throw CancellationError() }
@@ -7930,6 +8014,8 @@ final class OpenNOWStore: ObservableObject {
             pendingSettingsRoute = .stream
         case .seePlans:
             pendingSettingsRoute = .account
+        case .manageSessions:
+            sessionManagementPresented = true
         case .reportProblem, .none:
             _ = context
         }
@@ -8222,15 +8308,20 @@ final class OpenNOWStore: ObservableObject {
                 base: requestedSettings,
                 session: refreshed
             )
-            let claimed = try await api.claimSession(
-                session: refreshed,
-                candidate: candidate,
-                game: game,
-                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
-                vpcId: cachedVpcId,
-                settings: streamSettings,
-                deviceId: persistentDeviceId()
-            )
+            let claimed: ActiveSession
+            if candidate.status == 1 {
+                claimed = try await api.resumeQueuedSession(
+                    session: refreshed, candidate: candidate, game: game,
+                    streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                    vpcId: cachedVpcId, settings: streamSettings, deviceId: persistentDeviceId()
+                )
+            } else {
+                claimed = try await api.claimSession(
+                    session: refreshed, candidate: candidate, game: game,
+                    streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                    vpcId: cachedVpcId, settings: streamSettings, deviceId: persistentDeviceId()
+                )
+            }
             try Task.checkCancellation()
             guard generation == authGeneration, operation == sessionOperationGeneration else { return }
             activeSession = claimed
@@ -9402,19 +9493,7 @@ final class OpenNOWStore: ObservableObject {
             for: settings,
             membershipTier: subscription?.membershipTier ?? session.user.membershipTier
         )
-        let expectedSignature = StreamSettingsResolver.sessionSignature(for: settings, profile: profile)
-        let expectedResolution = "\(profile.width)x\(profile.height)"
-        guard candidate.streamSettingsSignature?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedSignature else {
-            return false
-        }
-        guard candidate.resolution?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedResolution else {
-            return false
-        }
-        // A signature describes the request; the finalized host format may have
-        // downgraded it. Reusing that seat perpetuates 8-bit SDR after requesting HDR.
-        guard StreamSettingsResolver.remoteColorMatches(color: candidate.colorQuality,
-            hdr: candidate.hdrEnabled, settings: settings) else { return false }
-        return candidate.fps == profile.fps
+        return candidate.matchesStreamSettings(settings, profile: profile)
     }
 
     private func streamSettingsByAdoptingRemoteProfile(
