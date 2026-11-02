@@ -13,6 +13,13 @@ class StreamSignalingPacketTest {
         onEvent = events::add,
     )
 
+    @Test fun removedPeerIsReportedBeforeTheSocketCanReplaceItWithGenericEof() {
+        val events = mutableListOf<SignalingEvent>()
+        client(events).handleMessage("""{"error":"peerRemoved"}""")
+        val error = events.filterIsInstance<SignalingEvent.Error>().single()
+        assertEquals(SignalingFailureDisposition.RecoverPeer, signalingFailureDisposition(error.message))
+    }
+
     @Test fun nullOrWronglyTypedOptionalFieldsDoNotKillTheWebSocketReader() {
         val events = mutableListOf<SignalingEvent>()
         val client = client(events)

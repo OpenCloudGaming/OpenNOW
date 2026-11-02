@@ -1115,8 +1115,11 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-vqos[0].fec.repairMinPercent:5".to_owned(),
         "a=x-nv-vqos[0].fec.repairMaxPercent:40".to_owned(),
         "a=x-nv-vqos[0].bllFec.enable:0".to_owned(),
-        format!("a=x-nv-vqos[0].drc.enable:{dynamic_mode}"),
-        "a=x-nv-vqos[0].dfc.adjustResAndFps:0".to_owned(),
+        // Native NVST owns adaptation through the dynamic streaming policy/DFC.
+        // Enabling the separate WebRTC-style DRC controller can reduce resolution
+        // independently of the selected bitrate floor (dev 5b89338a3).
+        "a=x-nv-vqos[0].drc.enable:0".to_owned(),
+        format!("a=x-nv-vqos[0].dfc.adjustResAndFps:{dynamic_mode}"),
         format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
         format!("a=x-nv-vqos[0].bw.minimumBitrateKbps:{minimum_bitrate}"),
         "a=x-nv-vqos[0].drc.bitrateIirFilterFactor:128".to_owned(),
@@ -1956,6 +1959,9 @@ mod tests {
                 (1, 250, 250, 250, 250),
                 (3, 750, 750, 750, 750),
                 (75, 1000, 18750, 1000, 18750),
+                // Android TV report: fixed profile and Custom with a 60 Mbps floor.
+                (100, 5000, 100000, 5000, 100000),
+                (100, 60000, 100000, 60000, 100000),
                 // Clamp inconsistent JNI inputs before writing the server request.
                 (3, 9000, 12000, 3000, 3000),
                 (3, 750, 100, 750, 750),
@@ -1985,7 +1991,10 @@ mod tests {
                 assert!(sdp.contains(&format!(
                     "a=x-nv-vqos[0].dynamicStreamingMode:{dynamic_mode}\r\n"
                 )));
-                assert!(sdp.contains(&format!("a=x-nv-vqos[0].drc.enable:{dynamic_mode}\r\n")));
+                assert!(sdp.contains("a=x-nv-vqos[0].drc.enable:0\r\n"));
+                assert!(sdp.contains(&format!(
+                    "a=x-nv-vqos[0].dfc.adjustResAndFps:{dynamic_mode}\r\n"
+                )));
                 assert!(sdp.contains(&format!(
                     "a=x-nv-vqos[0].bw.minimumBitrateKbps:{expected_minimum}\r\n"
                 )));

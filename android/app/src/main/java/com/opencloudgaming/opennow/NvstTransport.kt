@@ -109,7 +109,7 @@ internal fun nvstSessionContext(session: SessionInfo, settings: StreamSettings):
         put("colorQuality", OpenNowJson.encodeToJsonElement(settings.colorQuality))
         put("maxBitrateMbps", settings.maxBitrateMbps)
         put("networkAdaptation", buildJsonObject {
-            val bitrate = StreamNetworkAdaptation.bitrateRange(settings)
+            val bitrate = StreamNetworkAdaptation.nvstBitrateRange(settings)
             put("dynamicStreamingMode", StreamNetworkAdaptation.dynamicStreamingMode(settings))
             put("minimumBitrateKbps", bitrate.minimumKbps)
             put("initialBitrateKbps", bitrate.initialKbps)
@@ -347,8 +347,13 @@ internal class NvstTransport(
         }
         val image = checkNotNull(decoderInput).frame(bytes, timestampNs, keyframe)
         return try {
-            val status = nvstDecoderOperation("decode") { activeDecoder.decode(image, decodeInfo) }
-            val accepted = status == VideoCodecStatus.OK
+            val accepted = nvstDecoderOperation("decode") {
+                val status = activeDecoder.decode(image, decodeInfo)
+                if (status != VideoCodecStatus.OK) NativeInputDiagnostics.retainThrottled("nvst.decoder-status", 1_000) {
+                    "NVST decoder status=$status implementation=${activeDecoder.implementationName}"
+                }
+                nvstDecodeAccepted(status)
+            }
             needsKeyframe = !accepted
             accepted
         } finally { image.release() }

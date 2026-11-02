@@ -8,6 +8,11 @@ internal object StreamNetworkAdaptation {
 
     fun dynamicResolutionControl(settings: StreamSettings): Int = dynamicStreamingMode(settings)
 
+    // Native RTSP starts at the selected ceiling, matching the native streamer. Its
+    // bandwidth feedback is independent of WebRTC's ramp from a quarter-rate start.
+    fun nvstBitrateRange(settings: StreamSettings): StreamBitrateRange =
+        bitrateRange(settings).let { it.copy(initialKbps = it.maximumKbps) }
+
     fun bitrateRange(settings: StreamSettings): StreamBitrateRange {
         val standard = bitrateRange(settings.maxBitrateMbps)
         if (!settings.experimentalDynamicNetworkAdjustment) return standard

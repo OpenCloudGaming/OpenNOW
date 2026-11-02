@@ -7,6 +7,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NvstTransportTest {
+    @Test fun nativeBitrateStartsAtSelectedCeilingAndPreservesCustomFloor() {
+        val session = SessionInfo("seat", 2, serverIp = "", signalingServer = "", signalingUrl = "")
+        for (resolution in listOf("2560x1440", "3840x2160")) {
+            for (custom in listOf(false, true)) {
+                val settings = StreamSettings(resolution = resolution, maxBitrateMbps = 100,
+                    experimentalNvst = true, experimentalDynamicNetworkAdjustment = custom,
+                    experimentalDynamicMinimumBitrateMbps = 60)
+                val context = OpenNowJson.parseToJsonElement(nvstSessionContext(session, settings)).jsonObject
+                val policy = context.getValue("settings").jsonObject.getValue("networkAdaptation").jsonObject
+                assertEquals(100_000, policy.getValue("initialBitrateKbps").jsonPrimitive.int)
+                assertEquals(if (custom) 60_000 else 5_000, policy.getValue("minimumBitrateKbps").jsonPrimitive.int)
+                assertEquals(if (custom) 1 else 0, policy.getValue("dynamicStreamingMode").jsonPrimitive.int)
+                // WebRTC retains its independent startup ramp.
+                if (!custom) assertEquals(25_000, StreamNetworkAdaptation.bitrateRange(settings).initialKbps)
+            }
+        }
+        val clamped = StreamNetworkAdaptation.nvstBitrateRange(StreamSettings(maxBitrateMbps = 3,
+            experimentalDynamicNetworkAdjustment = true, experimentalDynamicMinimumBitrateMbps = 60))
+        assertEquals(StreamBitrateRange(3_000, 3_000, 3_000), clamped)
+    }
     @Test fun nvstHdrDoesNotRequestAiHdrConversion() {
         val settings = StreamSettings(experimentalNvst = true, codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
@@ -212,7 +232,7 @@ class NvstTransportTest {
         val adaptation = context["settings"]!!.jsonObject["networkAdaptation"]!!.jsonObject
         assertEquals(0, adaptation["dynamicStreamingMode"]!!.jsonPrimitive.int)
         assertEquals(5000, adaptation["minimumBitrateKbps"]!!.jsonPrimitive.int)
-        assertEquals(18750, adaptation["initialBitrateKbps"]!!.jsonPrimitive.int)
+        assertEquals(75000, adaptation["initialBitrateKbps"]!!.jsonPrimitive.int)
         assertEquals(session.rtspsEndpoints.first(), context["session"]!!.jsonObject["rtspsEndpoints"]!!.jsonArray.first().jsonPrimitive.content)
     }
 }

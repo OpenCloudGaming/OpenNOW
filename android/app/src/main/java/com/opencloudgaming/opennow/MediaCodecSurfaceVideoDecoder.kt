@@ -162,7 +162,7 @@ internal class MediaCodecSurfaceVideoDecoder(
             }
             VideoCodecStatus.OK
         } catch (error: Exception) {
-            failLocked("input/configure ${error.javaClass.simpleName}")
+            failLocked("input/configure", error)
         }
     }
 
@@ -172,7 +172,7 @@ internal class MediaCodecSurfaceVideoDecoder(
                 if (!isCurrentCodec(decoder, codecGeneration) || failureReason != null) return
                 inputSlots.addLast(index)
                 try { feedInputLocked(decoder) }
-                catch (error: Exception) { failLocked("input callback ${error.javaClass.simpleName}") }
+                catch (error: Exception) { failLocked("input callback", error) }
             }
         }
 
@@ -209,7 +209,7 @@ internal class MediaCodecSurfaceVideoDecoder(
                                 }
                                 present
                             } catch (error: Exception) {
-                                failLocked("output release ${error.javaClass.simpleName}")
+                                failLocked("output release", error)
                                 false
                             }
                         }
@@ -217,7 +217,7 @@ internal class MediaCodecSurfaceVideoDecoder(
                     Triple(VideoFrame(buffer, frame.rotation, frame.timestampNs),
                         (SystemClock.elapsedRealtime() - frame.queuedAtMs).toInt(), callback)
                 } catch (error: Exception) {
-                    failLocked("output callback ${error.javaClass.simpleName}")
+                    failLocked("output callback", error)
                     return
                 }
             }
@@ -225,7 +225,7 @@ internal class MediaCodecSurfaceVideoDecoder(
             try { delivery.third?.onDecodedFrame(delivery.first, delivery.second, null) }
             catch (error: Exception) {
                 synchronized(lock) {
-                    if (isCurrentCodec(decoder, codecGeneration)) failLocked("frame delivery ${error.javaClass.simpleName}")
+                    if (isCurrentCodec(decoder, codecGeneration)) failLocked("frame delivery", error)
                 }
             }
             finally { delivery.first.release() }
@@ -247,13 +247,13 @@ internal class MediaCodecSurfaceVideoDecoder(
                     }
                     // Format changes can reset scaling mode. Surface layout owns aspect fitting.
                     decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
-                } catch (error: Exception) { failLocked("format callback ${error.javaClass.simpleName}") }
+                } catch (error: Exception) { failLocked("format callback", error) }
             }
         }
 
         override fun onError(decoder: MediaCodec, error: MediaCodec.CodecException) {
             synchronized(lock) {
-                if (isCurrentCodec(decoder, codecGeneration)) failLocked("codec callback ${error.errorCode}")
+                if (isCurrentCodec(decoder, codecGeneration)) failLocked("codec callback", error)
             }
         }
     }
@@ -261,7 +261,14 @@ internal class MediaCodecSurfaceVideoDecoder(
     private fun isCurrentCodec(decoder: MediaCodec, codecGeneration: Int): Boolean =
         running && codec === decoder && generation == codecGeneration
 
+    private fun failLocked(operation: String, error: Exception): VideoCodecStatus {
+        if (failureReason == null) NativeInputDiagnostics.addRetained("surface-decoder-exception",
+            "MediaCodec direct surface $operation ${mediaCodecFailureDetail(error)}")
+        return failLocked("$operation ${error.javaClass.simpleName}: ${error.message.orEmpty().take(512)}")
+    }
+
     private fun failLocked(reason: String): VideoCodecStatus {
+        if (failureReason != null) return VideoCodecStatus.ERROR
         failureReason = reason
         NativeInputDiagnostics.addRetained("surface-decoder-error",
             "MediaCodec direct surface failure=$reason hdr=$hdr input=$inputCount output=$outputCount " +
@@ -282,7 +289,7 @@ internal class MediaCodecSurfaceVideoDecoder(
     private fun queueInputLocked(decoder: MediaCodec, index: Int, source: ByteBuffer, info: FrameInfo) {
         val input = decoder.getInputBuffer(index) ?: error("Missing surface codec input buffer")
         input.clear()
-        require(info.size <= input.remaining()) { "Encoded frame exceeds codec buffer" }
+        require(info.size <= input.remaining()) { "Encoded frame exceeds codec buffer bytes=${info.size} capacity=${input.remaining()}" }
         input.put(source.duplicate())
         nextPtsUs = maxOf(nextPtsUs + 1, info.timestampNs / 1000)
         frames.append(nextPtsUs, info)

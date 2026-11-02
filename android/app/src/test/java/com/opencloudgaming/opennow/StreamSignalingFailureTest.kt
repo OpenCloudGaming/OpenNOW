@@ -124,6 +124,14 @@ class StreamSignalingFailureTest {
         assertFalse(shouldPreserveMediaAfterSignalingFailure(transient, null))
     }
 
+    @Test fun removedSignalingPeerDoesNotInterruptHealthyMediaButRecoversFailedStartup() {
+        val disposition = signalingFailureDisposition("Signaling peerRemoved")
+        assertEquals(SignalingFailureDisposition.RecoverPeer, disposition)
+        assertTrue(shouldPreserveMediaAfterSignalingFailure(disposition, PeerConnection.IceConnectionState.CONNECTED))
+        assertFalse(shouldPreserveMediaAfterSignalingFailure(disposition, null))
+        assertFalse(shouldPreserveMediaAfterSignalingFailure(disposition, PeerConnection.IceConnectionState.FAILED))
+    }
+
     @Test
     fun terminalAndStaleSignalingFailuresStillTakeTheirNormalRecoveryPaths() {
         assertFalse(

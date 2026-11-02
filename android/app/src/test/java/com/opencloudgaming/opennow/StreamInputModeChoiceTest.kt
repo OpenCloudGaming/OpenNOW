@@ -54,14 +54,14 @@ class StreamInputModeChoiceTest {
     }
 
     @Test
-    fun rememberedNativeTouchStillDisablesWebsiteModeBeforeProvisioning() = runBlocking {
+    fun rememberedNativeTouchPreservesTheExplicitWebsiteModeChoice() = runBlocking {
         val mode = chooseStreamInputModeAtStart(
             nativeTouchAvailable = true,
             keyboardMouseConnected = true,
             promptForChoice = true,
             rememberedMode = StreamInputMode.NativeTouch,
         ) { error("Remembered choice should skip the prompt") }
-        assertFalse(StreamSettings(browserClientMode = true).forStreamInputMode(mode).browserClientMode)
+        assertTrue(StreamSettings(browserClientMode = true).forStreamInputMode(mode).browserClientMode)
     }
 
     @Test
@@ -158,8 +158,8 @@ class StreamInputModeChoiceTest {
             assertTrue(settings.browserClientMode)
             answer.complete(mode)
             val resolved = launch.await()
-            assertEquals(mode != StreamInputMode.NativeTouch, resolved.browserClientMode)
-            assertEquals(mode == StreamInputMode.NativeTouch, shouldUseNativeTouch(NativeTouchMode.Auto, game, resolved))
+            assertTrue(resolved.browserClientMode)
+            assertTrue(shouldUseNativeTouch(NativeTouchMode.Auto, game, resolved))
             assertEquals(settings.copy(browserClientMode = resolved.browserClientMode), resolved)
         }
     }

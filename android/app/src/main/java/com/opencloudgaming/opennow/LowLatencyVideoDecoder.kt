@@ -103,12 +103,8 @@ class LowLatencyVideoDecoder(
                     }
 
                     override fun initializationFailed(codecName: String, phase: String, error: RuntimeException) {
-                        val platformDetail = if (error is MediaCodec.CodecException) {
-                            " diagnostic=${error.diagnosticInfo} code=${error.errorCode}" +
-                                " recoverable=${error.isRecoverable} transient=${error.isTransient}"
-                        } else ""
                         NativeInputDiagnostics.addRetained("codec-initialization-error",
-                            "MediaCodec $phase failed decoder=$codecName$platformDetail ${boundedJavaCrashTrace(error)}")
+                            "MediaCodec $phase failed decoder=$codecName ${mediaCodecFailureDetail(error)}")
                     }
 
                     override fun initializationCleanupFailed(codecName: String, error: RuntimeException) {

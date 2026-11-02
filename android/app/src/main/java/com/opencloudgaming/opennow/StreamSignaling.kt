@@ -254,6 +254,12 @@ class GfnSignalingClient(
         }
         parsed["error"]?.takeUnless { it == JsonNull }?.let { error ->
             onEvent(SignalingEvent.Log("Signaling server rejected request error=${sanitizeDiagnosticLogPayload(error.toString(), limit = 400)}"))
+            // A removed registration cannot reconnect under the same peer name. Surface
+            // the protocol error before the socket's generic EOF loses that information.
+            if ((error as? JsonPrimitive)?.contentOrNull == "peerRemoved") {
+                onEvent(SignalingEvent.Error("Signaling peerRemoved"))
+                return
+            }
         }
         signalingHeartbeatReply(parsed)?.let { reply ->
             // Match the desktop client and acknowledge server-driven

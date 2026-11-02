@@ -1,13 +1,10 @@
 {
-  "177": {
-    "version": "2.2.1",
+  "188": {
+    "version": "2.3.2",
     "notes": [
-      "Fixed the Android TV launcher banner so the full OpenNOW name is visible on an edge-to-edge background"
-    ]
-  },
-  "175": {
-    "version": "2.1.9",
-    "notes": [
+      "Release Notes fixes",
+      "Fixed default settings with mouse",
+      "Fixed the Android TV launcher banner so the full OpenNOW name is visible on an edge-to-edge background",
       "Fixed the Android TV launcher banner",
       "Added **Space UI** under **Settings > Interface**. Still experimental, landscape only, and a controller is recommended.",
       "**On screen controls have their own settings page now**",

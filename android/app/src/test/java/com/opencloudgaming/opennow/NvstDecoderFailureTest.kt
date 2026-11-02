@@ -2,8 +2,24 @@ package com.opencloudgaming.opennow
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.webrtc.VideoCodecStatus
 
 class NvstDecoderFailureTest {
+    @Test fun unrecoverableStatusUsesLocalDecoderFailureInsteadOfReopeningRtsp() {
+        for (status in listOf(VideoCodecStatus.FALLBACK_SOFTWARE, VideoCodecStatus.UNINITIALIZED,
+            VideoCodecStatus.ERR_PARAMETER, VideoCodecStatus.TIMEOUT)) {
+            val failure = assertThrows(NvstDecoderFailure::class.java) {
+                nvstDecoderOperation("decode") { nvstDecodeAccepted(status) }
+            }
+            val detail = nvstFailureDetail(failure)
+            assertTrue(detail.contains(status.toString()))
+            assertTrue(isNvstDecoderFailure(detail))
+            assertFalse(nvstAttachmentRequiresResume(detail, retriesExhausted = true))
+        }
+        assertTrue(nvstDecodeAccepted(VideoCodecStatus.OK))
+        assertFalse(nvstDecodeAccepted(VideoCodecStatus.NO_OUTPUT))
+        assertFalse(nvstDecodeAccepted(VideoCodecStatus.ERROR))
+    }
     @Test fun rejectedDecoderInitializationRetainsCauseAndCannotTriggerCloudResume() {
         val cause = IllegalStateException("NVST decoder initialization failed: FALLBACK_SOFTWARE")
         val failure = assertThrows(NvstDecoderFailure::class.java) {

@@ -20,6 +20,56 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GfnApiTest {
+    @Test fun highResolutionSdrWebRtcUsesConsistentDesktopBrowserAllocationWithoutNvst() {
+        for (browser in listOf(false, true)) {
+            for (tv in listOf(false, true)) {
+                for (resolution in listOf("2560x1440", "3840x2160")) {
+                    val settings = StreamSettings(resolution = resolution, fps = 60, codec = VideoCodec.AV1,
+                        maxBitrateMbps = 100, browserClientMode = browser, experimentalNvst = false)
+                    val base = "https://np-frk-07.cloudmatchbeta.nvidiagrid.net"
+                    val headers = cloudMatchHeaders("token", "client", "stable-device", includeOrigin = true,
+                        streamingBaseUrl = base, appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+                        preferBrowserMode = browser, preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+                        preferDesktopWebRtcMode = settings.prefersDesktopWebRtcCloudMatchMode(), isAndroidTv = tv)
+                    assertEquals("WEBRTC", headers["nv-client-streamer"])
+                    assertEquals("BROWSER", headers["nv-client-type"])
+                    assertEquals("WINDOWS", headers["nv-device-os"])
+                    assertEquals("DESKTOP", headers["nv-device-type"])
+                    assertTrue(headers["User-Agent"].orEmpty().contains("Windows NT"))
+                    assertFalse(headers["User-Agent"].orEmpty().contains("Android"))
+                    assertEquals("stable-device", headers["x-device-id"])
+                    val request = buildMinimalClaimRequestBody("123", "stable-device", settings,
+                        streamingBaseUrl = base, isAndroidTv = tv).getValue("sessionRequestData").jsonObject
+                    assertEquals("browser", request.getValue("clientPlatformName").jsonPrimitive.content)
+                    assertFalse(request.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+                    assertEquals("1", request.getValue("streamerVersion").jsonPrimitive.content)
+                    val monitor = request.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+                    val (width, height) = streamResolutionPixels(settings)
+                    assertEquals(width, monitor.getValue("widthInPixels").jsonPrimitive.int)
+                    assertEquals(height, monitor.getValue("heightInPixels").jsonPrimitive.int)
+                    assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+                    assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+                    assertFalse(settings.experimentalNvst)
+                }
+            }
+        }
+    }
+
+    @Test fun desktopWebRtcPolicyPreservesNativeHdrPortalTouchAndAllianceRouting() {
+        assertFalse(StreamSettings(experimentalNvst = true).prefersDesktopWebRtcCloudMatchMode())
+        assertFalse(StreamSettings(resolution = "3840x2160", hdrEnabled = true).prefersDesktopWebRtcCloudMatchMode())
+        assertFalse(StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9").prefersDesktopWebRtcCloudMatchMode())
+        for ((base, mode, expected) in listOf(
+            Triple("https://np-frk-07.cloudmatchbeta.nvidiagrid.net", GfnAppLaunchMode.TOUCH_FRIENDLY, "ANDROID" to "BROWSER"),
+            Triple("https://my-yes.yes.geforcenow.nvidiagrid.net", GfnAppLaunchMode.GAMEPAD_FRIENDLY, "WINDOWS" to "NATIVE"),
+        )) {
+            val headers = cloudMatchHeaders("token", "client", "device", includeOrigin = true,
+                streamingBaseUrl = base, appLaunchMode = mode,
+                preferNativeDesktopMode = true, preferDesktopWebRtcMode = true)
+            assertEquals(expected.first, headers["nv-device-os"])
+            assertEquals(expected.second, headers["nv-client-type"])
+        }
+    }
     @Test
     fun activeSessionLookupPreservesAuthFailureInsteadOfAllowingCreate() {
         val response = OpenNowJson.parseToJsonElement(
@@ -677,7 +727,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun yesResumeTransportProfileDoesNotAskForAnAbsentWebRtcStreamer() {
+    fun yesResumeUsesWebRtcUnlessNvstIsExplicitlySelected() {
         for (base in listOf("https://my-yes.yes.geforcenow.nvidiagrid.net", "https://prod.yes.geforcenow.nvidiagrid.net")) {
             for (settings in listOf(
                 StreamSettings(resolution = "2560x1080", aspectRatio = "21:9", maxBitrateMbps = 35),
@@ -687,11 +737,11 @@ class GfnApiTest {
             )) {
                 val data = buildMinimalClaimRequestBody("123", "device", settings = settings,
                     streamingBaseUrl = base).getValue("sessionRequestData").jsonObject
-                assertTrue(data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+                assertEquals(settings.experimentalNvst, data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
                 assertEquals(if (settings.experimentalNvst) "14" else "1", data.getValue("streamerVersion").jsonPrimitive.content)
                 assertEquals(if (settings.experimentalNvst) "2.0" else "1.0", data.getValue("sdkVersion").jsonPrimitive.content)
                 assertEquals(if (settings.experimentalNvst) 0 else 1, data.getValue("enhancedStreamMode").jsonPrimitive.int)
-                assertTrue(data.getValue("metaData").jsonArray.none {
+                assertEquals(settings.experimentalNvst, data.getValue("metaData").jsonArray.none {
                     it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
                 })
                 val monitor = data.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
@@ -701,8 +751,8 @@ class GfnApiTest {
             }
             val minimal = buildMinimalClaimRequestBody("123", "device", streamingBaseUrl = base)
                 .getValue("sessionRequestData").jsonObject
-            assertTrue(minimal.getValue("secureRTSPSupported").jsonPrimitive.boolean)
-            assertTrue(minimal.getValue("metaData").jsonArray.none {
+            assertFalse(minimal.getValue("secureRTSPSupported").jsonPrimitive.boolean)
+            assertFalse(minimal.getValue("metaData").jsonArray.none {
                 it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
             })
         }
@@ -732,7 +782,7 @@ class GfnApiTest {
         )) {
             for (launchMode in listOf(GfnAppLaunchMode.GAMEPAD_FRIENDLY, GfnAppLaunchMode.TOUCH_FRIENDLY)) {
                 val nativeAndroid = nvidia && launchMode == GfnAppLaunchMode.GAMEPAD_FRIENDLY
-                val webRtcTouch = nvidia && launchMode == GfnAppLaunchMode.TOUCH_FRIENDLY
+                val webRtcTouch = launchMode == GfnAppLaunchMode.TOUCH_FRIENDLY
                 val headers = cloudMatchHeaders(
                     token = "token",
                     clientId = "client",
@@ -774,7 +824,7 @@ class GfnApiTest {
                 assertEquals("1", data.getValue("streamerVersion").jsonPrimitive.content)
                 assertEquals("1.0", data.getValue("sdkVersion").jsonPrimitive.content)
                 assertEquals(1, data.getValue("enhancedStreamMode").jsonPrimitive.int)
-                val nativeTransport = nativeAndroid || !nvidia
+                val nativeTransport = nativeAndroid
                 assertEquals(nativeTransport, data.getValue("secureRTSPSupported").jsonPrimitive.boolean)
                 val streamerMetadata = data.getValue("metaData").jsonArray.firstOrNull {
                     it.jsonObject["key"]?.jsonPrimitive?.contentOrNull == "GSStreamerType"
@@ -957,7 +1007,7 @@ class GfnApiTest {
     fun nativeTouchHeaderAndClaimTransportFollowNvstChoiceWithoutChangingQuality() {
         for (nvst in listOf(false, true)) {
             val settings = StreamSettings(resolution = "1920x1200", aspectRatio = "16:10", fps = 60, maxBitrateMbps = 69,
-                experimentalNvst = nvst, browserClientMode = true).forStreamInputMode(StreamInputMode.NativeTouch)
+                experimentalNvst = nvst, browserClientMode = false).forStreamInputMode(StreamInputMode.NativeTouch)
             val headers = cloudMatchHeaders("token", "client", "device", includeOrigin = true,
                 streamingBaseUrl = "https://prod.cloudmatchbeta.nvidiagrid.net/",
                 appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
@@ -1021,7 +1071,7 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferBrowserMode = true,
         )
-        assertEquals("NATIVE", allianceHeaders["nv-client-type"])
+        assertEquals("BROWSER", allianceHeaders["nv-client-type"])
     }
 
     @Test
@@ -1527,7 +1577,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun highPerformanceGamepadClaimUsesNativeDesktopPlatformIdentity() {
+    fun highPerformanceGamepadClaimUsesDesktopWebRtcPlatformIdentity() {
         val body = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -1536,8 +1586,8 @@ class GfnApiTest {
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
 
-        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
     }
 
@@ -1579,7 +1629,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun fireTvCube1440pClaimUsesDesktopAllocationAndPreservesRequestedProfile() {
+    fun fireTvCube1440pClaimUsesDesktopWebRtcAndPreservesRequestedProfile() {
         val sessionRequestData = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -1598,8 +1648,8 @@ class GfnApiTest {
         ).getValue("sessionRequestData").jsonObject
         val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
 
-        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(2560, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(1440, monitor.getValue("heightInPixels").jsonPrimitive.int)
         assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
@@ -1607,7 +1657,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun otherAndroidTvFourKClaimUsesDesktopPlatformAllocation() {
+    fun otherAndroidTvFourKClaimUsesDesktopWebRtcAllocation() {
         val sessionRequestData = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -1618,8 +1668,8 @@ class GfnApiTest {
             useDesktopNativeTvIdentity = true,
         ).getValue("sessionRequestData").jsonObject
 
-        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
     }
 
     @Test

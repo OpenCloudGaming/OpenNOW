@@ -2656,6 +2656,12 @@ class NativeStreamClient(
                             }
                             "error" -> {
                                 lastNvstError = detail
+                                NativeInputDiagnostics.addRetained(
+                                    "nvst.attachment-failure",
+                                    "NVST attachment failed session=${streamDiagnosticId(session.sessionId)} " +
+                                        "generation=$generation settings=${settings.resolution}/${settings.fps}/" +
+                                        "${settings.codec}/${settings.maxBitrateMbps} detail=${sanitizeDiagnosticLogPayload(detail, limit = 1200)}",
+                                )
                                 recordStreamDiagnostic("NVST attachment failed: $detail")
                                 if (isNvstDecoderFailure(detail)) {
                                     failStream("$detail. Your cloud session is retained; retry when ready.", generation)
@@ -2820,6 +2826,7 @@ class NativeStreamClient(
                         recordStreamDiagnostic("Signaling reported a terminal session response; verifying allocated session before local exit.")
                         requestSessionRecovery("The provider reported that the signaling session ended.")
                     }
+                    SignalingFailureDisposition.RecoverPeer,
                     SignalingFailureDisposition.RecoverSession -> {
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
                         requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")
@@ -2844,6 +2851,7 @@ class NativeStreamClient(
                         recordStreamDiagnostic("Signaling error reported a terminal session response; verifying allocated session before local exit.")
                         requestSessionRecovery("The provider reported that the signaling session ended.")
                     }
+                    SignalingFailureDisposition.RecoverPeer,
                     SignalingFailureDisposition.RecoverSession -> {
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
                         requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")

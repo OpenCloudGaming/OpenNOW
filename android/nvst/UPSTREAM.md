@@ -91,6 +91,25 @@ Byte-exact encoder and authenticated packet tests cover these corrections; they
 do not establish that a particular reported blur, FPS drop, or 4K stream failure
 has been resolved on an affected Android TV.
 
+Android TV 2.3.1 follow-up (2026-11-01): NVIDIA SDR gamepad WebRTC launches and
+resumes now use a desktop browser identity consistently across CloudMatch headers,
+platform, User-Agent and monitor descriptors. The report's native Windows identity
+returned RTSPS-only descriptors and no video offer, while its Android browser
+identity negotiated 1080p. Requested geometry is preserved; this change does not
+establish that NVIDIA will allocate 4K over its browser transport. Native NVST,
+HDR, Portal, touch and alliance identity selection keep their existing policy.
+
+Native RTSP now starts at the selected bitrate ceiling, matching the native
+streamer's ANNOUNCE in dev 5b89338a3, instead of inheriting WebRTC's quarter-rate
+startup ramp. Android's minimum and dynamic-resolution choice are preserved;
+ANNOUNCE now maps that choice to native DFC and leaves the independent DRC
+controller disabled, matching dev 5b89338a3 instead of enabling DRC while
+disabling DFC in Custom mode.
+Unrecoverable decoder statuses now use the existing local decoder-failure path,
+and bounded attachment/MediaCodec failure details survive subsequent stream tests.
+The supplied report does not retain the later NVST failure event; sustained
+bitrate, resolution and busy-scene 4K playback still require device verification.
+
 Android now sends native touch records through the reliable RemoteInput envelope, forwards
 bounded server input notifications to the Android haptics parser, and initially advertises haptics
 disabled until Android supplies the actual user/device capability. The microphone sender uses the
