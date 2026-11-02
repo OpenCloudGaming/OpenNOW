@@ -675,8 +675,8 @@
     "queueAdUrlLoad": "Error loading url"
   },
   "androidStreamInput": {
-    "stream_slide_direct_click_experimental": "Slide + Direct click (experimental)",
-    "stream_slide_direct_click_description": "Slide to move the cursor. Double-tap quickly in the same area to click at that screen position. Single taps do nothing. Two-finger scrolling still works. Keyboard & mouse overlay buttons continue to handle clicks.",
+    "stream_slide_direct_click_experimental": "Slide + Direct click",
+    "stream_slide_direct_click_description": "With Finger mouse and Direct click enabled, slide to move the cursor. Double-tap quickly in the same area to click at that screen position. Single taps do nothing. Two-finger scrolling still works. Keyboard & mouse overlay buttons continue to handle clicks.",
     "stream_touch_mouse_sensitivity": "Touch cursor sensitivity",
     "stream_touch_mouse_sensitivity_description": "Controls how far the cursor or camera moves when you drag a finger. Lower values give finer aim; higher values turn faster. Applies to Finger mouse, including keyboard & mouse controls. Direct click and native touch use the touched position instead.",
     "controls_show_to_move": "Show on-screen controls first",

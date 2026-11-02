@@ -1363,7 +1363,7 @@ private fun SettingsContent(
                     onClick = { viewModel.updateSettings(settings.copy(physicalInput = PhysicalInputSettings())) },
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click", "slide", "double tap", "experimental") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_mouse_lock),
                     checked = settings.externalMousePointerLock,
@@ -1457,17 +1457,6 @@ private fun SettingsContent(
                     }
                     Box(Modifier.padding(start = 24.dp)) {
                         SettingSwitch(stringResource(R.string.stream_panel_direct_click), settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
-                    }
-                    if (settings.androidTouch.mouseDirectClick) {
-                        Box(Modifier.padding(start = 48.dp)) {
-                            SettingSwitch(
-                                label = stringResource(R.string.stream_slide_direct_click_experimental),
-                                checked = settings.androidTouch.experimentalSlideDirectClick,
-                                description = stringResource(R.string.stream_slide_direct_click_description),
-                            ) { enabled ->
-                                viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(experimentalSlideDirectClick = enabled)))
-                            }
-                        }
                     }
                 }
             }
@@ -1790,7 +1779,7 @@ private fun SettingsContent(
                     showTitle = false,
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "network", "dynamic", "adjustment", "nvst", "l4s", "session", "launch", "failure", "battery", "optimization", "background", "allow", "run") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "network", "dynamic", "adjustment", "nvst", "l4s", "session", "launch", "failure", "battery", "optimization", "background", "allow", "run", "slide", "direct click", "double tap", "finger", "mouse", "touch") {
                 if (!LocalSpaceUiPresentation.current) {
                     Text(
                         stringResource(R.string.settings_experimental_streaming_warning),
@@ -1799,7 +1788,14 @@ private fun SettingsContent(
                     )
                 }
                 SettingSwitch(
-                    label = "NVST transport",
+                    label = stringResource(R.string.stream_slide_direct_click_experimental),
+                    checked = settings.androidTouch.experimentalSlideDirectClick,
+                    description = stringResource(R.string.stream_slide_direct_click_description),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(experimentalSlideDirectClick = enabled)))
+                }
+                SettingSwitch(
+                    label = "NVST Transport",
                     checked = settings.stream.experimentalNvst,
                     description = "Try native NVST streaming for new sessions. Off by default while compatibility and stability issues are investigated.",
                 ) {
