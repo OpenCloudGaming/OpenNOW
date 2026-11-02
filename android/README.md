@@ -43,6 +43,13 @@ Run `python3 scripts/check_translations.py` from this folder to check every supp
 
 ## Runtime Notes
 
+Settings > Input > Finger mouse > Direct click includes **Slide + Direct click (experimental)**,
+also available beside Direct click in Stream Controls. It defaults off. With both enabled, slides
+move the cursor relatively and two completed taps within 320 ms in the same area send one click at
+the second tap's screen position. Single taps, holds, and tap-then-slide gestures do not click.
+Two-finger scrolling is preserved; keyboard & mouse overlay buttons retain ownership of clicks.
+Native touch and physical mouse input keep their existing behavior.
+
 - UI is native Compose.
 - GFN auth, catalog, subscription, CloudMatch session creation/polling/claim/stop, signaling, and input packet behavior are implemented in Kotlin from the Electron project contracts.
 - Streaming uses Android WebRTC plus hardware MediaCodec probing. The bundled `opennow_native` JNI library exposes native runtime diagnostics and keeps the NDK/CMake path wired for media-sensitive code.

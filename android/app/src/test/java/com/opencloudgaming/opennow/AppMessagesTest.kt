@@ -15,6 +15,14 @@ class AppMessagesTest {
         assertEquals(3, rendered.spanStyles.size)
         assertEquals("Literal http://example.com", formattedAppMessageBody("Literal http://example.com", Color.Blue, Color.Red).text)
     }
+    @Test fun combinesBoldAndRedInEitherOrder() {
+        for (body in listOf("<red>**Important**</red>", "**<red>Important</red>**")) {
+            val formatted = formattedAppMessageBody(body, Color.Blue, Color.Red)
+            assertEquals("Important", formatted.text)
+            assertTrue(formatted.spanStyles.any { it.item.color == Color.Red && it.start == 0 && it.end == 9 })
+            assertTrue(formatted.spanStyles.any { it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.Bold && it.start == 0 && it.end == 9 })
+        }
+    }
     @Test fun acknowledgementSuppressesSameAndOlderIdsButAllowsNewIds() {
         val message = AppMessage(5, "News", "Body")
         assertTrue(message.isUnacknowledged(4))

@@ -634,8 +634,8 @@ private fun SettingsBody(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SettingsDetailHeader(
-                    title = stringResource(selectedCategory.titleRes),
-                    summary = stringResource(selectedCategory.summaryRes),
+                    title = if (selectedCategory == SettingsCategory.BugReports) "" else stringResource(selectedCategory.titleRes),
+                    summary = if (selectedCategory == SettingsCategory.BugReports) null else stringResource(selectedCategory.summaryRes),
                     tvProfile = tvProfile,
                     controllerFamily = controllerFamily,
                     onBack = onBack,
@@ -1363,7 +1363,7 @@ private fun SettingsContent(
                     onClick = { viewModel.updateSettings(settings.copy(physicalInput = PhysicalInputSettings())) },
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click", "slide", "double tap", "experimental") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_mouse_lock),
                     checked = settings.externalMousePointerLock,
@@ -1457,6 +1457,17 @@ private fun SettingsContent(
                     }
                     Box(Modifier.padding(start = 24.dp)) {
                         SettingSwitch(stringResource(R.string.stream_panel_direct_click), settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
+                    }
+                    if (settings.androidTouch.mouseDirectClick) {
+                        Box(Modifier.padding(start = 48.dp)) {
+                            SettingSwitch(
+                                label = stringResource(R.string.stream_slide_direct_click_experimental),
+                                checked = settings.androidTouch.experimentalSlideDirectClick,
+                                description = stringResource(R.string.stream_slide_direct_click_description),
+                            ) { enabled ->
+                                viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(experimentalSlideDirectClick = enabled)))
+                            }
+                        }
                     }
                 }
             }
@@ -1751,18 +1762,26 @@ private fun SettingsContent(
                     searchMode = searchQuery.isNotBlank(),
                 )
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.BugReports, searchQuery, stringResource(R.string.bug_report_inbox_title), "bug", "report", "issue", "status", "reply", "comment", "support") {
-                BugReportThreadsSettings(
-                    state = state.bugReportThreads,
-                    onRefresh = viewModel::refreshBugReportThreads,
-                    onNewReport = {
-                        viewModel.resetBugReportSubmission()
-                        showBugReportDialog = true
-                    },
-                    onComment = viewModel::commentOnBugReport,
-                    onClose = viewModel::closeBugReport,
-                    onDelete = viewModel::deleteBugReport,
-                )
+    CategorySettingsSection(selectedCategory, SettingsCategory.BugReports, searchQuery, if (selectedCategory == SettingsCategory.BugReports && searchQuery.isBlank()) "" else stringResource(R.string.settings_category_bug_reports), "bug", "report", "issue", "status", "reply", "comment", "support", "published", "vote", "logs") {
+                BugReportsSettings(
+                    publishedState = state.publishedBugs,
+                    onRefreshPublished = { viewModel.refreshPublishedBugs() },
+                    onLoadMore = { viewModel.refreshPublishedBugs(loadMore = true) },
+                    onVote = viewModel::votePublishedBug,
+                    onUploadLogs = viewModel::uploadPublishedBugLogs,
+                ) {
+                    BugReportThreadsSettings(
+                        state = state.bugReportThreads,
+                        onRefresh = viewModel::refreshBugReportThreads,
+                        onNewReport = {
+                            viewModel.resetBugReportSubmission()
+                            showBugReportDialog = true
+                        },
+                        onComment = viewModel::commentOnBugReport,
+                        onClose = viewModel::closeBugReport,
+                        onDelete = viewModel::deleteBugReport,
+                    )
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.TvPairing, searchQuery, stringResource(R.string.tv_pair_settings_title), "tv", "pair", "phone", "qr", "code", "network") {
                 LocalTvSettingsPanel(
@@ -1780,7 +1799,7 @@ private fun SettingsContent(
                     )
                 }
                 SettingSwitch(
-                    label = "NVST transport (Experimental)",
+                    label = "NVST transport",
                     checked = settings.stream.experimentalNvst,
                     description = "Try native NVST streaming for new sessions. Off by default while compatibility and stability issues are investigated.",
                 ) {

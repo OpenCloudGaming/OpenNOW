@@ -145,7 +145,7 @@ internal fun SettingsDetailHeader(
             Spacer(Modifier.weight(1f))
             actions()
         }
-        Column(Modifier.fillMaxWidth()) {
+        if (title.isNotBlank() || !summary.isNullOrBlank()) Column(Modifier.fillMaxWidth()) {
             Text(
                 title,
                 color = rowStyle.labelColor,

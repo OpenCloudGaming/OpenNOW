@@ -10,6 +10,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -74,14 +76,15 @@ internal fun Modifier.spaceArrival(key: Any?, delayMillis: Int = 0): Modifier {
 @Composable
 internal fun Modifier.spaceFocusFrame(active: Boolean, radius: Dp, hovered: Boolean = false): Modifier {
     // A mouse owns its hover frame even when no physical controller is connected.
-    val engaged = active && LocalSpaceAnimatedFocusOutline.current && (hovered || LocalSpaceControllerConnected.current) &&
+    val directionalInput = LocalSpaceControllerConnected.current || LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    val engaged = active && LocalSpaceAnimatedFocusOutline.current && (hovered || directionalInput) &&
         androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
     val reduced = LocalReduceMotion.current
     val fast = LocalSpaceFastNavigation.current
     val reveal = animateFloatAsState(if (engaged) 1f else 0f,
         if (reduced) tween(0) else if (fast) tween(55) else androidx.compose.animation.core.spring(dampingRatio = .68f, stiffness = 420f),
         label = "space-frame-arrival")
-    val light = if (engaged && !reduced) {
+    val light = if (engaged && !reduced && !fast) {
         val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "space-focus-light")
         transition.animateFloat(0f, 6.2831855f,
             androidx.compose.animation.core.infiniteRepeatable(tween(2800, easing = androidx.compose.animation.core.LinearEasing)),
@@ -105,6 +108,27 @@ internal fun Modifier.spaceFocusFrame(active: Boolean, radius: Dp, hovered: Bool
                 listOf(SpaceWhite.copy(alpha = .45f * opacity), SpaceWhite.copy(alpha = opacity), SpaceIce.copy(alpha = .65f * opacity)),
                 center - vector, center + vector), origin, frameSize, corner,
                 style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+        }
+    }
+}
+
+/** A persistent selection cue, separate from the brighter transient input-focus frame. Fits the tile gutter. */
+@Composable
+internal fun Modifier.spaceSelectionMark(selected: Boolean): Modifier {
+    val reveal = animateFloatAsState(if (selected) 1f else 0f,
+        tween(if (LocalReduceMotion.current) 0 else if (LocalSpaceFastNavigation.current) 55 else 180), label = "space-selection")
+    return drawWithContent {
+        drawContent()
+        val progress = reveal.value
+        if (progress > 0f) {
+            val halfWidth = 12.dp.toPx().coerceAtMost(size.width / 4) * progress
+            val y = size.height + 6.dp.toPx()
+            val start = androidx.compose.ui.geometry.Offset(size.width / 2 - halfWidth, y)
+            val end = androidx.compose.ui.geometry.Offset(size.width / 2 + halfWidth, y)
+            drawLine(SpaceIce.copy(alpha = .14f * progress), start, end,
+                strokeWidth = 6.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawLine(SpaceIce.copy(alpha = progress), start, end,
+                strokeWidth = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
         }
     }
 }

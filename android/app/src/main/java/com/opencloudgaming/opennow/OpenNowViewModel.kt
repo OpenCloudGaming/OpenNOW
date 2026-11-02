@@ -327,6 +327,7 @@ data class OpenNowUiState(
     val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
     val bugReportSubmission: BugReportSubmissionState = BugReportSubmissionState(),
     val bugReportThreads: AndroidBugReportThreadsState = AndroidBugReportThreadsState(),
+    val publishedBugs: AndroidPublishedBugsState = AndroidPublishedBugsState(),
     val bugReportVersionCheck: AndroidBugReportVersionCheckState = AndroidBugReportVersionCheckState(),
     val loginToolsVisible: Boolean = false,
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
@@ -1117,6 +1118,69 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun resetBugReportSubmission() {
         if (state.value.bugReportSubmission.uploading) return
         _state.update { it.copy(bugReportSubmission = BugReportSubmissionState()) }
+    }
+
+    // Keep an upload ID after a transport failure so retrying cannot submit the same logs twice.
+    private val publishedBugUploadIds = mutableMapOf<String, String>()
+
+    fun refreshPublishedBugs(loadMore: Boolean = false) {
+        val current = state.value.publishedBugs
+        if (current.loading || current.actingBugId != null || (loadMore && current.nextCursor == null)) return
+        _state.update { it.copy(publishedBugs = it.publishedBugs.copy(loading = true, error = null)) }
+        viewModelScope.launch {
+            try {
+                val page = fetchAndroidPublishedBugs(http, androidBugReportReporterId(authStore.stableDeviceId()), if (loadMore) current.nextCursor else null)
+                _state.update { it.copy(publishedBugs = it.publishedBugs.copy(
+                    loading = false,
+                    bugs = if (loadMore) (it.publishedBugs.bugs + page.bugs).distinctBy(AndroidPublishedBug::id) else page.bugs,
+                    nextCursor = page.nextCursor,
+                )) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _state.update { it.copy(publishedBugs = it.publishedBugs.copy(loading = false, error = error.message ?: "Could not load published bugs")) }
+            }
+        }
+    }
+
+    fun votePublishedBug(bugId: String) = contributeToPublishedBug(bugId, uploadLogs = false)
+
+    fun uploadPublishedBugLogs(bugId: String) = contributeToPublishedBug(bugId, uploadLogs = true)
+
+    private fun contributeToPublishedBug(bugId: String, uploadLogs: Boolean) {
+        val current = state.value.publishedBugs
+        if (current.loading || current.actingBugId != null) return
+        val bug = current.bugs.firstOrNull { it.id == bugId } ?: return
+        if (uploadLogs && !bug.acceptingLogs) return
+        _state.update { it.copy(publishedBugs = it.publishedBugs.copy(actingBugId = bugId, uploadingLogs = uploadLogs, error = null, uploadedBugId = null)) }
+        viewModelScope.launch {
+            try {
+                val reporterId = androidBugReportReporterId(authStore.stableDeviceId())
+                val updated = if (uploadLogs) {
+                    val submissionId = publishedBugUploadIds.getOrPut(bugId) { java.util.UUID.randomUUID().toString() }
+                    uploadAndroidPublishedBugLog(http, reporterId, bugId, submissionId, bugReportLogAttachment())
+                    publishedBugUploadIds.remove(bugId)
+                    null
+                } else voteAndroidPublishedBug(http, reporterId, bugId, !bug.voted)
+                _state.update { it.copy(publishedBugs = it.publishedBugs.copy(
+                    actingBugId = null,
+                    uploadingLogs = false,
+                    uploadedBugId = if (uploadLogs) bugId else null,
+                    bugs = it.publishedBugs.bugs.map { item -> if (item.id == bugId) updated ?: item.copy(logCount = item.logCount + 1) else item },
+                )) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _state.update { it.copy(publishedBugs = it.publishedBugs.copy(
+                    actingBugId = null,
+                    uploadingLogs = false,
+                    error = error.message ?: "Could not contribute to this bug",
+                    bugs = if ((error as? AndroidBugReportUploadException)?.serverCode == "LOG_COLLECTION_PAUSED") {
+                        it.publishedBugs.bugs.map { item -> if (item.id == bugId) item.copy(acceptingLogs = false) else item }
+                    } else it.publishedBugs.bugs,
+                )) }
+            }
+        }
     }
 
     fun refreshBugReportThreads() {

@@ -2,8 +2,12 @@
   "188": {
     "version": "2.3.2",
     "notes": [
+      "Apologies for the same release notes, there are some new things but I accidentally messed it up for last version cause I was trying to push it so quickly.",
       "Release Notes fixes",
       "Fixed default settings with mouse",
+      "Updated all languages to the latest translations",
+      "Published bugs screen",
+      "Updated Space UI to be more futuristic and less cluttered",
       "Fixed the Android TV launcher banner so the full OpenNOW name is visible on an edge-to-edge background",
       "Fixed the Android TV launcher banner",
       "Added **Space UI** under **Settings > Interface**. Still experimental, landscape only, and a controller is recommended.",

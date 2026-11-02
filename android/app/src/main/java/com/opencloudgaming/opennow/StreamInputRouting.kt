@@ -257,6 +257,8 @@ object NativeStreamInputRouter {
     @Volatile
     private var mouseDirectClick = false
     @Volatile
+    private var experimentalSlideDirectClick = false
+    @Volatile
     private var touchMouseButtonsEnabled = true
     @Volatile
     private var stretchToFit = false
@@ -342,8 +344,9 @@ object NativeStreamInputRouter {
         }
     }
 
-    fun setMouseDirectClick(enabled: Boolean) {
+    fun setMouseDirectClick(enabled: Boolean, experimentalSlideDirectClick: Boolean = false) {
         mouseDirectClick = enabled
+        this.experimentalSlideDirectClick = experimentalSlideDirectClick
         touchMouseState.reset(touchMouseOutput)
     }
 
@@ -614,6 +617,7 @@ object NativeStreamInputRouter {
             client = touchMouseOutput ?: return false,
             ignoredPointerIds = nativeUiTouchRouting.ownedPointers(),
             directClick = mouseDirectClick,
+            experimentalSlideDirectClick = experimentalSlideDirectClick && event.isFingerTouchEvent(),
             buttonsEnabled = touchMouseButtonsEnabled || !event.isFingerTouchEvent(),
             width = width,
             height = height,

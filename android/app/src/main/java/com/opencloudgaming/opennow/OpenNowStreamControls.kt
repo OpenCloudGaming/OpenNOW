@@ -818,7 +818,7 @@ internal fun StreamControlsPanel(
     var page by remember { mutableStateOf(StreamControlsPage.Main) }
     val compactHeight = LocalConfiguration.current.screenHeightDp < 480
     var expandedPanel by rememberSaveable { mutableStateOf(false) }
-    var advancedControlsVisible by rememberSaveable { mutableStateOf(false) }
+    var advancedControlsVisible by rememberSaveable { mutableStateOf(true) }
     val activity = LocalContext.current as? MainActivity
     DisposableEffect(activity, expandedPanel) {
         activity?.setStreamPanelExpanded(expandedPanel)
@@ -1201,6 +1201,19 @@ internal fun StreamControlsPanel(
                                     // Reads as a child of Finger mouse; replaces a hand-written Box.
                                     indentLevel = 1,
                                 )
+                                if (settings.androidTouch.mouseDirectClick) {
+                                    ControlSwitchRow(
+                                        label = stringResource(R.string.stream_slide_direct_click_experimental),
+                                        checked = settings.androidTouch.experimentalSlideDirectClick,
+                                        onCheckedChange = { enabled ->
+                                            onButtonTone()
+                                            onTouchSettingsChange(settings.androidTouch.copy(experimentalSlideDirectClick = enabled))
+                                        },
+                                        value = onOffLabel(settings.androidTouch.experimentalSlideDirectClick),
+                                        description = stringResource(R.string.stream_slide_direct_click_description),
+                                        indentLevel = 2,
+                                    )
+                                }
 
                                 val scrollHint = when {
                                     settings.stream.mouseScrollSensitivity <= 20 -> "Fast"

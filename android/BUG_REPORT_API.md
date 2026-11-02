@@ -188,3 +188,60 @@ TempAPI retains files only after the comment is stored, and cleans up rejected u
 Existing ownership, deletion, closed-conversation, reporter-ban, terms, and reply-rate
 checks still apply. Parsed follow-up diagnostics are retained for admin AI reanalysis;
 public replies return file metadata without those extra diagnostic summaries.
+
+## Published bugs (admin-authored)
+
+Published bugs are separate from private reporter conversations. In Release Manager, select an app
+and open **Bug Posting** to publish or edit a formatted post. Bold text, red emphasis, HTTPS links,
+combined bold red text, and line breaks use the same plain-text formatting contract as announcements. Users cannot post
+text or comments here; they can upvote and share one current diagnostic export after consent.
+
+| Status | App label | Progress |
+| --- | --- | --- |
+| `investigating` | Investigating | Admin-selected, 0–100 |
+| `fixing` | Fix in progress | Admin-selected, 0–100 |
+| `awaiting_review` | Fix ready · awaiting review | Admin-selected, 0–100 |
+| `released` | Fixed · update to v2.3.3 | Always 100; `fixedVersion` required |
+
+Public endpoints use `X-Bug-Report-Reporter-Id` with the existing installation-scoped ID:
+
+- `GET /releases/:appSlug/published-bugs[?cursor=...]` returns `{ok,status,data:{bugs,nextCursor}}`.
+  Pages contain up to 20 posts, newest first. Each post includes `id`, `title`, `body`, `status`,
+  `progress`, `fixedVersion`, `acceptingLogs`, `votes`, `voted`, `logCount`, `createdAt`, and `updatedAt`.
+- `PUT /releases/:appSlug/published-bugs/:bugId/vote` accepts JSON `{voted:true}` (or `false`).
+  The explicit state makes retries idempotent; votes are unique per installation and bug.
+- `POST /releases/:appSlug/published-bugs/:bugId/logs` accepts multipart fields `submissionId`
+  (UUID), `termsAccepted=true`, and one `files` attachment (`.txt`, `.log`, or `.zip`, 1 byte–10 MB).
+  Android supplies its sanitized diagnostics export; no free-text fields are submitted.
+  Retry with the same submission ID after a transport failure to avoid duplicate diagnostics.
+  Limits are five uploads per installation per hour, 20 attempts per IP per hour, and 5,000 logs
+  per bug. Reporter bans apply to both contributions. Uploaded files are private.
+
+Admin endpoints require the existing release-manager permission (`50`):
+
+- `GET /releases/apps/:appSlug/published-bugs[?cursor=...]` lists up to 250 posts per page.
+- `POST /releases/apps/:appSlug/published-bugs` publishes `{title,body,status,progress,fixedVersion,acceptingLogs}`.
+- `PATCH /releases/apps/:appSlug/published-bugs/:bugId` edits the same fields.
+- `GET /releases/apps/:appSlug/published-bugs/:bugId/logs.zip` streams all submitted diagnostics
+  with a manifest; it does not buffer the archive in server memory or unpack uploaded ZIPs.
+- `DELETE /releases/apps/:appSlug/published-bugs/:bugId` hides the post, removes every attached
+  file, then deletes its logs, votes, and post. An I/O failure retains a hidden tombstone and
+  asset records, shown as “Deletion incomplete” in Bug Posting. **Retry deletion** finishes cleanup;
+  new votes and uploads cannot target a tombstone.
+
+The schema is created idempotently by TempAPI's existing `ensureSchema` path. Assets live under
+`database/uploads/published-bugs/`; preserve this directory with the releases database when backing
+up or deploying. Install production dependencies (including `yazl`), deploy/restart TempAPI first,
+then deploy PrintedSite and distribute the updated Android app. Publishing bugs works independently
+of the private-report Discord webhook setting. Existing private reports are unchanged.
+
+Admins can switch **Accept debug logs** off for an individual published bug without deleting its
+existing diagnostics or votes. `acceptingLogs` defaults to true for existing posts. Paused bugs reject
+new uploads with HTTP 409 and `error.code = LOG_COLLECTION_PAUSED`; retries of a previously stored
+submission still receive their original success acknowledgement. The upload insert checks this flag
+atomically, including when an admin pauses collection during an in-flight request. Android disables
+Add logs, explains that collection is paused, and keeps upvoting available.
+
+Awaiting-review bug details explain Google Play's review process and link to Google's Play Console
+help page. Both announcement and published-bug editors include a **Bold red** formatting command;
+`<red>**text**</red>` and `**<red>text</red>**` render as combined bold red emphasis in Android.

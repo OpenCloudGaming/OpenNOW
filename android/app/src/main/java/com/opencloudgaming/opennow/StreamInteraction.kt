@@ -889,6 +889,9 @@ internal class TouchMouseState {
     private var lastTapX = Float.NaN
     private var lastTapY = Float.NaN
     private val directClickMouse = DirectClickMouse()
+    private val doubleTapDirectClick = DoubleTapDirectClickGesture()
+    private var combinedSlideDirectClick = false
+    private var directClickEnabled = false
     private var clickEnabled = true
     private var twoFingerTapCandidate = false
     private val motionAccumulator = MouseMotionAccumulator()
@@ -909,6 +912,7 @@ internal class TouchMouseState {
         selecting = false
         doubleTapDragCandidate = false
         lastTapTimeMs = Long.MIN_VALUE
+        doubleTapDirectClick.reset()
         twoFingerTapCandidate = false
         motionAccumulator.reset()
         secondPointerId = -1
@@ -923,6 +927,7 @@ internal class TouchMouseState {
         client: TouchMouseOutput,
         ignoredPointerIds: Set<Int>,
         directClick: Boolean = false,
+        experimentalSlideDirectClick: Boolean = false,
         buttonsEnabled: Boolean = true,
         width: Int = 0,
         height: Int = 0,
@@ -934,21 +939,24 @@ internal class TouchMouseState {
         decodedStreamWidth: Int = 0,
         decodedStreamHeight: Int = 0,
     ): Boolean {
-        if (clickEnabled != buttonsEnabled) {
+        val combined = directClick && experimentalSlideDirectClick
+        if (clickEnabled != buttonsEnabled || directClickEnabled != directClick || combinedSlideDirectClick != combined) {
             reset(client)
             clickEnabled = buttonsEnabled
+            directClickEnabled = directClick
+            combinedSlideDirectClick = combined
         }
         if (!enabled) {
             reset(client)
             return false
         }
 
-        if (directClick) {
+        fun positionAt(index: Int): AbsoluteMousePosition? {
             val settingsRes = streamResolutionPixels(client.settings)
             val streamWidth = if (decodedStreamWidth > 0) decodedStreamWidth else settingsRes.first
             val streamHeight = if (decodedStreamHeight > 0) decodedStreamHeight else settingsRes.second
 
-            fun positionAt(index: Int): AbsoluteMousePosition? = directClickMousePosition(
+            return directClickMousePosition(
                 streamPointForTouch(
                     touchX = event.getX(index),
                     touchY = event.getY(index),
@@ -965,7 +973,9 @@ internal class TouchMouseState {
                 streamWidth,
                 streamHeight,
             )
+        }
 
+        if (directClick && !combined) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     val index = if (event.actionMasked == MotionEvent.ACTION_DOWN) 0 else event.actionIndex
@@ -992,7 +1002,7 @@ internal class TouchMouseState {
                         )
                         NativeInputDiagnostics.add(
                             "touch direct click target=${position?.x},${position?.y} " +
-                                "stream=${streamWidth}x${streamHeight} positioned=$positioned clickEnabled=$clickEnabled",
+                                "stream=${position?.width}x${position?.height} positioned=$positioned clickEnabled=$clickEnabled",
                         )
                         if (!positioned) activePointerId = -1
                     }
@@ -1057,6 +1067,7 @@ internal class TouchMouseState {
                     val newIndex = event.actionIndex
                     val newPointerId = if (newIndex in 0 until event.pointerCount) event.getPointerId(newIndex) else -1
                     if (newPointerId >= 0 && newPointerId !in ignoredPointerIds) {
+                        if (combined) doubleTapDirectClick.invalidateTap()
                         var nonIgnoredCount = 0
                         for (i in 0 until event.pointerCount) {
                             if (event.getPointerId(i) !in ignoredPointerIds) {
@@ -1079,7 +1090,11 @@ internal class TouchMouseState {
             MotionEvent.ACTION_MOVE -> {
                 if (activePointerId < 0) {
                     val index = event.firstPointerIndexNotIn(ignoredPointerIds)
-                    if (index >= 0) beginPointer(event, index)
+                    if (index >= 0) {
+                        beginPointer(event, index)
+                        // A resumed MOVE has no matching DOWN and cannot be a completed tap.
+                        if (combined) doubleTapDirectClick.invalidateTap()
+                    }
                     return index >= 0
                 }
                 // Handle 2-finger scroll
@@ -1133,7 +1148,7 @@ internal class TouchMouseState {
                         scrollAccumulator = 0f
                     }
                     if (upId == activePointerId) {
-                        finishPointer(event, index, client)
+                        finishPointer(event, index, client, ::positionAt)
                     }
                 }
                 return true
@@ -1141,7 +1156,7 @@ internal class TouchMouseState {
             MotionEvent.ACTION_UP -> {
                 val index = event.findPointerIndex(activePointerId).takeIf { it >= 0 } ?: event.firstPointerIndexNotIn(ignoredPointerIds)
                 if (index < 0) return false
-                finishPointer(event, index, client)
+                finishPointer(event, index, client, ::positionAt)
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -1161,13 +1176,18 @@ internal class TouchMouseState {
         lastY = downY
         motionAccumulator.reset()
         selecting = false
-        doubleTapDragCandidate = clickEnabled && isDoubleTap(event, index)
+        if (combinedSlideDirectClick) doubleTapDirectClick.begin(downX, downY, downTimeMs)
+        doubleTapDragCandidate = !combinedSlideDirectClick && clickEnabled && isDoubleTap(event, index)
         if (doubleTapDragCandidate) {
             lastTapTimeMs = Long.MIN_VALUE
         }
     }
 
     private fun processMove(x: Float, y: Float, eventTimeMs: Long, client: TouchMouseOutput) {
+        if (combinedSlideDirectClick) {
+            doubleTapDirectClick.move(x, y)
+            if (!doubleTapDirectClick.isSliding) return
+        }
         if (
             doubleTapDragCandidate && !selecting &&
             (abs(x - downX) > TOUCH_MOUSE_DRAG_START_SLOP_PX || abs(y - downY) > TOUCH_MOUSE_DRAG_START_SLOP_PX)
@@ -1181,9 +1201,28 @@ internal class TouchMouseState {
         lastY = y
     }
 
-    private fun finishPointer(event: MotionEvent, index: Int, client: TouchMouseOutput) {
+    private fun finishPointer(
+        event: MotionEvent,
+        index: Int,
+        client: TouchMouseOutput,
+        positionAt: (Int) -> AbsoluteMousePosition?,
+    ) {
         val x = event.getX(index)
         val y = event.getY(index)
+        if (combinedSlideDirectClick) {
+            if (activePointerId < 0) return
+            val click = doubleTapDirectClick.finish(x, y, event.eventTime)
+            if (doubleTapDirectClick.isSliding && !scrollGestureOccurred && !twoFingerTapCandidate) {
+                sendMouseDelta(x - lastX, y - lastY, event.eventTime, client, force = true)
+            }
+            if (click && clickEnabled) {
+                positionAt(index)?.let(client::sendDirectClickMouseClick)
+            }
+            activePointerId = -1
+            twoFingerTapCandidate = false
+            scrollGestureOccurred = false
+            return
+        }
         sendMouseDelta(
             dx = x - lastX,
             dy = y - lastY,

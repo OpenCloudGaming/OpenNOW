@@ -476,6 +476,8 @@ data class AndroidTouchSettings(
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
     val mouseDirectClick: Boolean = false,
+    /** Opt-in: relative slides and completed double taps for absolute clicks. */
+    val experimentalSlideDirectClick: Boolean = false,
     val nativeTouchMode: NativeTouchMode = NativeTouchMode.Auto,
     /**
      * Records an explicit Native Touch choice for compatibility with older saved settings. Auto is

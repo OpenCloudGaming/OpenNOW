@@ -328,7 +328,7 @@ internal fun ControlSection(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val body: @Composable ColumnScope.() -> Unit = {
-        Text(title, color = style.titleColor, style = style.titleStyle, fontWeight = style.titleWeight)
+        if (title.isNotBlank()) Text(title, color = style.titleColor, style = style.titleStyle, fontWeight = style.titleWeight)
         content()
     }
     if (style.usesCard) {

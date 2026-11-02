@@ -8,11 +8,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 
-// The release manager stores plain text with these three optional inline markers.
+// Shared with published bugs. Markers may be combined (for example <red>**bold red**</red>).
 // Unknown markup remains literal text; the app never interprets HTML.
 private val messageToken = Regex("""\*\*([^*\n]+)\*\*|<red>([\s\S]*?)</red>|\[([^\]\n]+)\]\((https://[^\s)]+)\)""")
 
-internal fun formattedAppMessageBody(body: String, linkColor: Color, redColor: Color): AnnotatedString = buildAnnotatedString {
+internal fun formattedAppMessageBody(body: String, linkColor: Color, redColor: Color): AnnotatedString =
+    buildAnnotatedString { appendFormattedMessage(body, linkColor, redColor, 0) }
+
+private fun AnnotatedString.Builder.appendFormattedMessage(body: String, linkColor: Color, redColor: Color, depth: Int) {
+    if (depth >= 4) { append(body); return }
     var cursor = 0
     for (match in messageToken.findAll(body)) {
         append(body.substring(cursor, match.range.first))
@@ -22,15 +26,15 @@ internal fun formattedAppMessageBody(body: String, linkColor: Color, redColor: C
         val label = match.groups[3]?.value
         when {
             bold != null -> {
-                append(bold)
+                appendFormattedMessage(bold, linkColor, redColor, depth + 1)
                 addStyle(SpanStyle(fontWeight = FontWeight.Bold), start, length)
             }
             red != null -> {
-                append(red)
-                addStyle(SpanStyle(color = redColor, fontWeight = FontWeight.Medium), start, length)
+                appendFormattedMessage(red, linkColor, redColor, depth + 1)
+                addStyle(SpanStyle(color = redColor), start, length)
             }
             label != null -> {
-                append(label)
+                appendFormattedMessage(label, linkColor, redColor, depth + 1)
                 addStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline), start, length)
                 addLink(LinkAnnotation.Url(match.groups[4]!!.value), start, length)
             }

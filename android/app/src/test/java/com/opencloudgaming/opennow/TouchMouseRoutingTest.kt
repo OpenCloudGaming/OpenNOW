@@ -5,6 +5,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TouchMouseRoutingTest {
+    @Test fun combinedSlideDirectClickIsOptInAndPersistsWithoutChangingWithLayouts() {
+        val legacy = OpenNowJson.decodeFromString<AppSettings>("""{"androidTouch":{"mouseDirectClick":true}}""")
+        assertFalse(legacy.androidTouch.experimentalSlideDirectClick)
+        for (enabled in listOf(false, true)) {
+            val touch = legacy.androidTouch.copy(experimentalSlideDirectClick = enabled)
+            val restored = OpenNowJson.decodeFromString<AppSettings>(OpenNowJson.encodeToString(legacy.copy(androidTouch = touch)))
+                .normalizedForAndroid()
+            assertEquals(enabled, restored.androidTouch.experimentalSlideDirectClick)
+            val preset = newTouchPreset("Layout", touch.copy(experimentalSlideDirectClick = !enabled))
+            assertEquals(enabled, touch.applyingTouchPreset(preset).experimentalSlideDirectClick)
+        }
+    }
+
     private fun routes(
         touch: AndroidTouchSettings = AndroidTouchSettings(),
         gamepadVisible: Boolean = true,

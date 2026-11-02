@@ -19,7 +19,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 internal const val ANDROID_BUG_REPORT_TERMS_VERSION = "2026-09-18"
-private const val ANDROID_BUG_REPORT_REPORTER_HEADER = "X-Bug-Report-Reporter-Id"
+internal const val ANDROID_BUG_REPORT_REPORTER_HEADER = "X-Bug-Report-Reporter-Id"
 private const val MAX_BUG_REPORT_THREAD_RESPONSE_CHARS = 512 * 1024
 
 @Immutable

@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -94,5 +96,20 @@ internal fun SpaceSceneBackdrop(url: String?) {
         }
         Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(SpaceInk.copy(alpha = .96f), SpaceInk.copy(alpha = .28f)))))
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(SpaceInk.copy(alpha = .36f), Color.Transparent, SpaceInk))))
+        // Cached, static lighting gives unillustrated screens the same depth as game hubs.
+        // No blur, particles, timers, or per-frame background work on phone/TV GPUs.
+        Box(Modifier.fillMaxSize().drawWithCache {
+            val horizon = Brush.radialGradient(
+                listOf(Color(0xFF447BC2).copy(alpha = .17f), Color.Transparent),
+                center = Offset(size.width * .85f, size.height * 1.12f),
+                radius = size.maxDimension * .8f,
+            )
+            val overhead = Brush.radialGradient(
+                listOf(SpaceIce.copy(alpha = .06f), Color.Transparent),
+                center = Offset(size.width * .15f, -size.height * .3f),
+                radius = size.maxDimension * .6f,
+            )
+            onDrawBehind { drawRect(horizon); drawRect(overhead) }
+        })
     }
 }

@@ -47,7 +47,7 @@ internal fun SpacePortraitCatalog(
 ) {
     val reduceMotion = LocalReduceMotion.current
     val library = state.page == AppPage.Library
-    LazyVerticalGrid(columns = GridCells.Fixed(if (library) 4 else 2), state = gridState,
+    LazyVerticalGrid(columns = if (library) GridCells.Adaptive(132.dp) else GridCells.Fixed(2), state = gridState,
         modifier = modifier.fillMaxWidth().testTag(if (library) "space-library-grid" else "space-portrait-discover"),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(if (library) 0.dp else 14.dp),

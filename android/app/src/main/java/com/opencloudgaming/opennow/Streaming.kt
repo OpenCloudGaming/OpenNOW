@@ -1909,13 +1909,24 @@ class NativeStreamClient(
     }
 
     fun sendTouchMouseClick(delayBeforeDownMs: Long = 0L) {
+        sendTouchMouseClickAt(delayBeforeDownMs, position = null)
+    }
+
+    internal fun sendDirectClickMouseClick(position: AbsoluteMousePosition) {
+        sendTouchMouseClickAt(delayBeforeDownMs = 0L, position = position)
+    }
+
+    private fun sendTouchMouseClickAt(delayBeforeDownMs: Long, position: AbsoluteMousePosition?) {
         val sourceId = "touch-mouse-click-${System.nanoTime()}"
         scope.launch {
             if (delayBeforeDownMs > 0) delay(delayBeforeDownMs)
+            // Position and DOWN use the same reliable channel. Keep the ordinary click duration
+            // so games that poll button state each frame can observe a synthesized direct click.
+            if (position != null && !sendDirectClickMousePosition(position)) return@launch
             try {
-                if (setVirtualMouseButtonFromSource(1, sourceId, true)) delay(160L)
+                if (setVirtualMouseButtonFromSource(1, sourceId, true, sendPartiallyReliableCopy = position == null)) delay(160L)
             } finally {
-                setVirtualMouseButtonFromSource(1, sourceId, false)
+                setVirtualMouseButtonFromSource(1, sourceId, false, sendPartiallyReliableCopy = position == null)
             }
         }
     }

@@ -2850,6 +2850,9 @@
                 "mouseDirectClick": {
                     "type": "boolean"
                 },
+                "experimentalSlideDirectClick": {
+                    "type": "boolean"
+                },
                 "nativeTouchMode": {
                     "type": "string",
                     "enum": [
