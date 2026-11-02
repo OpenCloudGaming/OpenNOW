@@ -4471,9 +4471,9 @@ final class OpenNOWiOSParityTests: XCTestCase {
         settings.streamTutorialCompleted = true
         settings.streamerPreferences.touchControllerVisible = true
         var saved: [Bool] = []
-        let coordinator = makeTouchControlsCoordinator(settings: settings) {
+        let coordinator = makeTouchControlsCoordinator(settings: settings, onPreferencesChange: {
             saved.append($0.touchControllerVisible)
-        }
+        })
         XCTAssertTrue(coordinator.shouldShowVirtualController)
         XCTAssertTrue(coordinator.shouldShowTouchControlsVisibilityButton)
         for _ in 0..<3 {
