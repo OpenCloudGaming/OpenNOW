@@ -294,7 +294,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
                                                 u"Use the application-owned MacAwdl instance"_s);
     MacAwdlController macAwdl;
-    FrameGenerationBenchmark frameGenerationBenchmark;
+    FrameGenerationBenchmark frameGenerationBenchmark(nullptr, graphicsDevices.adapterLuid());
 #ifdef OPENNOW_EMBEDDED_STREAMER
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::streamingChanged,
                      &macAwdl, [&] { macAwdl.setStreaming(nativeStreamRuntime.streaming()); });

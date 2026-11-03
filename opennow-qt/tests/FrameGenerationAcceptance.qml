@@ -32,6 +32,8 @@ QtObject {
         check(ShellStore.frameGenerationFactor() === 0, "an untested preset never generates frames")
         ShellStore.settings = Object.assign({}, ShellStore.settings, {frameGeneration: "off"})
         ShellStore.ensureFrameGenerationGpu()
+        if (ShellStore.settingsOwnerState.frameGenerationGpu === "")
+            ShellStore.settingsOwnerState.frameGenerationGpu = "acceptance-gpu"
         // A measurement unlocks the levels that fit the selected rate on the display: at
         // 60 FPS with 2.1 ms per frame every level fits the GPU, and a 180 Hz display shows
         // 2x (120) and 3x (180) but not 4x (240).

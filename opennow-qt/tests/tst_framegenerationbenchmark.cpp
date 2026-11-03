@@ -1,17 +1,107 @@
 #include "streaming/rendering/FrameGenerationBenchmark.h"
 
 #include <QTest>
+#include <QScopeGuard>
+#include <QSignalSpy>
 #include <QVariantList>
 #include <atomic>
+#include <limits>
+#include <memory>
+#include <rhi/qrhi.h>
+#include <rhi/qrhi_platform.h>
 
 // evaluate() is a pure decision; measure() runs the real engine on a private QRhi.
 class FrameGenerationBenchmarkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void selectedAdapterIsUsedAndMismatchesFailClosed()
+    {
+#ifdef Q_OS_WIN
+        const bool hadOverride = qEnvironmentVariableIsSet("QT_D3D_ADAPTER_INDEX");
+        const auto previousOverride = qgetenv("QT_D3D_ADAPTER_INDEX");
+        const auto restore = qScopeGuard([&] {
+            if (hadOverride) qputenv("QT_D3D_ADAPTER_INDEX", previousOverride);
+            else qunsetenv("QT_D3D_ADAPTER_INDEX");
+        });
+        qputenv("QT_D3D_ADAPTER_INDEX", "0");
+        QRhiD3D11InitParams params;
+        const auto device = std::unique_ptr<QRhi>(QRhi::create(QRhi::D3D11, &params));
+        if (!device) QSKIP("D3D11 is unavailable");
+        const auto *handles = static_cast<const QRhiD3D11NativeHandles *>(device->nativeHandles());
+        QVERIFY(handles);
+        const quint64 luid = (quint64(quint32(handles->adapterLuidHigh)) << 32) | handles->adapterLuidLow;
+        QVERIFY(luid);
+        const auto name = QString::fromUtf8(device->driverInfo().deviceName).trimmed();
+        FrameGenerationBenchmark selected(nullptr, luid);
+        QCOMPARE(selected.gpuName(), name);
+        const QVariantMap request{{QStringLiteral("width"), 64}, {QStringLiteral("height"), 64},
+                                  {QStringLiteral("seconds"), 0.5}};
+        const auto measured = FrameGenerationBenchmark::measure(request, nullptr, {}, luid);
+        QVERIFY2(measured.value(QStringLiteral("ok")).toBool(),
+                 qPrintable(measured.value(QStringLiteral("error")).toString()));
+        QCOMPARE(measured.value(QStringLiteral("gpu")).toString().trimmed(), name);
+        const quint64 different = luid == 1 ? 2 : luid ^ 1;
+        QVERIFY(different);
+        FrameGenerationBenchmark mismatched(nullptr, different);
+        QVERIFY(mismatched.gpuName().isEmpty());
+        const auto rejected = FrameGenerationBenchmark::measure(request, nullptr, {}, different);
+        QVERIFY(!rejected.value(QStringLiteral("ok")).toBool());
+        QVERIFY(rejected.value(QStringLiteral("error")).toString().contains(QStringLiteral("selected graphics adapter")));
+        QSignalSpy finished(&mismatched, &FrameGenerationBenchmark::finished);
+        QVERIFY(mismatched.start(request));
+        QTRY_COMPARE(finished.count(), 1);
+        const auto asynchronous = finished.first().first().toMap();
+        QVERIFY(!asynchronous.value(QStringLiteral("ok")).toBool());
+        QVERIFY(asynchronous.value(QStringLiteral("error")).toString().contains(QStringLiteral("selected graphics adapter")));
+#else
+        QSKIP("Selected-adapter acceptance requires Windows D3D11");
+#endif
+    }
+
+    void rejectsIncompleteMeasurements_data()
+    {
+        QTest::addColumn<QVariantMap>("measurement");
+        const QVariantMap complete{{QStringLiteral("ok"), true}, {QStringLiteral("frames"), 30},
+                                  {QStringLiteral("p95Ms"), 1.0}, {QStringLiteral("engineMaxFactor"), 4}};
+        for (const auto &field : {QStringLiteral("frames"), QStringLiteral("p95Ms")}) {
+            auto missing = complete;
+            missing.remove(field);
+            QTest::newRow(qPrintable(field + QStringLiteral("-missing"))) << missing;
+            for (double value : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::infinity()}) {
+                auto invalid = complete;
+                invalid.insert(field, value);
+                QTest::newRow(qPrintable(field + QString::number(value))) << invalid;
+            }
+        }
+        auto insufficient = complete;
+        insufficient.insert(QStringLiteral("frames"), 9);
+        QTest::newRow("insufficient-samples") << insufficient;
+    }
+
+    void rejectsIncompleteMeasurements()
+    {
+        QFETCH(QVariantMap, measurement);
+        const auto verdict = FrameGenerationBenchmark::evaluate(measurement, 60, 240.0);
+        QVERIFY(verdict.value(QStringLiteral("allowed")).toList().isEmpty());
+        const auto reasons = verdict.value(QStringLiteral("reasons")).toMap();
+        for (const auto &factor : {QStringLiteral("2"), QStringLiteral("3"), QStringLiteral("4")})
+            QCOMPARE(reasons.value(factor).toString(), QStringLiteral("untested"));
+    }
+
+    void gpuIdentityCanBeResolvedAndDestroyed()
+    {
+        FrameGenerationBenchmark benchmark;
+        const auto name = benchmark.gpuName();
+        if (name.isEmpty()) QSKIP("No GPU backend available for identity lookup");
+        QCOMPARE(benchmark.gpuName(), name);
+    }
+
     void allowsOnlyFactorsTheBudgetAndDisplayAfford()
     {
         QVariantMap measurement{{QStringLiteral("ok"), true}, {QStringLiteral("p95Ms"), 2.5},
+                                {QStringLiteral("frames"), 30},
                                 {QStringLiteral("engineMaxFactor"), 4}};
         // 60 FPS: 16.67 ms interval, 10 ms budget -> 2x (2.5) and 3x (5.0) and 4x (7.5) fit the GPU;
         // the display decides: 120 Hz allows 2x only, 180 Hz adds 3x, 240 Hz adds 4x.
@@ -45,6 +135,7 @@ private slots:
         // Measured per-level costs replace the (N - 1) extrapolation: the flow is shared,
         // so 4x costs far less than three 2x passes here.
         const QVariantMap measured{{QStringLiteral("ok"), true}, {QStringLiteral("p95Ms"), 2.5},
+                                   {QStringLiteral("frames"), 30},
                                    {QStringLiteral("p95Ms3"), 3.0}, {QStringLiteral("p95Ms4"), 3.5},
                                    {QStringLiteral("engineMaxFactor"), 4}};
         verdict = FrameGenerationBenchmark::evaluate(measured, 120, 480.0);

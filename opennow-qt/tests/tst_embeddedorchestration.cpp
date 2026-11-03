@@ -52,6 +52,18 @@ bool loadShellFunction(QJSEngine &engine, const QString &name, int indentation =
     return !result.isError();
 }
 
+bool loadSettingsFunction(QJSEngine &engine, const QString &name)
+{
+    const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+    const auto match = QRegularExpression(QStringLiteral(
+        "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(name),
+        QRegularExpression::DotMatchesEverythingOption).match(settings);
+    if (!match.hasMatch()) return false;
+    const auto result = engine.evaluate(match.captured());
+    if (result.isError()) qWarning().noquote() << result.toString();
+    return !result.isError();
+}
+
 bool prepareRecordingTeardown(QJSEngine &engine)
 {
     if (engine.evaluate(QStringLiteral(R"JS(
@@ -126,6 +138,93 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration_data()
+    {
+        QTest::addColumn<bool>("gpuAvailable");
+        QTest::newRow("selected-gpu-available") << true;
+        QTest::newRow("selected-gpu-unavailable") << false;
+    }
+
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration()
+    {
+        QFETCH(bool, gpuAvailable);
+        QJSEngine engine;
+        engine.globalObject().setProperty(QStringLiteral("gpuAvailable"), gpuAvailable);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {}, confirmedSettings = {}, settingWrites = {};
+            var consoleSurfaceRequestId = '', frameGenerationGpu = '', gpuNameCalls = 0;
+            var appController = {}, i18n = {setLocale:function() {}};
+            var FrameGenerationBenchmark = {gpuName:function() {gpuNameCalls++;return gpuAvailable ? 'test-gpu' : '';}};
+            var saved = {resolution:'1920x1080',frameGenerationProfiles:{
+                ['motion|' + (gpuAvailable ? 'test-gpu' : 'unknown-gpu') + '|1920x1080']:
+                    {gpu:'test-gpu',width:1920,height:1080,frames:30,p95Ms:1}
+            }};
+        )JS")).isError());
+        for (const auto &name : {"acceptSettings", "ensureFrameGenerationGpu", "frameGenerationResolution",
+                                 "frameGenerationProfileKey", "frameGenerationProfile"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:{}})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        if (gpuAvailable)
+            QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfile().gpu")).toString(), QStringLiteral("test-gpu"));
+        else
+            QVERIFY(engine.evaluate(QStringLiteral("frameGenerationProfile() === null")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 1);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), gpuAvailable ? 1 : 2);
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution_data()
+    {
+        QTest::addColumn<bool>("currentProfile");
+        QTest::newRow("untested-current-resolution") << false;
+        QTest::newRow("valid-current-four-times-profile") << true;
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution()
+    {
+        QFETCH(bool, currentProfile);
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {resolution:'3840x2160',frameGenerationProfiles:{}}, frameGenerationGpu = '';
+            var FrameGenerationBenchmark = {evaluate:function() {return {allowed:[2]}}};
+            function frameGenerationSourceFps() {return 60;}
+            function frameGenerationDisplayHz() {return 240;}
+            function frameGenerationFactor() {return settings.frameGeneration === '4x' ? 4 : 0;}
+            function writeFrameGenerationSetting(key, value) {settings[key] = value;}
+        )JS")).isError());
+        if (currentProfile) {
+            QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+                settings.frameGeneration = '4x'; settings.frameGenerationTargetFps = 240;
+                settings.frameGenerationProfiles['motion|test-gpu|3840x2160'] = {
+                    width:3840,height:2160,frames:30,p95Ms:1,allowed:[2,3,4]
+                };
+            )JS")).isError());
+        }
+        const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+        for (const auto &name : {"frameGenerationResolution", "frameGenerationProfileKey"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        const auto handler = QRegularExpression(QStringLiteral(
+            "        function onFinished\\(result\\) \\{.*?\\n        \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(settings);
+        QVERIFY(handler.hasMatch());
+        QVERIFY(!engine.evaluate(handler.captured()).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            onFinished({ok:true, engine:'motion',gpu:'test-gpu',width:640,height:360,
+                        p50Ms:1,p95Ms:2,p95Ms3:3,p95Ms4:4,maxMs:5,frames:30});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("Object.keys(settings.frameGenerationProfiles).length")).toInt(),
+                 currentProfile ? 2 : 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationProfiles['motion|test-gpu|640x360'].width")).toInt(), 640);
+        QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfileKey()")).toString(),
+                 QStringLiteral("motion|test-gpu|3840x2160"));
+        if (currentProfile) {
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGeneration")).toString(), QStringLiteral("4x"));
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationTargetFps")).toInt(), 240);
+        }
+    }
+
     void rejectedTextInputNotifiesWithoutChangingStreamOwnership()
     {
         QJSEngine engine;

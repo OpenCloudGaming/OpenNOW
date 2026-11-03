@@ -551,6 +551,7 @@ QtObject {
         return ["motion", frameGenerationGpu || "unknown-gpu", frameGenerationResolution().text].join("|")
     }
     function frameGenerationProfile() {
+        if (frameGenerationGpu === "") return null
         const profiles = settings.frameGenerationProfiles || {}
         const key = frameGenerationProfileKey()
         if (profiles[key]) return profiles[key]
@@ -804,7 +805,8 @@ QtObject {
             const display = root.frameGenerationDisplayHz()
             const verdict = FrameGenerationBenchmark.evaluate(result, source, display)
             const profiles = Object.assign({}, root.settings.frameGenerationProfiles || {})
-            profiles[root.frameGenerationProfileKey()] = {
+            const key = ["motion", root.frameGenerationGpu || "unknown-gpu", result.width + "x" + result.height].join("|")
+            profiles[key] = {
                 engine: "motion", gpu: String(result.gpu || root.frameGenerationGpu),
                 width: result.width, height: result.height, fps: source, refreshHz: display,
                 p50Ms: result.p50Ms, p95Ms: result.p95Ms, maxMs: result.maxMs, frames: result.frames,
@@ -814,7 +816,7 @@ QtObject {
             }
             root.writeFrameGenerationSetting("frameGenerationProfiles", profiles)
             const factor = root.frameGenerationFactor()
-            if (factor >= 2 && verdict.allowed.indexOf(factor) < 0) {
+            if (key === root.frameGenerationProfileKey() && factor >= 2 && verdict.allowed.indexOf(factor) < 0) {
                 root.writeFrameGenerationSetting("frameGenerationTargetFps", 0)
                 root.writeFrameGenerationSetting("frameGeneration", "off")
             }
@@ -1158,6 +1160,8 @@ QtObject {
         }
         root.confirmedSettings = confirmed
         root.settings = displayed
+        if (Object.keys(displayed.frameGenerationProfiles || {}).length > 0)
+            root.ensureFrameGenerationGpu()
         root.keyboardLayouts = result.keyboardLayouts || []
         appController.reducedMotion = Boolean(displayed.reducedMotion)
         i18n.setLocale(String(displayed.appLanguage || "system"))

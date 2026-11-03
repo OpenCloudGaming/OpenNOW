@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -25,6 +26,7 @@ namespace {
 constexpr int kSourceFrames = 8;        // ring of uploaded frames with real motion between them
 constexpr int kWarmupFrames = 6;        // pipeline creation and first dispatches are not timed
 constexpr int kMaximumFrames = 360;
+constexpr int kMinimumSamples = 10;
 constexpr double kGpuHeadroom = 0.6;    // share of a source interval generation may use
 constexpr double kDisplayTolerance = 0.975;
 
@@ -78,23 +80,37 @@ QVariantMap failure(const QString &error)
 // A private QRhi on the backend OpenNOW forces for this platform (D3D11, Metal, Vulkan).
 // `instanceOut` keeps the Vulkan instance alive for the QRhi's lifetime where needed.
 struct PrivateRhi {
-    std::unique_ptr<QRhi> rhi;
 #if !defined(Q_OS_WIN) && !QT_CONFIG(metal) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     std::unique_ptr<QVulkanInstance> instance;
 #endif
+    std::unique_ptr<QRhi> rhi;
     QString error;
 };
 
-PrivateRhi createPrivateRhi()
+PrivateRhi createPrivateRhi(quint64 adapterLuid)
 {
     PrivateRhi out;
 #if defined(Q_OS_WIN)
     QRhiD3D11InitParams params;
-    out.rhi.reset(QRhi::create(QRhi::D3D11, &params));
+    QRhiD3D11NativeHandles requested;
+    requested.adapterLuidLow = quint32(adapterLuid);
+    requested.adapterLuidHigh = std::bit_cast<qint32>(quint32(adapterLuid >> 32));
+    out.rhi.reset(QRhi::create(QRhi::D3D11, &params, {}, adapterLuid ? &requested : nullptr));
+    if (out.rhi && adapterLuid) {
+        const auto *actual = static_cast<const QRhiD3D11NativeHandles *>(out.rhi->nativeHandles());
+        const quint64 actualLuid = actual
+            ? (quint64(quint32(actual->adapterLuidHigh)) << 32) | actual->adapterLuidLow : 0;
+        if (actualLuid != adapterLuid) {
+            out.rhi.reset();
+            out.error = QStringLiteral("The selected graphics adapter is unavailable for the capability test");
+        }
+    }
 #elif QT_CONFIG(metal)
+    Q_UNUSED(adapterLuid);
     QRhiMetalInitParams params;
     out.rhi.reset(QRhi::create(QRhi::Metal, &params));
 #elif QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+    Q_UNUSED(adapterLuid);
     out.instance = std::make_unique<QVulkanInstance>();
     out.instance->setApiVersion(QVersionNumber(1, 1));
     out.instance->setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
@@ -112,7 +128,8 @@ PrivateRhi createPrivateRhi()
 }
 }
 
-FrameGenerationBenchmark::FrameGenerationBenchmark(QObject *parent) : QObject(parent) {}
+FrameGenerationBenchmark::FrameGenerationBenchmark(QObject *parent, quint64 adapterLuid)
+    : QObject(parent), m_adapterLuid(adapterLuid) {}
 
 FrameGenerationBenchmark::~FrameGenerationBenchmark()
 {
@@ -141,7 +158,7 @@ bool FrameGenerationBenchmark::start(const QVariantMap &request)
     m_thread = QThread::create([this, request] {
         const auto result = measure(request, &m_cancelled, [this](double value) {
             QMetaObject::invokeMethod(this, [this, value] { setProgress(value); }, Qt::QueuedConnection);
-        });
+        }, m_adapterLuid);
         QMetaObject::invokeMethod(this, [this, result] {
             m_running = false;
             setProgress(1);
@@ -174,7 +191,7 @@ QString FrameGenerationBenchmark::gpuName()
 {
     if (!m_gpuNameResolved) {
         m_gpuNameResolved = true;
-        auto device = createPrivateRhi();
+        auto device = createPrivateRhi(m_adapterLuid);
         if (device.rhi) m_gpuName = QString::fromUtf8(device.rhi->driverInfo().deviceName).trimmed();
     }
     return m_gpuName;
@@ -190,14 +207,15 @@ void FrameGenerationBenchmark::setProgress(double value)
 
 QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
                                                const std::atomic_bool *cancelled,
-                                               const std::function<void(double)> &progress)
+                                               const std::function<void(double)> &progress,
+                                               quint64 adapterLuid)
 {
     const int width = request.value(QStringLiteral("width")).toInt();
     const int height = request.value(QStringLiteral("height")).toInt();
     const double seconds = std::clamp(request.value(QStringLiteral("seconds"), 3.0).toDouble(), 0.5, 15.0);
     const QString engineName = request.value(QStringLiteral("engine"), QStringLiteral("motion")).toString();
 
-    auto device = createPrivateRhi();
+    auto device = createPrivateRhi(adapterLuid);
     if (!device.rhi) return failure(device.error);
     auto &rhi = device.rhi;
 
@@ -260,7 +278,7 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
             if (progress) progress(std::min(1.0, (double(factor - 2) + std::min(1.0, elapsed / secondsPerFactor)) / kFactors));
             if (elapsed >= secondsPerFactor && current.size() >= 30) break;
         }
-        if (current.size() < 10) return failure(QStringLiteral("Not enough GPU samples"));
+        if (current.size() < kMinimumSamples) return failure(QStringLiteral("Not enough GPU samples"));
     }
     engine.release();
 
@@ -295,6 +313,10 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
 QVariantMap FrameGenerationBenchmark::evaluate(const QVariantMap &measurement, int fps, double refreshHz)
 {
     const double p95 = measurement.value(QStringLiteral("p95Ms")).toDouble();
+    const double frames = measurement.value(QStringLiteral("frames")).toDouble();
+    const bool valid = measurement.value(QStringLiteral("ok")).toBool()
+        && std::isfinite(p95) && p95 > 0.0
+        && std::isfinite(frames) && frames >= kMinimumSamples;
     const int engineMax = std::max(2, measurement.value(QStringLiteral("engineMaxFactor"), 2).toInt());
     const double interval = fps > 0 ? 1000.0 / double(fps) : 0.0;
     const double budget = interval * kGpuHeadroom;
@@ -309,7 +331,7 @@ QVariantMap FrameGenerationBenchmark::evaluate(const QVariantMap &measurement, i
         costs.insert(QString::number(factor), cost);
         QString reason;
         if (factor > engineMax) reason = QStringLiteral("engine");
-        else if (fps <= 0 || !measurement.value(QStringLiteral("ok")).toBool()) reason = QStringLiteral("untested");
+        else if (fps <= 0 || !valid) reason = QStringLiteral("untested");
         else if (cost > budget) reason = QStringLiteral("gpu");
         else if (refreshHz > 0 && refreshHz < double(fps * factor) * kDisplayTolerance) reason = QStringLiteral("display");
         reasons.insert(QString::number(factor), reason);

@@ -43,10 +43,14 @@ int AcceptanceSession::startFrameGenerationStatsWorkload()
     // current preset, so seed a passing profile under the key the shell computes.
     store->setProperty("settings", QVariantMap{{u"fps"_s, 60}, {u"frameGeneration"_s, u"2x"_s}});
     QMetaObject::invokeMethod(store, "ensureFrameGenerationGpu");
+    auto *settings = store->property("settingsOwnerState").value<QObject *>();
+    QVariant gpu = settings ? settings->property("frameGenerationGpu") : QVariant();
+    if (settings && gpu.toString().isEmpty()) {
+        gpu = u"acceptance-gpu"_s;
+        settings->setProperty("frameGenerationGpu", gpu);
+    }
     QVariant key;
     QMetaObject::invokeMethod(store, "frameGenerationProfileKey", Q_RETURN_ARG(QVariant, key));
-    QVariant gpu = store->property("settingsOwnerState").value<QObject *>()
-        ? store->property("settingsOwnerState").value<QObject *>()->property("frameGenerationGpu") : QVariant();
     const QVariantMap profile{{u"engine"_s, u"motion"_s}, {u"gpu"_s, gpu.toString()}, {u"width"_s, 1920},
         {u"height"_s, 1080}, {u"fps"_s, 60}, {u"refreshHz"_s, 240.0}, {u"p50Ms"_s, 1.5}, {u"p95Ms"_s, 2.0},
         {u"maxMs"_s, 3.0}, {u"frames"_s, 180}, {u"gpuTimed"_s, true}, {u"engineMaxFactor"_s, 2},

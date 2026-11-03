@@ -18,7 +18,7 @@ class FrameGenerationBenchmark : public QObject
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
     Q_PROPERTY(double progress READ progress NOTIFY progressChanged)
 public:
-    explicit FrameGenerationBenchmark(QObject *parent = nullptr);
+    explicit FrameGenerationBenchmark(QObject *parent = nullptr, quint64 adapterLuid = 0);
     ~FrameGenerationBenchmark() override;
 
     bool running() const { return m_running; }
@@ -50,7 +50,7 @@ public:
 
     // Runs the measurement on the calling thread. Exposed for tests.
     static QVariantMap measure(const QVariantMap &request, const std::atomic_bool *cancelled,
-                               const std::function<void(double)> &progress);
+                               const std::function<void(double)> &progress, quint64 adapterLuid = 0);
 
 signals:
     void runningChanged();
@@ -60,6 +60,7 @@ signals:
 private:
     void setProgress(double value);
 
+    const quint64 m_adapterLuid;
     QThread *m_thread = nullptr;
     std::atomic_bool m_cancelled = false;
     bool m_running = false;
