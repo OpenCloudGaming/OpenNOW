@@ -2,11 +2,14 @@
 
 #include <QGuiApplication>
 #include <QPlatformSurfaceEvent>
+#include <QProcess>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
 #include <QStyleHints>
+#include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QtTest>
 
 #ifdef Q_OS_WIN
@@ -19,6 +22,128 @@ class WindowThemeTest : public QObject
     Q_OBJECT
 
 private slots:
+    void preparationPreservesNativeWindows()
+    {
+        QVERIFY(!WindowTheme::prepareWindow(nullptr));
+        for (const auto surface : {QSurface::RasterSurface, QSurface::OpenGLSurface, QSurface::VulkanSurface}) {
+            QWindow window;
+            window.setSurfaceType(surface);
+            window.setFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint
+                            | Qt::WindowStaysOnTopHint);
+            const auto flags = window.flags();
+            QVERIFY(WindowTheme::prepareWindow(&window));
+            QVERIFY(!window.handle());
+            QVERIFY(!window.isVisible());
+            const bool custom = QGuiApplication::platformName().startsWith("wayland")
+                && surface == QSurface::VulkanSurface;
+            QCOMPARE(window.flags(), custom ? flags | Qt::FramelessWindowHint : flags);
+            QVERIFY(WindowTheme::prepareWindow(&window));
+            QCOMPARE(window.flags(), custom ? flags | Qt::FramelessWindowHint : flags);
+        }
+    }
+
+    void waylandVulkanLifecycle()
+    {
+        if (!QGuiApplication::platformName().startsWith("wayland"))
+            QSKIP("Requires a Wayland compositor");
+        QWindow window;
+        window.setSurfaceType(QSurface::VulkanSurface);
+        window.setFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+        WindowTheme theme;
+        theme.setTargetWindow(&window);
+        QSignalSpy ownership(&theme, &WindowTheme::clientDecorationsChanged);
+        QVERIFY(WindowTheme::prepareWindow(&window));
+        QVERIFY(!window.handle());
+        QVERIFY(window.flags().testFlag(Qt::FramelessWindowHint));
+        const auto flags = window.flags();
+        window.show();
+        QTRY_VERIFY(window.isExposed());
+        QVERIFY(theme.clientDecorations());
+        QCOMPARE(ownership.size(), 1);
+        const auto id = window.winId();
+        QVERIFY(WindowTheme::prepareWindow(&window));
+        window.showFullScreen();
+        QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
+        QTRY_COMPARE(window.size(), QSize(1280, 720));
+        QVERIFY(theme.clientDecorations());
+        QCOMPARE(window.winId(), id);
+        QCOMPARE(window.flags(), flags);
+        window.showNormal();
+        QTRY_COMPARE(window.visibility(), QWindow::Windowed);
+        QTRY_COMPARE(window.size(), QSize(640, 480));
+        QCOMPARE(window.winId(), id);
+        window.destroy();
+        QVERIFY(!window.handle());
+        QVERIFY(WindowTheme::prepareWindow(&window));
+        window.show();
+        QTRY_VERIFY(window.isExposed());
+        QVERIFY(window.winId() != id);
+        QVERIFY(theme.clientDecorations());
+        QCOMPARE(window.flags(), flags);
+        QCOMPARE(ownership.size(), 1);
+        QWindow unprepared;
+        unprepared.setSurfaceType(QSurface::VulkanSurface);
+        unprepared.create();
+        const auto originalFlags = unprepared.flags();
+        QVERIFY(!WindowTheme::prepareWindow(&unprepared));
+        QCOMPARE(unprepared.flags(), originalFlags);
+        QVERIFY(!unprepared.isVisible());
+    }
+
+    void waylandProtocol_data()
+    {
+        QTest::addColumn<QString>("compositorOption");
+        QTest::newRow("client-mode") << QString{};
+        QTest::newRow("server-mode") << QStringLiteral("--server-decorations");
+        QTest::newRow("no-manager") << QStringLiteral("--no-decoration-manager");
+    }
+
+    void waylandProtocol()
+    {
+#ifdef OPENNOW_WINDOWTHEME_COMPOSITOR
+        QFETCH(QString, compositorOption);
+        QTemporaryDir runtime;
+        QVERIFY(runtime.isValid());
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("XDG_RUNTIME_DIR", runtime.path());
+        environment.insert("QT_QPA_PLATFORM", "offscreen");
+        QProcess compositor;
+        compositor.setProcessEnvironment(environment);
+        compositor.start(QStringLiteral(OPENNOW_WINDOWTHEME_COMPOSITOR),
+                         compositorOption.isEmpty() ? QStringList{} : QStringList{compositorOption});
+        const auto cleanup = qScopeGuard([&] {
+            compositor.terminate();
+            if (!compositor.waitForFinished(2000)) {
+                compositor.kill();
+                compositor.waitForFinished();
+            }
+        });
+        QVERIFY(compositor.waitForStarted());
+        QVERIFY(compositor.waitForReadyRead(5000));
+        QVERIFY(compositor.readAllStandardOutput().contains("READY"));
+        environment.insert("QT_QPA_PLATFORM", "wayland");
+        environment.insert("QT_WAYLAND_SHELL_INTEGRATION", "xdg-shell");
+        environment.insert("WAYLAND_DISPLAY", "opennow-windowtheme-test");
+        environment.insert("WAYLAND_DEBUG", "client");
+        QProcess client;
+        client.setProcessEnvironment(environment);
+        client.start(QCoreApplication::applicationFilePath(), {"waylandVulkanLifecycle"});
+        QVERIFY(client.waitForFinished(10000));
+        const auto trace = client.readAllStandardError();
+        const auto results = client.readAllStandardOutput();
+        QVERIFY2(client.exitStatus() == QProcess::NormalExit && client.exitCode() == 0,
+                 qPrintable(QString::fromUtf8(results + trace)));
+        QCOMPARE(trace.contains("zxdg_decoration_manager_v1"), compositorOption != "--no-decoration-manager");
+        QVERIFY2(!trace.contains("get_toplevel_decoration"), trace.constData());
+        QVERIFY2(!trace.contains("zxdg_toplevel_decoration_v1"), trace.constData());
+        QVERIFY(trace.contains("get_toplevel"));
+        QVERIFY(trace.contains("set_fullscreen"));
+        QVERIFY(trace.contains("unset_fullscreen"));
+#else
+        QSKIP("Qt Wayland Compositor is unavailable");
+#endif
+    }
+
     void nativeLifecycle()
     {
         QWindow window;

@@ -71,6 +71,9 @@ pub(crate) fn probe_ffmpeg_cuda(codec: VideoCodec) -> std::result::Result<String
 
 #[cfg(feature = "ffmpeg")]
 pub(crate) fn probe_ffmpeg_software(codec: VideoCodec) -> std::result::Result<String, String> {
+    if cfg!(feature = "hardware-only") {
+        return Err("hardware-only build forbids software video decoding".to_owned());
+    }
     FfmpegDecoder::probe(codec, FfmpegMode::Software)
 }
 
@@ -86,7 +89,12 @@ pub(crate) fn probe_ffmpeg_cuda(_: VideoCodec) -> std::result::Result<String, St
 
 #[cfg(not(feature = "ffmpeg"))]
 pub(crate) fn probe_ffmpeg_software(_: VideoCodec) -> std::result::Result<String, String> {
-    Err("crate was built without the ffmpeg feature".to_owned())
+    Err(if cfg!(feature = "hardware-only") {
+        "hardware-only build forbids software video decoding"
+    } else {
+        "crate was built without the ffmpeg feature"
+    }
+    .to_owned())
 }
 
 pub(crate) trait VideoDecoder {

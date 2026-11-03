@@ -906,6 +906,10 @@ QtObject {
     }
 
     function run(parent) {
+        const transitions = Qt.createComponent("StreamTransitionAcceptance.qml").createObject(parent)
+        check(transitions !== null, "transition regressions must load")
+        transitions.run(parent, client, runtime)
+        transitions.destroy()
         client.state = "stopped"
         ShellStore.streamerStartRequestId = "fixture-blocked"
         ShellStore.streamInputPauseRequestId = "fixture-blocked"

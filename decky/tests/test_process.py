@@ -1,15 +1,16 @@
 import fcntl
 import os
-import signal
 import subprocess
 import sys
-import time
 import tempfile
 import unittest
 from pathlib import Path
+from dataclasses import replace
+from unittest import mock
 
 from tests import support  # noqa: F401
 from opennow_decky import process
+from opennow_decky.install import Install
 
 
 class LockHolderTests(unittest.TestCase):
@@ -71,7 +72,7 @@ class LockHolderTests(unittest.TestCase):
     def test_the_plugins_own_settings_lock_is_never_reported_or_killed(self):
         with process.core_lock(self.data_dir):
             self.assertIsNone(process.lock_holder(self.data_dir))
-            self.assertFalse(process.terminate(self.data_dir, grace_seconds=0.2))
+            self.assertTrue(process.released(self.data_dir, 0.2))
 
     def test_a_holder_that_is_not_opennow_is_waited_for_not_killed(self):
         lock = self.data_dir / "core.lock"
@@ -83,48 +84,66 @@ class LockHolderTests(unittest.TestCase):
                                  stdout=subprocess.PIPE, text=True)
         self.addCleanup(child.stdout.close)
         child.stdout.readline()
-        self.assertFalse(process.terminate(self.data_dir, grace_seconds=0.3))
+        self.assertFalse(process.released(self.data_dir, 0.3))
         self.assertIsNone(child.poll())
         self.assertEqual(child.wait(timeout=5), 0)
 
-    def test_terminate_waits_until_the_lock_is_released(self):
-        lock = self.data_dir / "core.lock"
-        lock.write_text("")
-        child = subprocess.Popen([sys.executable, "-c",
-                                  "import fcntl, signal, sys, time\n"
-                                  "open('/proc/self/comm', 'w').write('opennow-core')\n"
-                                  "signal.signal(signal.SIGTERM, lambda *a: None)\n"
-                                  "handle = open(sys.argv[1]); fcntl.flock(handle, fcntl.LOCK_EX)\n"
-                                  "print('ready', flush=True); time.sleep(60)", str(lock)],
-                                 stdout=subprocess.PIPE, text=True)
-        self.addCleanup(child.stdout.close)
-        child.stdout.readline()
-        self.assertEqual(process.lock_holder(self.data_dir), child.pid)
-        self.assertTrue(process.terminate(self.data_dir, grace_seconds=0.5))
-        self.assertIsNone(process.lock_holder(self.data_dir))
-        child.wait(timeout=5)
 
-    def test_stop_escalates_to_sigkill_when_sigterm_is_swallowed(self):
-        child = subprocess.Popen([sys.executable, "-c",
-                                  "import signal, time; signal.signal(signal.SIGTERM, lambda *a: None); print('ready', flush=True); time.sleep(60)"],
-                                 stdout=subprocess.PIPE)
-        self.addCleanup(child.stdout.close)
-        child.stdout.readline()
-        started = time.monotonic()
-        self.assertTrue(process.stop(child.pid, grace_seconds=0.5))
-        self.assertEqual(child.wait(timeout=5), -signal.SIGKILL)
-        self.assertLess(time.monotonic() - started, 3)
+class QuitRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.install = Install("native", "/usr/bin/opennow-qt", None, None,
+                               "/usr/bin/opennow-qt", (), self.directory.name)
 
-    def test_stop_returns_once_sigterm_works(self):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        self.assertTrue(process.stop(child.pid, grace_seconds=5))
-        self.assertEqual(child.wait(timeout=5), -signal.SIGTERM)
+    def test_completed_request_waits_for_core_lock_release(self):
+        with mock.patch.object(process.host, "run", return_value=subprocess.CompletedProcess([], 0, "opennow-quit-complete\n")) as run, \
+                mock.patch.object(process, "released", return_value=True) as released:
+            self.assertTrue(process.request_quit(self.install))
+        run.assert_called_once_with(["/usr/bin/opennow-qt", "--request-quit"], timeout=125)
+        released.assert_called_once_with(Path(self.directory.name), 5)
 
-    def test_parent_pid_parses_names_with_spaces_and_parentheses(self):
-        proc = self.data_dir / "proc"
-        (proc / "42").mkdir(parents=True)
-        (proc / "42" / "stat").write_text("42 (opennow (core) x) S 7 42 42 0 -1\n")
-        self.assertEqual(process.parent_pid(42, str(proc)), 7)
+    def test_cancel_is_not_a_success_and_does_not_wait_or_kill(self):
+        with mock.patch.object(process.host, "run", return_value=subprocess.CompletedProcess([], 2)), \
+                mock.patch.object(process, "released") as released, mock.patch.object(process.os, "kill") as kill:
+            self.assertFalse(process.request_quit(self.install))
+        released.assert_not_called()
+        kill.assert_not_called()
+
+    def test_timeout_or_unsupported_command_never_kills(self):
+        for outcome in [subprocess.TimeoutExpired([], 125), subprocess.CompletedProcess([], 1)]:
+            with self.subTest(outcome=outcome), mock.patch.object(process.host, "run") as run, \
+                    mock.patch.object(process.os, "kill") as kill:
+                if isinstance(outcome, Exception):
+                    run.side_effect = outcome
+                else:
+                    run.return_value = outcome
+                with self.assertRaisesRegex(RuntimeError, "The running app was not terminated"):
+                    process.request_quit(self.install)
+                kill.assert_not_called()
+
+    def test_completion_marker_is_insufficient_while_core_is_running(self):
+        with mock.patch.object(process.host, "run", return_value=subprocess.CompletedProcess([], 0, "opennow-quit-complete\n")), \
+                mock.patch.object(process, "released", return_value=False), mock.patch.object(process.os, "kill") as kill:
+            with self.assertRaisesRegex(RuntimeError, "did not finish closing"):
+                process.request_quit(self.install)
+        kill.assert_not_called()
+
+    def test_appimage_helpers_receive_the_install_argument_before_the_quit_flag(self):
+        installed = replace(self.install, kind="appimage", exe="/usr/local/bin/droiddeck-appimage-run",
+                            args=("/opt/appimages/user/Open NOW",))
+        with mock.patch.object(process.host, "run", return_value=subprocess.CompletedProcess([], 0, "opennow-quit-complete\n")) as run:
+            self.assertTrue(process.request_quit(installed))
+        run.assert_called_once_with([
+            "/usr/local/bin/droiddeck-appimage-run", "/opt/appimages/user/Open NOW", "--request-quit",
+        ], timeout=125)
+
+    def test_old_app_without_the_completion_marker_is_never_treated_as_closed(self):
+        with mock.patch.object(process.host, "run", return_value=subprocess.CompletedProcess([], 0, "")), \
+                mock.patch.object(process, "released", return_value=True), mock.patch.object(process.os, "kill") as kill:
+            with self.assertRaisesRegex(RuntimeError, "did not finish closing"):
+                process.request_quit(self.install)
+        kill.assert_not_called()
 
 
 if __name__ == "__main__":

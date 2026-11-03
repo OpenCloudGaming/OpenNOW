@@ -1,13 +1,31 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
+#include <QGuiApplication>
+#include <QPlatformSurfaceEvent>
 #include <QQuickGraphicsDevice>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <private/qquickwindow_p.h>
+#include <private/qsgrenderloop_p.h>
 #include <rhi/qrhi_platform.h>
 #include <limits>
 
 namespace LinuxVulkanGraphics {
+namespace {
+void prepareWaylandSurfaceTeardown(QQuickWindow *window)
+{
+    if (!QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) return;
+    QObject::connect(window, &QWindow::visibleChanged, window, [window](bool visible) {
+        if (visible) return;
+        auto *renderLoop = QQuickWindowPrivate::get(window)->windowManager;
+        if (!renderLoop) return;
+        QPlatformSurfaceEvent event(QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed);
+        renderLoop->eventFilter(window, &event);
+    });
+}
+}
+
 Device::Device() : Device(Api{}) {}
 
 Device::Device(Api api) : m_api(api) {}
@@ -49,6 +67,51 @@ bool Device::matchesContext(const OpenNowStreamerVulkanDeviceInfo &info,
         && context.instance == info.instance && context.physical_device == info.physical_device
         && context.device == info.device && context.queue == info.graphics_queue
         && context.queue_family_index == info.graphics_queue_family_index;
+}
+
+Device::SceneGraphDevice Device::querySceneGraphDevice(QQuickWindow *window)
+{
+    SceneGraphDevice device;
+    if (!window || !window->rendererInterface()) return device;
+    device.api = window->rendererInterface()->graphicsApi();
+    if (device.api != QSGRendererInterface::Vulkan) return device;
+    auto *rhi = window->rhi();
+    if (!rhi || rhi->backend() != QRhi::Vulkan) return device;
+    const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(rhi->nativeHandles());
+    if (!handles || !handles->inst || !handles->inst->isValid() || !handles->physDev)
+        return device;
+    auto *functions = handles->inst->functions();
+    if (!functions) return device;
+    VkPhysicalDeviceProperties properties{};
+    functions->vkGetPhysicalDeviceProperties(handles->physDev, &properties);
+    device.physicalDevice = properties;
+    return device;
+}
+
+bool Device::validateHardwareRendering(QQuickWindow *window)
+{
+    const auto device = m_api.sceneGraphDevice ? m_api.sceneGraphDevice(window) : SceneGraphDevice{};
+    if (device.api != QSGRendererInterface::Vulkan) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING requires the Qt Vulkan scene graph (actual graphics API %1).")
+            .arg(int(device.api));
+        return false;
+    }
+    if (!device.physicalDevice) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING could not query the Qt Vulkan physical device.");
+        return false;
+    }
+    const auto type = device.physicalDevice->deviceType;
+    if (type != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && type != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+            && type != VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) {
+        m_lastError = QStringLiteral("NO_SOFT_RENDERING rejects the %1 Vulkan physical device \"%2\" (type %3).")
+            .arg(type == VK_PHYSICAL_DEVICE_TYPE_CPU ? QStringLiteral("CPU") : QStringLiteral("non-GPU"))
+            .arg(QString::fromUtf8(device.physicalDevice->deviceName,
+                                  qstrnlen(device.physicalDevice->deviceName, VK_MAX_PHYSICAL_DEVICE_NAME_SIZE)))
+            .arg(int(type));
+        return false;
+    }
+    m_lastError.clear();
+    return true;
 }
 
 bool Device::initialize()
@@ -107,6 +170,7 @@ bool Device::adopt(QQuickWindow *window)
         reinterpret_cast<VkPhysicalDevice>(m_info.physical_device),
         reinterpret_cast<VkDevice>(m_info.device), int(m_info.graphics_queue_family_index),
         int(m_info.graphics_queue_index)));
+    prepareWaylandSurfaceTeardown(window);
     return true;
 }
 
@@ -131,6 +195,7 @@ bool Device::adoptFallback(QQuickWindow *window)
         }
     }
     window->setVulkanInstance(&m_instance);
+    prepareWaylandSurfaceTeardown(window);
     m_lastError.clear();
     return true;
 }

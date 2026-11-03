@@ -18,9 +18,11 @@ class CoreClient final : public QObject
     Q_PROPERTY(QString state READ state NOTIFY stateChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(int protocolVersion READ protocolVersion CONSTANT)
+    Q_PROPERTY(bool allocationsSettled READ allocationsSettled NOTIFY allocationsSettledChanged)
 
 public:
-    static constexpr int CurrentProtocolVersion = 5;
+    static constexpr int CurrentProtocolVersion = 6;
+    static constexpr qsizetype MaximumTrackedAllocations = 8;
     static constexpr qsizetype MaximumLineBytes = 1024 * 1024;
     static constexpr qsizetype MaximumQueuedEvents = 512;
     static QString graphicsPreference(const QString &program);
@@ -31,6 +33,7 @@ public:
     [[nodiscard]] QString state() const;
     [[nodiscard]] QString lastError() const;
     [[nodiscard]] int protocolVersion() const;
+    [[nodiscard]] bool allocationsSettled() const;
 
     struct NativeHdrDisplay {
         bool available = false;
@@ -60,6 +63,7 @@ signals:
     void eventReceived(const QString &name, const QJsonObject &payload);
     void eventsDropped(int count);
     void coreLogReceived(const QString &line);
+    void allocationsSettledChanged();
 
 private slots:
     void processStdout();
@@ -68,6 +72,8 @@ private slots:
     void drainEvents();
 
 private:
+    friend class CoreClientTest;
+
     struct PendingRequest {
         QJsonObject message;
         qint64 deadlineMs = 0;
@@ -83,6 +89,7 @@ private:
     void protocolFailure(const QString &message);
     void scheduleRestart();
     void acknowledgeUpdateStartup();
+    void invalidateAllocationSettlement();
 
     QProcess m_process;
     QProcessEnvironment m_updateStartupEnvironment;
@@ -93,6 +100,10 @@ private:
     QByteArray m_stdoutBuffer;
     QByteArray m_stderrBuffer;
     QHash<QString, PendingRequest> m_pending;
+    enum class AllocationState { InFlight, Unadmitted };
+    QHash<QString, AllocationState> m_allocations;
+    bool m_allocationSettlementSupported = false;
+    bool m_allocationStateLost = false;
     QQueue<QJsonObject> m_events;
     QString m_state = QStringLiteral("stopped");
     QString m_lastError;

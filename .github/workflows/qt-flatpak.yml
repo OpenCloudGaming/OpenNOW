@@ -33,6 +33,8 @@ jobs:
     name: Flatpak ${{ inputs.arch }}
     runs-on: ${{ inputs.arch == 'aarch64' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 90
+    env:
+      FLATPAK_USER_DIR: ${{ github.workspace }}/build/flatpak/user
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,6 +63,12 @@ jobs:
             echo "bundle=build/flatpak/OpenNOW-Qt-$version-Linux-$package_arch.flatpak"
           } >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
+      - name: Mount Flatpak SDK and build state
+        uses: useblacksmith/stickydisk@3f6be1451e3cad893b778bc93495c80452a5da26
+        with:
+          key: opennow-flatpak-v1-${{ inputs.arch }}-${{ hashFiles('.github/workflows/qt-flatpak.yml', 'opennow-qt/packaging/flatpak/io.github.opencloudgaming.OpenNOW.json') }}
+          path: build/flatpak
+          commit: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
       - name: Install Flatpak tools and SDK
         run: |
           sudo apt-get update
@@ -70,8 +78,14 @@ jobs:
             org.kde.Platform//6.10 org.kde.Sdk//6.10 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08 \
             org.freedesktop.Sdk.Extension.llvm20//25.08
+          flatpak update --user --noninteractive -y \
+            org.kde.Platform//6.10 org.kde.Sdk//6.10 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08 \
+            org.freedesktop.Sdk.Extension.llvm20//25.08
+          find build/flatpak -maxdepth 1 -type f -name '*.flatpak' -delete
       - name: Test packaging contracts and vendor locked Rust dependencies
         env:
+          CARGO_HOME: ${{ github.workspace }}/build/flatpak/cargo-home
           RELEASE_VERSION: ${{ steps.identity.outputs.version }}
           OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
         run: |

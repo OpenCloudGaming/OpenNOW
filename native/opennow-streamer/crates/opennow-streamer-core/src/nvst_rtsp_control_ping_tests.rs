@@ -26,6 +26,7 @@ fn socket_pair() -> (RtspClient, WebSocket<TcpStream>) {
             socket,
             cseq: 7,
             buffer: String::new(),
+            startup: None,
         },
         server.join().unwrap(),
     )
@@ -33,6 +34,62 @@ fn socket_pair() -> (RtspClient, WebSocket<TcpStream>) {
 
 fn active_session(client: RtspClient, ping: &NvstControlPing) -> ActiveNvstRtspSession {
     ActiveNvstRtspSession::spawn(client, ping.clone()).unwrap()
+}
+
+fn held_open_request_peer(cancel: bool) {
+    let (mut client, mut peer) = socket_pair();
+    let cancellation = crate::EngineCancellation::default();
+    client.startup = Some(StartupBudget {
+        token: cancellation.token(),
+        deadline: Instant::now()
+            + if cancel {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(200)
+            },
+    });
+    let (completed, completion) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        completed
+            .send(
+                client
+                    .request("OPTIONS", "rtsps://test:322", &[], "")
+                    .map(|_| ())
+                    .map_err(|error| error.code),
+            )
+            .unwrap();
+    });
+    assert!(
+        peer.read()
+            .unwrap()
+            .into_text()
+            .unwrap()
+            .starts_with("OPTIONS ")
+    );
+    if cancel {
+        cancellation.cancel();
+    }
+    let result = completion.recv_timeout(Duration::from_secs(1));
+    drop(peer);
+    worker.join().unwrap();
+    assert_eq!(
+        result.unwrap(),
+        Err(if cancel {
+            "nvst-start-aborted"
+        } else {
+            "nvst-startup-timeout"
+        })
+    );
+}
+
+#[test]
+fn startup_cancellation_interrupts_silent_rtsp_request_peer_while_peer_stays_open() {
+    held_open_request_peer(true);
+}
+
+#[test]
+fn startup_deadline_bounds_silent_rtsp_request_peer_while_peer_stays_open() {
+    held_open_request_peer(false);
 }
 
 fn server_ping(server: &mut WebSocket<TcpStream>) {

@@ -53,6 +53,23 @@ fn software_only_decodes_cpu_nv12_sdr_frames_for_embedded_presentation() {
     config.decoder_preference = DecoderPreference::SoftwareOnly;
     config.embedded_presentation = true;
     config.audio = None;
+    if cfg!(feature = "hardware-only") {
+        for embedded in [false, true] {
+            config.embedded_presentation = embedded;
+            for codec in [
+                opennow_streamer_platform_linux::VideoCodec::H264,
+                opennow_streamer_platform_linux::VideoCodec::H265,
+                opennow_streamer_platform_linux::VideoCodec::Av1,
+            ] {
+                config.codec = codec;
+                let error = LinuxSession::start(config.clone())
+                    .err()
+                    .expect("hardware-only must reject software before starting a session");
+                assert!(error.to_string().contains("hardware-only"), "{error}");
+            }
+        }
+        return;
+    }
     let mut session =
         LinuxSession::start(config).expect("software decoder opens without a shared GPU device");
     let ready = Instant::now() + Duration::from_secs(3);

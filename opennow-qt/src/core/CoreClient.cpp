@@ -16,6 +16,7 @@
 #include <QJsonArray>
 #include <QJsonParseError>
 #include <QProcessEnvironment>
+#include <utility>
 
 using namespace Qt::StringLiterals;
 
@@ -196,12 +197,17 @@ CoreClient::~CoreClient()
 QString CoreClient::state() const { return m_state; }
 QString CoreClient::lastError() const { return m_lastError; }
 int CoreClient::protocolVersion() const { return CurrentProtocolVersion; }
+bool CoreClient::allocationsSettled() const
+{
+    return m_allocationSettlementSupported && !m_allocationStateLost && m_allocations.isEmpty();
+}
 
 bool CoreClient::start(const QString &program, const QStringList &arguments)
 {
     if (program.trimmed().isEmpty() || m_process.state() != QProcess::NotRunning) {
         return false;
     }
+    invalidateAllocationSettlement();
     m_program = program;
     m_arguments = arguments;
     m_manualStop = false;
@@ -268,6 +274,11 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
         || (m_state != u"ready"_s && !(m_state == u"handshaking"_s && method == u"core.hello"_s))) {
         return {};
     }
+    if (method == u"session.create"_s
+            && (m_allocationStateLost || m_allocations.size() >= MaximumTrackedAllocations)) {
+        setLastError(u"Cloud allocation cleanup is unresolved; another allocation cannot be started"_s);
+        return {};
+    }
     const auto id = QString::number(m_nextRequestId++);
     const auto deadline = QDateTime::currentMSecsSinceEpoch() + qBound(100, timeoutMs, 300'000);
     auto runtimeParams = params;
@@ -302,8 +313,16 @@ QString CoreClient::request(const QString &method, const QJsonObject &params, in
                               {u"method"_s, method},
                               {u"params"_s, runtimeParams}};
     m_pending.insert(id, PendingRequest{message, deadline});
+    if (method == u"session.create"_s) {
+        m_allocations.insert(id, AllocationState::InFlight);
+        emit allocationsSettledChanged();
+    }
     if (!writeMessage(message)) {
         m_pending.remove(id);
+        if (m_allocations.remove(id)) {
+            m_allocationStateLost = true;
+            emit allocationsSettledChanged();
+        }
         emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         return {};
     }
@@ -314,6 +333,10 @@ bool CoreClient::cancel(const QString &requestId)
 {
     if (!m_pending.remove(requestId)) {
         return false;
+    }
+    if (m_allocations.value(requestId) == AllocationState::Unadmitted) {
+        m_allocations.remove(requestId);
+        emit allocationsSettledChanged();
     }
     writeMessage(QJsonObject{{u"type"_s, u"cancel"_s}, {u"id"_s, requestId}});
     emit requestFailed(requestId, u"cancelled"_s, u"Request cancelled"_s);
@@ -393,6 +416,10 @@ void CoreClient::processTimeouts()
             protocolFailure(u"Core handshake timed out"_s);
             return;
         }
+        if (m_allocations.value(id) == AllocationState::Unadmitted) {
+            m_allocations.remove(id);
+            emit allocationsSettledChanged();
+        }
         writeMessage(QJsonObject{{u"type"_s, u"cancel"_s}, {u"id"_s, id}});
         emit requestFailed(id, u"deadline_exceeded"_s, u"Core request timed out"_s);
     }
@@ -400,8 +427,13 @@ void CoreClient::processTimeouts()
         const auto pending = m_pending.find(id);
         if (pending == m_pending.end()) continue;
         pending->retryAtMs = 0;
+        if (m_allocations.contains(id)) m_allocations[id] = AllocationState::InFlight;
         if (!writeMessage(pending->message)) {
             m_pending.erase(pending);
+            if (m_allocations.remove(id)) {
+                m_allocationStateLost = true;
+                emit allocationsSettledChanged();
+            }
             emit requestFailed(id, u"core_not_writable"_s, u"Core transport is not writable"_s);
         }
     }
@@ -430,10 +462,21 @@ void CoreClient::setState(const QString &state)
     if (m_state == state) return;
     m_state = state;
     if (state == u"failed"_s || state == u"stopping"_s || state == u"stopped"_s) {
+        invalidateAllocationSettlement();
         m_events.clear();
         m_droppedEvents = 0;
     }
     emit stateChanged();
+}
+
+void CoreClient::invalidateAllocationSettlement()
+{
+    for (const auto allocation : std::as_const(m_allocations)) {
+        if (allocation == AllocationState::InFlight) m_allocationStateLost = true;
+    }
+    m_allocations.clear();
+    m_allocationSettlementSupported = false;
+    emit allocationsSettledChanged();
 }
 
 void CoreClient::setLastError(const QString &error)
@@ -467,11 +510,19 @@ void CoreClient::processLine(const QByteArray &line)
     if (type == u"response"_s) {
         const auto id = message.value(u"id"_s).toString();
         const auto pending = m_pending.find(id);
-        if (pending == m_pending.end()) return;
+        if (pending == m_pending.end()) {
+            if (m_allocations.contains(id) && !message.value(u"ok"_s).toBool(false)
+                    && message.value(u"error"_s).toObject().value(u"code"_s).toString() == u"busy"_s) {
+                m_allocations.remove(id);
+                emit allocationsSettledChanged();
+            }
+            return;
+        }
         if (!message.value(u"ok"_s).toBool(false)
             && message.value(u"error"_s).toObject().value(u"code"_s).toString() == u"busy"_s) {
             pending->retryAtMs = QDateTime::currentMSecsSinceEpoch() + pending->retryDelayMs;
             pending->retryDelayMs = qMin(pending->retryDelayMs * 2, 1'000);
+            if (m_allocations.contains(id)) m_allocations[id] = AllocationState::Unadmitted;
             return;
         }
         const auto method = pending->message.value(u"method"_s).toString();
@@ -493,13 +544,17 @@ void CoreClient::processLine(const QByteArray &line)
                 for (const auto &capability : {u"catalog.libraryPages.v1"_s, u"catalog.metadata.v1"_s,
                                              u"account.syncObservation.v1"_s, u"catalog.languages.v1"_s,
                                              u"queue.servers.v1"_s, u"auth.accountPicker.v1"_s,
-                                             u"session.terminalCleanup.v1"_s}) {
+                                             u"session.terminalCleanup.v1"_s, u"session.allocationSettlement.v1"_s,
+                                             u"session.adReportIdentity.v1"_s,
+                                             u"account.mutations.scoped.v1"_s, u"catalog.storeLocal.v2"_s}) {
                     if (!capabilities.contains(capability)) {
                         protocolFailure(u"The packaged core lacks a required capability: "_s + capability);
                         return;
                     }
                 }
                 m_restartAttempts = 0;
+                m_allocationSettlementSupported = true;
+                emit allocationsSettledChanged();
                 setState(u"ready"_s);
                 acknowledgeUpdateStartup();
             }
@@ -519,6 +574,24 @@ void CoreClient::processLine(const QByteArray &line)
 
     if (type == u"event"_s && message.value(u"name"_s).isString()
             && message.value(u"payload"_s).isObject()) {
+        if (message.value(u"name"_s).toString() == u"session.allocation.settled"_s) {
+            const auto payload = message.value(u"payload"_s).toObject();
+            const auto id = payload.value(u"requestId"_s).toString();
+            const auto outcome = payload.value(u"outcome"_s).toString();
+            if (id.isEmpty() || id.size() > 64
+                    || (outcome != u"handed-off"_s && outcome != u"cleaned"_s && outcome != u"failed"_s)) {
+                protocolFailure(u"Core sent an invalid allocation settlement"_s);
+                return;
+            }
+            if (m_allocations.remove(id)) {
+                if (outcome == u"failed"_s) m_allocationStateLost = true;
+                const auto pending = m_pending.constFind(id);
+                if (outcome == u"cleaned"_s && pending != m_pending.cend() && pending->retryAtMs != 0)
+                    m_allocations.insert(id, AllocationState::Unadmitted);
+                emit allocationsSettledChanged();
+            }
+            return;
+        }
         if (message.value(u"name"_s).toString() == u"settings.changed"_s) {
             emit eventReceived(u"settings.changed"_s, message.value(u"payload"_s).toObject());
             return;

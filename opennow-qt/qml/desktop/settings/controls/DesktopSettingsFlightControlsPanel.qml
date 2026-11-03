@@ -53,6 +53,8 @@ DesktopSettingsPanel {
     function deviceDescription(device) {
         if (device.status === "declined")
             return qsTr("%1 · The server declined this device. It stays idle and is not emulated as a controller.").arg(deviceType(device.type));
+        if (device.status === "no-hid-path")
+            return qsTr("%1 · The system exposes no hidraw device for it, so it can't be forwarded. Check its kernel driver, or turn forwarding off to use it as a controller.").arg(deviceType(device.type));
         if (device.status === "no-access")
             return qsTr("%1 · OpenNOW has no permission to open this device. Add a udev rule that grants access to its hidraw node.").arg(deviceType(device.type));
         if (device.status === "controller")
@@ -70,6 +72,8 @@ DesktopSettingsPanel {
             return qsTr("NOT ACCEPTED BY SERVER");
         case "no-access":
             return qsTr("NO PERMISSION");
+        case "no-hid-path":
+            return qsTr("NO HID PATH");
         case "controller":
             return qsTr("CONTROLLER · PLAYER %1").arg(device.player);
         case "ignored":
@@ -80,7 +84,7 @@ DesktopSettingsPanel {
     }
 
     function statusColor(status) {
-        if (status === "declined" || status === "no-access")
+        if (status === "declined" || status === "no-access" || status === "no-hid-path")
             return DesktopTokens.flightDeclined;
         if (status === "controller")
             return Theme.label;

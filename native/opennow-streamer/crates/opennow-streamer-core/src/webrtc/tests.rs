@@ -10,6 +10,8 @@ fn accepted_frames_emit_webrtc_telemetry_with_optional_transport_stats() {
         telemetry.observe(&MediaFeedback::VideoFrameAccepted {
             frame_index: Some(index),
             timestamp: u64::from(index) * 1_500,
+            clock_rate_hz: 90_000,
+            accepted_at: Instant::now(),
             bytes: 100_000,
             keyframe: index == 0,
         });
@@ -180,6 +182,8 @@ fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
             &MediaFeedback::VideoFrameAccepted {
                 frame_index: None,
                 timestamp: second * 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1000,
                 keyframe: second == 1,
             },
@@ -838,6 +842,8 @@ fn engine_webrtc_session_emits_frame_and_network_telemetry() {
                     .send(MediaFeedback::VideoFrameAccepted {
                         frame_index: frame.frame_index,
                         timestamp: frame.rtp_timestamp,
+                        clock_rate_hz: 90_000,
+                        accepted_at: Instant::now(),
                         bytes: frame.payload.len().try_into().unwrap(),
                         keyframe: frame.keyframe,
                     })

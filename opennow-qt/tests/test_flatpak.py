@@ -1,15 +1,17 @@
 import base64
 import fnmatch
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import tomllib
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,9 +19,59 @@ PACKAGING = ROOT / "opennow-qt/packaging/flatpak"
 SPEC = importlib.util.spec_from_file_location("prepare_sources", PACKAGING / "prepare_sources.py")
 PREPARE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE)
+sys.path.insert(0, str(ROOT / "opennow-qt/packaging"))
+import verify_flatpak
 
 
 class FlatpakTests(unittest.TestCase):
+    def test_core_ad_report_identity_is_required_before_launching_flatpak(self):
+        for supported in (False, True):
+            with self.subTest(supported=supported):
+                capabilities = [
+                    "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1",
+                    "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1",
+                    "session.terminalCleanup.v1", "session.allocationSettlement.v1",
+                    "account.mutations.scoped.v1", "catalog.storeLocal.v2",
+                ]
+                if supported:
+                    capabilities.append("session.adReportIdentity.v1")
+                hello = {"id":"package-core", "ok":True,
+                         "result":{"protocolVersion":6, "capabilities":capabilities}}
+                updater = {"id":"flatpak-updater", "ok":True, "result":{
+                    "updateSource":"flatpak", "status":"unsupported", "canCheck":False,
+                    "canDownload":False, "canInstall":False, "exitRequired":False}}
+                core = Mock(stdin=io.StringIO(), stdout=io.StringIO(json.dumps(hello) + "\n" + json.dumps(updater) + "\n"))
+                with patch.object(verify_flatpak, "verify_capabilities"), \
+                        patch.object(verify_flatpak.subprocess, "run", return_value=subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps({"id":"package-probe"}) + "\n")) as run, \
+                        patch.object(verify_flatpak.subprocess, "Popen", return_value=core), \
+                        patch.object(verify_flatpak.select, "select", return_value=([core.stdout], [], [])):
+                    if supported:
+                        verify_flatpak.verify_flatpak()
+                    else:
+                        with self.assertRaisesRegex(ValueError, "ad report identity"):
+                            verify_flatpak.verify_flatpak()
+                self.assertEqual(run.call_count, 3 if supported else 2)
+                core.kill.assert_called_once_with()
+                core.communicate.assert_called_once_with(timeout=5)
+
+    def test_sticky_state_keeps_sdk_build_cache_and_app_on_one_filesystem(self):
+        workflow = (ROOT / ".github/workflows/qt-flatpak.yml").read_text()
+        mount = workflow.split("      - name: Mount Flatpak SDK and build state\n", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("uses: useblacksmith/stickydisk@3f6be1451e3cad893b778bc93495c80452a5da26", mount)
+        self.assertIn("key: opennow-flatpak-v1-${{ inputs.arch }}-", mount)
+        self.assertIn("          path: build/flatpak\n", mount)
+        self.assertIn("github.event_name == 'push' || github.event_name == 'workflow_dispatch'", mount)
+        self.assertIn("github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'", mount)
+        self.assertIn("FLATPAK_USER_DIR: ${{ github.workspace }}/build/flatpak/user", workflow)
+        self.assertIn("CARGO_HOME: ${{ github.workspace }}/build/flatpak/cargo-home", workflow)
+        self.assertLess(workflow.index("Mount Flatpak SDK and build state"), workflow.index("Install Flatpak tools and SDK"))
+        self.assertIn("flatpak update --user --noninteractive -y", workflow)
+        self.assertIn("--state-dir=build/flatpak/state --repo=build/flatpak/repo", workflow)
+        self.assertIn("build/flatpak/app opennow-qt/packaging/flatpak/", workflow)
+        self.assertIn("flatpak-builder --user --force-clean", workflow)
+        self.assertNotIn("--disable-cache", workflow)
+
     def test_release_manifest_pins_version_and_public_key_without_changing_sources(self):
         public_key = base64.b64encode(bytes(range(32))).decode()
         original = (PACKAGING / "io.github.opencloudgaming.OpenNOW.json").read_bytes()

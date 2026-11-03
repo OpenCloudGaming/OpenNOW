@@ -1,9 +1,6 @@
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::OnceLock;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use opennow_streamer_protocol::Session;
@@ -18,64 +15,19 @@ use tungstenite::{Message, WebSocket};
 use super::{Failure, MAX_SDP_BYTES};
 
 pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::signaling_io::{self, CONNECT_TIMEOUT};
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_SIGNALING_BYTES: usize = 512 * 1024;
-
-struct ResolveRequest {
-    host: String,
-    port: u16,
-    result: mpsc::SyncSender<std::io::Result<Vec<SocketAddr>>>,
-}
 
 pub(super) fn resolve(
     host: String,
     port: u16,
     cancelled: &AtomicBool,
 ) -> Result<Vec<SocketAddr>, Failure> {
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
-    static RESOLVER: OnceLock<Option<mpsc::SyncSender<ResolveRequest>>> = OnceLock::new();
-    let resolver = RESOLVER
-        .get_or_init(|| {
-            let (sender, receiver) = mpsc::sync_channel::<ResolveRequest>(1);
-            thread::Builder::new()
-                .name("opennow-webrtc-dns".to_owned())
-                .spawn(move || {
-                    while let Ok(request) = receiver.recv() {
-                        let result = (request.host.as_str(), request.port)
-                            .to_socket_addrs()
-                            .map(|addresses| addresses.take(8).collect::<Vec<_>>());
-                        let _ = request.result.try_send(result);
-                    }
-                })
-                .ok()
-                .map(|_| sender)
-        })
-        .as_ref()
-        .ok_or_else(|| Failure::signaling("Could not start bounded DNS resolver"))?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    resolver
-        .try_send(ResolveRequest {
-            host,
-            port,
-            result: sender,
-        })
-        .map_err(|_| Failure::signaling("WebRTC DNS resolver is busy"))?;
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-            return Err(Failure::signaling("WebRTC DNS cancelled or timed out"));
-        }
-        match receiver.recv_timeout(Duration::from_millis(25)) {
-            Ok(Ok(addresses)) if !addresses.is_empty() => return Ok(addresses),
-            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(Failure::signaling("WebRTC DNS failed"));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    }
+    signaling_io::resolve(host, port, Instant::now() + CONNECT_TIMEOUT, || {
+        cancelled.load(Ordering::Acquire)
+    })
+    .map_err(|_| Failure::signaling("WebRTC DNS failed, cancelled or timed out"))
 }
 
 pub(super) enum Incoming {
@@ -285,6 +237,7 @@ pub(super) struct Signaling<Stream = MaybeTlsStream<TcpStream>> {
 
 impl Signaling {
     pub(super) fn connect(session: &Session, cancelled: &AtomicBool) -> Result<Self, Failure> {
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
         let mut random = [0_u8; 12];
         getrandom::fill(&mut random)
             .map_err(|_| Failure::signaling("Could not generate signaling identity"))?;
@@ -314,63 +267,18 @@ impl Signaling {
             HeaderValue::from_str(&format!("x-nv-sessionid.{}", session.session_id))
                 .map_err(|_| Failure::signaling("Invalid signaling session ID"))?,
         );
-        let host = request
-            .uri()
-            .host()
-            .ok_or_else(|| Failure::signaling("Missing signaling host"))?
-            .to_owned();
-        let port = request.uri().port_u16().unwrap_or(443);
-        let addresses = resolve(host, port, cancelled)?;
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
-        let mut connected = None;
-        for address in addresses {
-            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                break;
-            }
-            let budget = deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(500));
-            if let Ok(stream) = TcpStream::connect_timeout(&address, budget) {
-                connected = Some(stream);
-                break;
-            }
-        }
-        let stream = connected
-            .ok_or_else(|| Failure::signaling("Signaling TCP connection failed or timed out"))?;
-        stream
-            .set_nonblocking(true)
-            .map_err(|_| Failure::signaling("Could not bound signaling handshake"))?;
         let config = WebSocketConfig::default()
             .max_write_buffer_size(MAX_SIGNALING_BYTES * 2)
             .max_message_size(Some(MAX_SIGNALING_BYTES))
             .max_frame_size(Some(MAX_SIGNALING_BYTES));
-        let mut handshake =
-            tungstenite::client_tls_with_config(request, stream, Some(config), None);
-        let mut socket = loop {
-            if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
-                return Err(Failure::signaling(
-                    "Signaling handshake cancelled or timed out",
-                ));
-            }
-            match handshake {
-                Ok((socket, _)) => break socket,
-                Err(tungstenite::HandshakeError::Interrupted(pending)) => {
-                    thread::sleep(Duration::from_millis(5));
-                    handshake = pending.handshake();
-                }
-                Err(tungstenite::HandshakeError::Failure(error)) => {
-                    return Err(failure("Signaling TLS/WebSocket handshake failed", &error));
-                }
-            }
-        };
-        let stream = match socket.get_mut() {
-            MaybeTlsStream::Plain(stream) => stream,
-            MaybeTlsStream::Rustls(stream) => stream.get_mut(),
-            _ => return Err(Failure::signaling("Unsupported signaling TLS backend")),
-        };
-        stream
-            .set_nonblocking(true)
-            .map_err(|_| Failure::signaling("Could not configure signaling socket"))?;
+        let socket = signaling_io::connect(
+            request,
+            deadline,
+            || cancelled.load(Ordering::Acquire),
+            config,
+            None,
+        )
+        .map_err(|error| failure("Signaling connection failed", &error))?;
         Ok(Self {
             socket,
             protocol: Protocol::new(peer),

@@ -7,8 +7,10 @@
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
 #include <QVulkanInstance>
 #include <QVulkanFunctions>
+#include <QSGRendererInterface>
 #include "opennow_streamer_ffi.h"
 #include <atomic>
+#include <optional>
 
 class QQuickWindow;
 
@@ -16,10 +18,16 @@ namespace LinuxVulkanGraphics {
 class Device final
 {
 public:
+    struct SceneGraphDevice {
+        QSGRendererInterface::GraphicsApi api = QSGRendererInterface::Unknown;
+        std::optional<VkPhysicalDeviceProperties> physicalDevice;
+    };
+
     struct Api {
         decltype(&opennow_streamer_vulkan_device_create) create = &opennow_streamer_vulkan_device_create;
         decltype(&opennow_streamer_vulkan_device_info) info = &opennow_streamer_vulkan_device_info;
         decltype(&opennow_streamer_vulkan_device_destroy) destroy = &opennow_streamer_vulkan_device_destroy;
+        SceneGraphDevice (*sceneGraphDevice)(QQuickWindow *) = &Device::querySceneGraphDevice;
     };
 
     Device();
@@ -31,6 +39,7 @@ public:
     bool initialize();
     bool adopt(QQuickWindow *window);
     bool adoptFallback(QQuickWindow *window);
+    bool validateHardwareRendering(QQuickWindow *window);
     const OpenNowStreamerVulkanDevice *handle() const;
     QString lastError() const;
     static bool validInfo(const OpenNowStreamerVulkanDeviceInfo &info);
@@ -38,6 +47,7 @@ public:
                                const OpenNowStreamerGraphicsContext &context);
 
 private:
+    static SceneGraphDevice querySceneGraphDevice(QQuickWindow *window);
     void reset();
 
     Api m_api;

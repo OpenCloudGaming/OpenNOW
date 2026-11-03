@@ -27,6 +27,7 @@ mod reports;
 mod requests;
 mod server_vpc_cache;
 mod settings;
+mod settings_rpc;
 mod store_cache;
 mod store_catalog_page;
 mod store_index;
@@ -40,7 +41,7 @@ use fs2::FileExt;
 use gfn::GfnService;
 use opennow_core::update_apply;
 use rand::RngCore;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use settings::{SettingsStore, resolve_data_dir};
 use std::env;
 use std::io::{self, BufRead, Write};
@@ -51,7 +52,7 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use streamer::StreamerService;
 
-const PROTOCOL_VERSION: i64 = 5;
+const PROTOCOL_VERSION: i64 = 6;
 const MAXIMUM_LINE_BYTES: usize = 1024 * 1024;
 static PROFILE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
 
@@ -212,7 +213,7 @@ fn run() -> Result<(), String> {
             let started = Instant::now();
             let result = requests::scope(permit.token.clone(), || {
                 requests::check().map_err(|error| (error.code.to_owned(), error.message))?;
-                dispatch(&method, &params, &worker_core, &worker_output).map(|(mut value, event)| {
+                dispatch(&method, &params, &worker_core, &worker_output, &id).map(|(mut value, event)| {
                     if method.starts_with("catalog.") {
                         let settings = worker_core.settings.lock().expect("settings poisoned").all();
                         worker_core.gfn.annotate_dlss(&mut value, &settings);
@@ -234,28 +235,14 @@ fn run() -> Result<(), String> {
             );
             observe_reporting(&worker_core, &worker_output, &method, &params, &result);
             let was_cancelled = permit.token.cancelled();
-            if method == "session.create"
-                && let Err((code, message)) = &result
-                && code == "session_cleanup_pending"
-            {
-                let _ = worker_output.send(json!({"type":"event","name":"session.cleanup.pending",
-                    "payload":{"code":code,"message":message}}));
-            }
-            if method == "session.create"
-                && let Ok((value, _)) = &result
-                && let Some(session_id) = value["session"]["sessionId"].as_str()
-            {
-                let delivered = !was_cancelled && worker_output.send(json!({"type":"response", "id":id, "ok":true, "result":value})).is_ok();
-                let accepted = delivered && permit.token.await_acceptance(std::time::Duration::from_secs(10));
-                let cleanup = worker_core.gfn.finish_session_create(session_id, accepted);
-                worker_core.diagnostics.record("session", "allocation-handoff", format!(
-                    "accepted={accepted} cleanup={}", cleanup.as_ref().map_or_else(|error| error.code, |()| "ok")
-                ));
-                if let Err(error) = cleanup {
-                    let _ = worker_output.send(json!({"type":"event","name":"session.cleanup.pending","payload":{
-                        "sessionId":session_id,"code":error.code,"message":"The cancelled cloud session could not be closed. End it before starting another game."
-                    }}));
-                }
+            if method == "session.create" {
+                complete_session_create(&id, &permit.token, &result, &worker_output, |session_id, accepted| {
+                    let cleanup = worker_core.gfn.finish_session_create(session_id, accepted);
+                    worker_core.diagnostics.record("session", "allocation-handoff", format!(
+                        "accepted={accepted} cleanup={}", cleanup.as_ref().map_or_else(|error| error.code, |_| "ok")
+                    ));
+                    cleanup
+                });
                 return;
             }
             if matches!(method.as_str(), "updater.check" | "updater.download" | "updater.install") {
@@ -264,32 +251,9 @@ fn run() -> Result<(), String> {
                 }
                 let _ = worker_output.send(json!({"type":"event", "name":"updater.changed", "payload":worker_core.updater.state()}));
             }
-            if matches!(
-                method.as_str(),
-                "auth.device.complete"
-                    | "auth.logout"
-                    | "auth.accounts.logoutAll"
-                    | "auth.accounts.switch"
-                    | "auth.accounts.remove"
-                    | "settings.set"
-            ) {
-                reconcile_push(&worker_core);
-            }
-            if !was_cancelled {
-                match result {
-                    Ok((value, event)) => {
-                        if let Some(("settings.changed", payload)) = &event {
-                            let _ = worker_output.send(json!({"type":"event", "name":"settings.changed", "payload":payload}));
-                        }
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":true, "result":value}));
-                        if let Some((name, payload)) = event && name != "settings.changed" {
-                            let _ = worker_output.send(json!({"type":"event", "name":name, "payload":payload}));
-                        }
-                    }
-                    Err((code, message)) => {
-                        let _ = worker_output.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":code, "message":message}}));
-                    }
-                }
+            push_registry::reconcile_after_request(&method, || reconcile_push(&worker_core));
+            if !was_cancelled && !(settings_rpc::handles(&method) && result.is_ok()) {
+                publish_response(&worker_output, &id, &result);
             }
             drop(permit);
         }).map_err(|error| error.to_string())?;
@@ -299,6 +263,80 @@ fn run() -> Result<(), String> {
 }
 
 type DispatchResult = Result<(Value, Option<(&'static str, Value)>), (String, String)>;
+
+fn complete_session_create(
+    id: &str,
+    token: &requests::Cancellation,
+    result: &DispatchResult,
+    output: &mpsc::Sender<Value>,
+    finish: impl FnOnce(&str, bool) -> Result<gfn::SessionCreateOutcome, gfn::ServiceError>,
+) {
+    let cleanup_pending = matches!(result, Err((code, _)) if matches!(code.as_str(), "session_cleanup_pending" | "session_provenance_unavailable" | "session_allocation_unresolved"));
+    if let Err((code, message)) = result
+        && cleanup_pending
+    {
+        let _ = output.send(json!({"type":"event","name":"session.cleanup.pending",
+            "payload":{"code":code,"message":message}}));
+    }
+    let outcome = if let Ok((value, _)) = result
+        && let Some(session_id) = value["session"]["sessionId"].as_str()
+    {
+        let delivered = !token.cancelled()
+            && output
+                .send(json!({"type":"response","id":id,"ok":true,"result":value}))
+                .is_ok();
+        let accepted = delivered && token.await_acceptance(std::time::Duration::from_secs(10));
+        match finish(session_id, accepted) {
+            Ok(gfn::SessionCreateOutcome::HandedOff) => "handed-off",
+            Ok(gfn::SessionCreateOutcome::Cleaned) => "cleaned",
+            Err(error) => {
+                let _ = output.send(json!({"type":"event","name":"session.cleanup.pending","payload":{
+                    "sessionId":session_id,"code":error.code,"message":"The cancelled cloud session could not be closed. End it before starting another game."
+                }}));
+                "failed"
+            }
+        }
+    } else {
+        if !token.cancelled() {
+            match result {
+                Ok((value, _)) => {
+                    let _ =
+                        output.send(json!({"type":"response","id":id,"ok":true,"result":value}));
+                }
+                Err((code, message)) => {
+                    let _ = output.send(json!({"type":"response","id":id,"ok":false,"error":{"code":code,"message":message}}));
+                }
+            }
+        }
+        if cleanup_pending || result.is_ok() {
+            "failed"
+        } else {
+            "cleaned"
+        }
+    };
+    let _ = output.send(json!({"type":"event","name":"session.allocation.settled",
+        "payload":{"requestId":id,"outcome":outcome}}));
+}
+
+fn publish_response(output: &mpsc::Sender<Value>, id: &str, result: &DispatchResult) {
+    match result {
+        Ok((value, event)) => {
+            if let Some(("settings.changed", payload)) = event {
+                let _ = output
+                    .send(json!({"type":"event", "name":"settings.changed", "payload":payload}));
+            }
+            let _ = output.send(json!({"type":"response", "id":id, "ok":true, "result":value}));
+            if let Some((name, payload)) = event
+                && *name != "settings.changed"
+            {
+                let _ = output.send(json!({"type":"event", "name":name, "payload":payload}));
+            }
+        }
+        Err((code, message)) => {
+            let _ = output.send(json!({"type":"response", "id":id, "ok":false, "error":{"code":code, "message":message}}));
+        }
+    }
+}
 
 fn update_session_idle(session: &Value, streamer: &Value) -> bool {
     session.get("session") == Some(&Value::Null)
@@ -402,6 +440,7 @@ fn dispatch(
     params: &Value,
     core: &Arc<AppCore>,
     output: &mpsc::Sender<Value>,
+    request_id: &str,
 ) -> DispatchResult {
     let session_transition = matches!(
         method,
@@ -432,7 +471,7 @@ fn dispatch(
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.publicCatalog", "catalog.storePages.v1", "catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "account.pushInvalidation.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "catalog.storeLocal.v2", "session.adReportIdentity.v1", "gfn.accountLibrary", "gfn.regions", "gfn.subscription", "gfn.cloudmatch", "sessionProxy", "session.terminalCleanup.v1", "session.allocationSettlement.v1", "catalogArtworkCache.v1", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "nativeStreamer.dynamicSurface", "nativeStreamer.acceptanceEvidence", "liveAcceptance.v1", "osCredentialStore", "electronAccountMigration", "redactedDiagnostics", "mediaLibrary", "githubUpdateDiscovery", "discordRpc", "feedback", "bugReports", "automaticBugReports.v2", "social.capabilitySurface"]}),
                 None,
             ))
         }
@@ -450,11 +489,6 @@ fn dispatch(
             }),
             None,
         )),
-        "settings.get" => Ok((
-            json!({"settings":core.settings.lock().expect("settings poisoned").all(),
-                "keyboardLayouts":language::keyboard_choices()}),
-            None,
-        )),
         "settings.choices.get" => {
             let settings = core.settings.lock().expect("settings poisoned").all();
             Ok((
@@ -467,99 +501,33 @@ fn dispatch(
                 None,
             ))
         }
-        "settings.set" => {
-            let key = params["key"].as_str().ok_or((
-                "invalid_params".to_owned(),
-                "settings.set requires a key".to_owned(),
-            ))?;
+        "settings.set" if params["key"] == "region" => {
+            let key = "region";
             let value = params.get("value").cloned().ok_or((
                 "invalid_params".to_owned(),
                 "settings.set requires a value".to_owned(),
             ))?;
-            if key == "region" {
-                let provider = params["providerIdpId"].as_str().unwrap_or("");
-                let event = core.gfn.with_region_provider(provider, || {
-                    let mut settings = core.settings.lock().expect("settings poisoned");
-                    let applied = settings.set_provider_region(provider, value).map_err(|message| gfn::ServiceError { code: "invalid_setting", message })?;
-                    Ok(json!({"key":key,"value":applied,"changes":{
-                        "regionProviderIdpId":provider,"providerRegions":settings.all()["providerRegions"]
-                    }}))
-                }).map_err(gfn_error)?;
-                return Ok((event.clone(), Some(("settings.changed", event))));
-            }
-            let mut settings = core.settings.lock().expect("settings poisoned");
-            let codec_before = settings.all()["codec"].clone();
-            let fallback_before = settings.all()["fallbackCodec"].clone();
-            let applied = settings
-                .set(key, value)
-                .map_err(|message| ("invalid_setting".to_owned(), message))?;
-            let mut event = json!({"key":key, "value":applied});
-            if key == "colorQuality" {
-                // An explicitly saved codec the new color mode cannot use is
-                // healed toward Auto in the same save; report the repair so the
-                // shell follows it without re-reading all settings.
-                let current = settings.all();
-                let mut changes = Map::new();
-                if current["codec"] != codec_before {
-                    changes.insert("codec".to_owned(), current["codec"].clone());
+            let provider = params["providerIdpId"].as_str().unwrap_or("");
+            let event = core.gfn.with_region_provider(provider, || {
+                let mut settings = core.settings.lock().expect("settings poisoned");
+                let applied = settings.set_provider_region(provider, value).map_err(|message| gfn::ServiceError { code: "invalid_setting", message })?;
+                let event = json!({"key":key,"value":applied,"changes":{
+                    "regionProviderIdpId":provider,"providerRegions":settings.all()["providerRegions"]
+                }});
+                let result = Ok((event.clone(), Some(("settings.changed", event.clone()))));
+                if !requests::current().cancelled() {
+                    publish_response(output, request_id, &result);
                 }
-                if current["fallbackCodec"] != fallback_before {
-                    changes.insert("fallbackCodec".to_owned(), current["fallbackCodec"].clone());
-                }
-                if !changes.is_empty() {
-                    event["changes"] = Value::Object(changes);
-                }
-            }
-            if key == "launchInConsoleMode" && applied == json!(false) {
-                event["changes"] = json!({"switchToConsoleOnPad": false});
-            } else if key == "themePack" {
-                let values = settings.all();
-                event["changes"] = json!({
-                    "appTheme": values["appTheme"],
-                    "themeAccentOverride": values["themeAccentOverride"]
-                });
-            } else if key == "appAccentColor" {
-                event["changes"] = json!({"themeAccentOverride": true});
-            } else if key == "webrtcCompatibilityMode" {
-                event["changes"] = json!({"allianceWebrtcCompatibility": settings.all()["allianceWebrtcCompatibility"]});
-            } else if key == "allianceWebrtcCompatibility" {
-                event["changes"] =
-                    json!({"webrtcCompatibilityMode": settings.all()["webrtcCompatibilityMode"]});
-            }
-            if key == "microphoneMode" && applied == json!("voice-activity") {
-                event["changes"] = json!({"microphoneDeviceId": ""});
-            }
+                Ok(event)
+            }).map_err(gfn_error)?;
             Ok((event.clone(), Some(("settings.changed", event))))
         }
-        "settings.shortcuts.update" => {
-            let bindings = core
-                .settings
-                .lock()
-                .expect("settings poisoned")
-                .set_shortcuts(&params["bindings"])
-                .map_err(|message| ("invalid_setting".to_owned(), message))?;
-            let (key, value) = bindings
-                .iter()
-                .next()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .expect("shortcut transaction applies at least one binding");
-            let event = json!({"key":key, "value":value, "changes":bindings});
-            Ok((
-                json!({"bindings":bindings}),
-                Some(("settings.changed", event)),
-            ))
-        }
-        "settings.reset" => {
-            let values = core
-                .settings
-                .lock()
-                .expect("settings poisoned")
-                .reset()
-                .map_err(|message| ("settings_write_failed".to_owned(), message))?;
-            Ok((
-                json!({"settings":values}),
-                Some(("settings.reset", json!({}))),
-            ))
+        "settings.get" | "settings.set" | "settings.shortcuts.update" | "settings.reset" => {
+            settings_rpc::dispatch(&core.settings, method, params, |result| {
+                if !requests::current().cancelled() {
+                    publish_response(output, request_id, result);
+                }
+            })
         }
         "auth.providers.list" => core
             .gfn
@@ -1631,6 +1599,211 @@ fn argument_value(name: &str) -> Option<String> {
 #[cfg(test)]
 mod acceptance_tests {
     use super::*;
+
+    fn allocation_settlement(output: &mpsc::Receiver<Value>, outcome: &str) {
+        assert_eq!(
+            output
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            json!({"type":"event","name":"session.allocation.settled",
+                "payload":{"requestId":"create","outcome":outcome}})
+        );
+        assert!(output.try_recv().is_err());
+    }
+
+    #[test]
+    fn allocation_settlement_waits_for_delayed_cancelled_cleanup() {
+        let requests = Arc::new(requests::Requests::default());
+        let permit = requests.admit("create", "session.create").unwrap();
+        let (output, received) = mpsc::channel();
+        let (entered, cleanup_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        requests.cancel("create");
+        thread::scope(|scope| {
+            let token = permit.token.clone();
+            let worker = scope.spawn(move || {
+                complete_session_create(
+                    "create",
+                    &token,
+                    &Ok((json!({"session":{"sessionId":"seat"}}), None)),
+                    &output,
+                    |id, accepted| {
+                        assert_eq!(id, "seat");
+                        assert!(!accepted);
+                        entered.send(()).unwrap();
+                        released.recv().unwrap();
+                        Ok(gfn::SessionCreateOutcome::Cleaned)
+                    },
+                );
+            });
+            cleanup_entered.recv().unwrap();
+            assert!(received.try_recv().is_err());
+            release.send(()).unwrap();
+            worker.join().unwrap();
+        });
+        allocation_settlement(&received, "cleaned");
+    }
+
+    #[test]
+    fn allocation_settlement_follows_receipt_and_successful_or_failed_finish() {
+        for (accept, handed_off, fail) in [
+            (true, true, false),
+            (true, false, false),
+            (false, false, false),
+            (false, false, true),
+        ] {
+            let requests = Arc::new(requests::Requests::default());
+            let permit = requests.admit("create", "session.create").unwrap();
+            let (output, received) = mpsc::channel();
+            let (entered, cleanup_entered) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            thread::scope(|scope| {
+                let token = permit.token.clone();
+                let worker = scope.spawn(move || {
+                    complete_session_create(
+                        "create",
+                        &token,
+                        &Ok((json!({"session":{"sessionId":"seat"}}), None)),
+                        &output,
+                        |id, accepted| {
+                            assert_eq!(id, "seat");
+                            assert_eq!(accepted, accept);
+                            entered.send(()).unwrap();
+                            released.recv().unwrap();
+                            if fail {
+                                Err(gfn::ServiceError {
+                                    code: "session_cleanup_pending",
+                                    message: "failed".into(),
+                                })
+                            } else {
+                                Ok(if handed_off {
+                                    gfn::SessionCreateOutcome::HandedOff
+                                } else {
+                                    gfn::SessionCreateOutcome::Cleaned
+                                })
+                            }
+                        },
+                    );
+                });
+                let response = received.recv().unwrap();
+                assert_eq!(response["type"], "response");
+                assert_eq!(response["id"], "create");
+                assert!(cleanup_entered.try_recv().is_err());
+                assert!(received.try_recv().is_err());
+                if accept {
+                    requests.acknowledge("create");
+                } else {
+                    requests.cancel("create");
+                }
+                cleanup_entered.recv().unwrap();
+                assert!(received.try_recv().is_err());
+                release.send(()).unwrap();
+                worker.join().unwrap();
+            });
+            if fail {
+                assert_eq!(received.recv().unwrap()["name"], "session.cleanup.pending");
+            }
+            drop(permit);
+            allocation_settlement(
+                &received,
+                if fail {
+                    "failed"
+                } else if handed_off {
+                    "handed-off"
+                } else {
+                    "cleaned"
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_settlement_survives_cancelled_dispatch_errors_and_keeps_failures() {
+        for (code, outcome) in [
+            ("cancelled", "cleaned"),
+            ("invalid_request", "cleaned"),
+            ("session_cleanup_pending", "failed"),
+            ("session_provenance_unavailable", "failed"),
+        ] {
+            let requests = Arc::new(requests::Requests::default());
+            let permit = requests.admit("create", "session.create").unwrap();
+            let (output, received) = mpsc::channel();
+            requests.cancel("create");
+            complete_session_create(
+                "create",
+                &permit.token,
+                &Err((code.into(), "dispatch failed".into())),
+                &output,
+                |_, _| panic!("dispatch error must not repeat cleanup"),
+            );
+            if outcome == "failed" {
+                assert_eq!(received.recv().unwrap()["name"], "session.cleanup.pending");
+            }
+            drop(permit);
+            allocation_settlement(&received, outcome);
+        }
+    }
+
+    #[test]
+    fn unresolved_allocation_never_settles_cleanly_with_or_without_cancellation() {
+        for cancelled in [false, true] {
+            let requests = Arc::new(requests::Requests::default());
+            let permit = requests.admit("create", "session.create").unwrap();
+            let (output, received) = mpsc::channel();
+            if cancelled {
+                requests.cancel("create");
+            }
+            complete_session_create(
+                "create",
+                &permit.token,
+                &Err((
+                    "session_allocation_unresolved".into(),
+                    "POST outcome is unknown".into(),
+                )),
+                &output,
+                |_, _| panic!("an unknown allocation cannot be guessed clean"),
+            );
+            let messages: Vec<_> = received.try_iter().collect();
+            let settlements: Vec<_> = messages
+                .iter()
+                .filter(|message| message["name"] == "session.allocation.settled")
+                .collect();
+            assert_eq!(settlements.len(), 1);
+            assert_eq!(settlements[0]["payload"]["outcome"], "failed");
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message["name"] == "session.cleanup.pending")
+            );
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|message| message["type"] == "response")
+                    .count(),
+                usize::from(!cancelled)
+            );
+        }
+    }
+
+    #[test]
+    fn allocation_settlement_does_not_handoff_after_output_loss() {
+        let (output, received) = mpsc::channel();
+        drop(received);
+        let mut finished = false;
+        complete_session_create(
+            "create",
+            &requests::Cancellation::default(),
+            &Ok((json!({"session":{"sessionId":"seat"}}), None)),
+            &output,
+            |id, accepted| {
+                assert_eq!(id, "seat");
+                assert!(!accepted);
+                finished = true;
+                Ok(gfn::SessionCreateOutcome::Cleaned)
+            },
+        );
+        assert!(finished);
+    }
 
     #[test]
     fn rpc_diagnostics_keep_only_the_upstream_http_status() {

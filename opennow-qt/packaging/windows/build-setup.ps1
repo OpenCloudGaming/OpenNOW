@@ -13,6 +13,8 @@ if ($Arch -notin @("x64", "arm64")) {
 }
 . "$PSScriptRoot/../windows-release.ps1"
 $Payload = Resolve-OpenNowSetupPayload -Root $Payload
+$messages = Get-Content -Raw -LiteralPath "$PSScriptRoot/../../../locales/en.json" | ConvertFrom-Json -AsHashtable
+$destinationConflictMessage = $messages.windowsSetup.destinationConflict.Replace("'", "''")
 
 $expectedHash = "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732"
 $installerUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
@@ -44,7 +46,7 @@ $outputDirectory = Split-Path -Parent $OutputFile
 $baseName = [IO.Path]::GetFileNameWithoutExtension($OutputFile)
 New-Item -ItemType Directory -Force $outputDirectory | Out-Null
 $script = (Resolve-Path "$PSScriptRoot/setup.iss").Path
-& $iscc $script "/DPayload=$Payload" "/DAppVersion=$Version" "/DArch=$Arch" "/O$outputDirectory" "/F$baseName"
+& $iscc $script "/DPayload=$Payload" "/DAppVersion=$Version" "/DArch=$Arch" "/DDestinationConflictMessage=$destinationConflictMessage" "/O$outputDirectory" "/F$baseName"
 if ($LASTEXITCODE -ne 0) {
     throw "ISCC failed with exit code $LASTEXITCODE"
 }

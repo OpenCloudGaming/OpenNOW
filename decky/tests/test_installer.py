@@ -1,4 +1,5 @@
 import io
+import hashlib
 import subprocess
 import tempfile
 import threading
@@ -21,7 +22,9 @@ class DownloadTests(unittest.TestCase):
     def test_download_reports_progress_and_leaves_no_partial_file(self):
         seen = []
         with mock.patch.object(installer, "open_url", return_value=FakeResponse(b"x" * 4 * installer.CHUNK)):
-            installer.download("https://github.com/a", self.destination, 0, lambda phase, f: seen.append(f), threading.Event())
+            data = b"x" * 4 * installer.CHUNK
+            installer.download("https://github.com/a", self.destination, len(data), hashlib.sha256(data).hexdigest(),
+                               lambda phase, f: seen.append(f), threading.Event())
         self.assertEqual(seen[-1], 1.0)
         self.assertEqual(self.destination.stat().st_size, 4 * installer.CHUNK)
         self.assertFalse(self.destination.with_name("OpenNOW.flatpak.part").exists())
@@ -33,15 +36,28 @@ class DownloadTests(unittest.TestCase):
             cancelled.set()
 
         with mock.patch.object(installer, "open_url", return_value=FakeResponse(b"x" * 4 * installer.CHUNK)), \
+                mock.patch.object(installer, "signed_manifest", return_value={"size": 4 * installer.CHUNK, "sha256": "a" * 64}), \
                 mock.patch.object(installer, "run_checked") as run:
             with self.assertRaises(installer.Cancelled):
-                installer.install_bundle("https://github.com/a", 0, self.destination.parent, progress, cancelled)
+                installer.install_bundle(support.selected_asset(), self.destination.parent, progress, cancelled)
         run.assert_not_called()
         self.assertEqual(list(self.destination.parent.iterdir()), [])
 
     def test_downloads_only_come_from_github(self):
         with self.assertRaises(ValueError):
-            installer.download("https://example.com/a", self.destination, 0, lambda *a: None, threading.Event())
+            installer.download("https://example.com/a", self.destination, 6, "a" * 64, lambda *a: None, threading.Event())
+
+    def test_truncated_oversized_and_corrupted_downloads_fail_and_remove_partials(self):
+        for data in (b"bundl", b"bundle!", b"tamper"):
+            for length in (None, str(len(data))):
+                response = FakeResponse(data)
+                response.headers = {} if length is None else {"Content-Length": length}
+                with self.subTest(data=data, length=length), \
+                        mock.patch.object(installer, "open_url", return_value=response), \
+                        self.assertRaises(installer.InstallError):
+                    installer.download("https://github.com/a", self.destination, 6,
+                                       hashlib.sha256(b"bundle").hexdigest(), lambda *a: None, threading.Event())
+                self.assertEqual(list(self.destination.parent.iterdir()), [])
 
 
 
@@ -51,6 +67,8 @@ class FlatpakStepTests(unittest.TestCase):
         self.calls = []
         self.installed = False
         self.progress = []
+        self.selected = support.selected_asset()
+        mock.patch.object(installer, "signed_manifest", return_value={"size": 6, "sha256": hashlib.sha256(b"bundle").hexdigest()}).start()
         mock.patch.object(installer, "download", side_effect=lambda url, path, *a: path.write_bytes(b"bundle")).start()
         mock.patch.object(installer.shutil, "which", return_value="/usr/bin/flatpak").start()
         mock.patch.object(installer.host, "run", side_effect=self.run_flatpak).start()
@@ -73,16 +91,16 @@ class FlatpakStepTests(unittest.TestCase):
         return path
 
     def install(self):
-        installer.install_bundle("https://github.com/a", 0, self.work, lambda phase, f: self.progress.append((phase, f)),
+        installer.install_bundle(self.selected, self.work, lambda phase, f: self.progress.append((phase, f)),
                                  threading.Event())
 
     def test_steam_deck_reinstalls_through_the_flatpak_cli(self):
         self.installed = True
         self.install()
         self.assertIn(["flatpak", "install", "--user", "--noninteractive", "-y", "--reinstall",
-                       str(self.work / "OpenNOW.flatpak")], self.calls)
+                       str(self.work / self.selected["name"])], self.calls)
         self.assertEqual(self.progress[-1], ("install", 1.0))
-        self.assertFalse((self.work / "OpenNOW.flatpak").exists())
+        self.assertFalse((self.work / self.selected["name"]).exists())
 
     def test_droiddeck_installs_through_its_helper_with_progress(self):
         self.helper("echo 'not json'\n"
@@ -91,7 +109,7 @@ class FlatpakStepTests(unittest.TestCase):
                     "touch \"$(dirname \"$0\")/installed\"\n"
                     "echo '{\"e\":\"done\"}'\n")
         self.install()
-        self.assertEqual((self.work / "args").read_text().strip(), f"install-bundle {self.work / 'OpenNOW.flatpak'}")
+        self.assertEqual((self.work / "args").read_text().strip(), f"install-bundle {self.work / self.selected['name']}")
         self.assertNotIn("install", [command[1] for command in self.calls])
         self.assertEqual([f for phase, f in self.progress if phase == "install"], [0.0, 0.25, 1.0, 1.0])
 

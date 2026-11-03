@@ -5,10 +5,10 @@ layout(set = 0, binding = 1) uniform sampler2D chroma_texture;
 
 layout(push_constant) uniform Conversion {
     vec2 texture_scale;
+    vec2 chroma_offset;
     uint color_matrix;
     uint full_range;
     uint sample_bits;
-    float chroma_offset_x;
 } conversion;
 
 layout(location = 0) in vec2 texture_coordinates;
@@ -19,7 +19,7 @@ void main() {
     // rows off the bottom of a decoder buffer, which must not shift the picture.
     vec2 source = texture_coordinates * conversion.texture_scale;
     float y = texture(luma_texture, source).r;
-    vec2 uv = texture(chroma_texture, source + vec2(conversion.chroma_offset_x, 0.0)).rg;
+    vec2 uv = texture(chroma_texture, source + conversion.chroma_offset).rg;
     bool ten_bit = conversion.sample_bits != 8;
     if (conversion.sample_bits == 16) {
         y *= 65535.0 / 65472.0;

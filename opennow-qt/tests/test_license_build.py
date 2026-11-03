@@ -18,7 +18,8 @@ class LicenseBuildContractTest(unittest.TestCase):
         version = subprocess.check_output(["rustc", "-vV"], text=True)
         cls.host = version.split("host: ", 1)[1].splitlines()[0]
 
-    def build_notices(self, app_target="", env_target="", config_target="", fast=False):
+    def build_notices(self, app_target="", env_target="", config_target="", fast=False,
+                      hardware_only=False):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
             build = source / "build"
@@ -74,7 +75,9 @@ include("{QT_SOURCE.as_posix()}/cmake/NativeRuntime.cmake")
                 env["CARGO_BUILD_TARGET"] = env_target
             result = subprocess.run(
                 ["cmake", "-S", str(source), "-B", str(build), "-G", "Unix Makefiles",
-                 "-DCMAKE_BUILD_TYPE=Release"], env=env, capture_output=True, text=True,
+                 "-DCMAKE_BUILD_TYPE=Release",
+                 f'-DNO_SOFT_RENDERING={"ON" if hardware_only else "OFF"}'],
+                env=env, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             rule = (build / "CMakeFiles/opennow-license-notices.dir/build.make").read_text()
@@ -110,6 +113,11 @@ include("{QT_SOURCE.as_posix()}/cmake/NativeRuntime.cmake")
     def test_foreign_app_and_environment_targets_keep_license_tool_on_host(self):
         foreign = "aarch64-unknown-linux-gnu" if not self.host.startswith("aarch64-") else "x86_64-unknown-linux-gnu"
         self.build_notices(app_target=foreign, env_target=foreign, config_target=foreign, fast=True)
+
+    def test_hardware_only_cross_build_keeps_license_tool_on_host(self):
+        foreign = "aarch64-unknown-linux-gnu" if not self.host.startswith("aarch64-") else "x86_64-unknown-linux-gnu"
+        self.build_notices(app_target=foreign, env_target=foreign, config_target=foreign,
+                           fast=True, hardware_only=True)
 
 
 if __name__ == "__main__":

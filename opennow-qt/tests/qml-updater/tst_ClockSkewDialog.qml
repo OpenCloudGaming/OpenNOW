@@ -15,6 +15,9 @@ Item {
         onDismissed: message = ""
     }
 
+    SignalSpy { id: rejected; target: dialog; signalName: "rejected" }
+    SignalSpy { id: dismissed; target: dialog; signalName: "dismissed" }
+
     TestCase {
         name: "ClockSkewDialog"
         when: windowShown
@@ -23,6 +26,20 @@ Item {
             dialog.message = ""
             dialog.sessionSafe = true
             tryCompare(dialog, "visible", false)
+            rejected.clear()
+            dismissed.clear()
+        }
+
+        function test_escape_rejects_and_dismisses_each_new_warning() {
+            for (let attempt = 0; attempt < 2; ++attempt) {
+                dialog.message = "Clock warning " + attempt
+                tryCompare(dialog, "opened", true)
+                keyClick(Qt.Key_Escape)
+                tryCompare(dialog, "visible", false)
+                compare(dialog.message, "")
+                compare(rejected.count, attempt + 1)
+                compare(dismissed.count, attempt + 1)
+            }
         }
 
         function test_wrong_clock_is_announced_and_dismissible() {

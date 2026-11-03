@@ -48,7 +48,6 @@ export function InstallProgressRows({ progress }: { progress: InstallProgress })
           nProgress={measured ? progress.fraction * 100 : undefined}
           indeterminate={!measured}
           sOperationText={downloading ? "Downloading OpenNOW " + progress.version : "Installing OpenNOW " + progress.version}
-          sTimeRemaining={measured ? Math.round(progress.fraction * 100) + "%" : undefined}
           bottomSeparator="none"
         />
       </PanelSectionRow>
@@ -163,7 +162,7 @@ function QuickLaunch() {
       )}
       {games.slice(0, QUICK_LAUNCH_LIMIT).map((game) => (
         <PanelSectionRow key={game.appId}>
-          <Field label={game.title} onActivate={() => launchGame(game.appId, game.title).catch(report)} highlightOnFocus focusable>
+          <Field label={game.title} onActivate={() => launchGame(game.appId).catch(report)} highlightOnFocus focusable>
             <StoreIcon store={game.store} />
           </Field>
         </PanelSectionRow>

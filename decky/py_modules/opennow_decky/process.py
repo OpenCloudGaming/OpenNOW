@@ -1,10 +1,13 @@
 import fcntl
 import os
-import signal
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+from . import host
+from .install import Install
 
 LOCK_NAME = "core.lock"
 
@@ -15,16 +18,6 @@ def process_name(pid: int, proc: str = "/proc") -> str:
             return handle.read().strip()
     except OSError:
         return ""
-
-
-def parent_pid(pid: int, proc: str = "/proc") -> int | None:
-    try:
-        with open(f"{proc}/{pid}/stat", encoding="utf-8") as handle:
-            stat = handle.read()
-    except OSError:
-        return None
-    fields = stat[stat.rfind(")") + 2:].split()
-    return int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else None
 
 
 def lock_holder(data_dir: Path, locks_path: str = "/proc/locks", proc: str = "/proc") -> int | None:
@@ -68,42 +61,6 @@ def core_lock(data_dir: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return process_name(pid) != "" and not zombie(pid)
-
-
-def zombie(pid: int) -> bool:
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            stat = handle.read()
-    except OSError:
-        return False
-    return stat[stat.rfind(")") + 2:].startswith("Z")
-
-
-def stop(pid: int, grace_seconds: float = 5.0, poll_seconds: float = 0.1) -> bool:
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return False
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        if not alive(pid):
-            return True
-        time.sleep(poll_seconds)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    return True
-
-
 def released(data_dir: Path, timeout_seconds: float, poll_seconds: float = 0.1) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while lock_holder(data_dir) is not None:
@@ -113,16 +70,14 @@ def released(data_dir: Path, timeout_seconds: float, poll_seconds: float = 0.1) 
     return True
 
 
-def terminate(data_dir: Path, grace_seconds: float = 5.0) -> bool:
-    core = lock_holder(data_dir)
-    if core is None:
+def request_quit(install: Install) -> bool:
+    try:
+        result = host.run([install.exe, *install.args, "--request-quit"], timeout=125)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("OpenNOW did not finish closing. The running app was not terminated. Check OpenNOW before trying again.") from error
+    if result.returncode == 2:
         return False
-    if not process_name(core).startswith("opennow"):
-        return released(data_dir, grace_seconds)
-    app = parent_pid(core)
-    if app and process_name(app).startswith("opennow"):
-        stop(app, grace_seconds)
-        if released(data_dir, grace_seconds):
-            return True
-    stop(core, grace_seconds)
-    return released(data_dir, grace_seconds)
+    if (result.returncode != 0 or "opennow-quit-complete" not in result.stdout.splitlines()
+            or not released(Path(install.data_dir), 5)):
+        raise RuntimeError("OpenNOW did not finish closing. Update OpenNOW if it does not support graceful shutdown. The running app was not terminated.")
+    return True

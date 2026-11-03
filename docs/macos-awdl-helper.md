@@ -74,7 +74,7 @@ The ad-hoc packaging path signs the helper before sealing the outer app and runs
 do not identify a publisher or provide notarization. Administrator approval is the
 trust decision for those builds.
 
-`macos_release.py` discovers nested Mach-O files, verifies their ARM64 architecture,
+`macos_release.py` discovers nested Mach-O files, verifies the selected ARM64 or x86_64 architecture,
 and signs them inside-out with Developer ID, hardened runtime, and a timestamp.
 The helper receives no app entitlements. The existing JIT and microphone entitlements
 remain limited to the outer application. No `SMPrivilegedExecutables` declaration,

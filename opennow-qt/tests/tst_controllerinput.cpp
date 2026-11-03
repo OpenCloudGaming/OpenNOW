@@ -1,4 +1,6 @@
+#include "acceptance/VirtualControllerInput.h"
 #include "input/ControllerInput.h"
+#include "SdlJoystickTestSession.h"
 
 #include <QCoreApplication>
 #include <QEvent>
@@ -6,6 +8,7 @@
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTimer>
 
 class ControllerKeySink final : public QObject
 {
@@ -13,16 +16,20 @@ public:
     int trackedKey = Qt::Key_Left;
     int leftPresses = 0;
     int repeatedLeftPresses = 0;
+    int releases = 0;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event->type() == QEvent::KeyPress) {
+        if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
             const auto *key = static_cast<QKeyEvent *>(event);
             if (key->key() == trackedKey
                     && key->nativeScanCode() == ControllerInput::syntheticControllerScanCode) {
-                ++leftPresses;
-                if (key->isAutoRepeat()) ++repeatedLeftPresses;
+                if (event->type() == QEvent::KeyRelease) ++releases;
+                else {
+                    ++leftPresses;
+                    if (key->isAutoRepeat()) ++repeatedLeftPresses;
+                }
             }
         }
         return QObject::eventFilter(watched, event);
@@ -39,7 +46,55 @@ class ControllerInputTest final : public QObject
 {
     Q_OBJECT
 
+private:
+    SdlJoystickTestSession m_joysticks;
+
 private slots:
+    void initTestCase()
+    {
+        QVERIFY2(m_joysticks.ready(), SDL_GetError());
+    }
+
+    void cleanup()
+    {
+        QVERIFY2(m_joysticks.reset(), SDL_GetError());
+    }
+
+    void smokeControllerPulseSurvivesDeferredPolling()
+    {
+        ControllerInput input;
+        ControllerKeySink sink;
+        sink.trackedKey = Qt::Key_Escape;
+        QCoreApplication::instance()->installEventFilter(&sink);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.name = "OpenNOW deferred smoke controller pulse";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(pollTimer);
+        pollTimer->stop();
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QCoreApplication::sendPostedEvents();
+        QCOMPARE(sink.leftPresses, 0);
+        QCOMPARE(sink.releases, 0);
+        QVERIFY(setSmokeControllerButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QVERIFY(setSmokeControllerButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QTRY_COMPARE(sink.releases, 1);
+        QCOMPARE(sink.leftPresses, 1);
+        QCOMPARE(sink.repeatedLeftPresses, 0);
+    }
+
     void digitalDpadRepeatsUntilReleased_data()
     {
         QTest::addColumn<int>("button");
@@ -89,9 +144,14 @@ private slots:
         input.setInputSuspended(false);
         QTest::qWait(350);
         QCOMPARE(sink.leftPresses, count);
+        auto *pollTimer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(pollTimer);
+        pollTimer->stop();
         QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, false));
+        SDL_UpdateJoysticks();
         QTest::qWait(30);
         QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, true));
+        pollTimer->start();
         QTRY_COMPARE(sink.leftPresses, count + 1);
         input.setShellCaptureEnabled(false);
         count = sink.leftPresses;
@@ -245,6 +305,126 @@ private slots:
 
         QVERIFY(SDL_DetachVirtualJoystick(id));
         QTRY_COMPARE_WITH_TIMEOUT(input.controllerCount(), 0, 2000);
+    }
+
+    void shellOwnedButtonsDoNotReplayAfterTransfer_data()
+    {
+        QTest::addColumn<int>("button");
+        QTest::addColumn<bool>("pumpPress");
+        QTest::addColumn<bool>("releaseBeforeTransfer");
+        QTest::addColumn<bool>("suspended");
+        for (const auto button : {SDL_GAMEPAD_BUTTON_BACK, SDL_GAMEPAD_BUTTON_START}) {
+            const auto name = QByteArray(SDL_GetGamepadStringForButton(button));
+            QTest::newRow((name + "-queued-tap").constData()) << int(button) << false << true << false;
+            QTest::newRow((name + "-queued-release").constData()) << int(button) << true << true << false;
+            QTest::newRow((name + "-queued-held-press").constData()) << int(button) << false << false << false;
+            QTest::newRow((name + "-held-press").constData()) << int(button) << true << false << false;
+            QTest::newRow((name + "-suspended-tap").constData()) << int(button) << false << true << true;
+        }
+        QTest::newRow("south-queued-tap") << int(SDL_GAMEPAD_BUTTON_SOUTH) << false << true << false;
+    }
+
+    void shellOwnedButtonsDoNotReplayAfterTransfer()
+    {
+        QFETCH(int, button);
+        QFETCH(bool, pumpPress);
+        QFETCH(bool, releaseBeforeTransfer);
+        QFETCH(bool, suspended);
+        ControllerInput input;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        QSignalSpy actions(&input, &ControllerInput::localActionRequested);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        descriptor.name = "OpenNOW delayed ownership events";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        auto *timer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(timer);
+        timer->stop();
+        const auto pump = [&input] { QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection)); };
+        const auto press = [joystick, button](bool down) {
+            QVERIFY(SDL_SetJoystickVirtualButton(joystick, button, down));
+            SDL_UpdateJoysticks();
+        };
+        if (suspended) {
+            input.setShellCaptureEnabled(false);
+            input.setInputSuspended(true);
+        }
+        press(true);
+        if (pumpPress) pump();
+        if (releaseBeforeTransfer) press(false);
+        QTest::qSleep(2);
+        snapshots.clear();
+        if (suspended) input.setInputSuspended(false);
+        else input.setShellCaptureEnabled(false);
+        pump();
+        QTest::qSleep(100);
+        pump();
+        if (!releaseBeforeTransfer) {
+            press(false);
+            pump();
+        }
+        QTest::qSleep(100);
+        pump();
+        QVERIFY(!snapshots.isEmpty());
+        for (const auto &snapshot : snapshots) QCOMPARE(snapshot.at(2).toUInt(), 0u);
+        QCOMPARE(actions.size(), 0);
+
+        snapshots.clear();
+        press(true);
+        pump();
+        press(false);
+        pump();
+        bool forwarded = false;
+        for (const auto &snapshot : snapshots) forwarded |= snapshot.at(2).toUInt() != 0;
+        QVERIFY(forwarded);
+        QTest::qSleep(100);
+        pump();
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0u);
+    }
+
+    void pendingChordTapIsCancelledOnOwnershipTransfer()
+    {
+        ControllerInput input;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        descriptor.name = "OpenNOW pending replay transfer";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        input.setShellCaptureEnabled(false);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        auto *timer = input.findChild<QTimer *>(QStringLiteral("controllerPollTimer"));
+        QVERIFY(timer);
+        timer->stop();
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_BACK, true));
+        SDL_UpdateJoysticks();
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_BACK, false));
+        SDL_UpdateJoysticks();
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QCOMPARE(snapshots.last().at(2).toUInt(), 0x0020u);
+        input.setShellCaptureEnabled(true);
+        snapshots.clear();
+        input.setShellCaptureEnabled(false);
+        QTest::qSleep(100);
+        QVERIFY(QMetaObject::invokeMethod(&input, "poll", Qt::DirectConnection));
+        QVERIFY(!snapshots.isEmpty());
+        for (const auto &snapshot : snapshots) QCOMPARE(snapshot.at(2).toUInt(), 0u);
     }
 
     void idleMetadataDoesNotInvalidateTheUi()

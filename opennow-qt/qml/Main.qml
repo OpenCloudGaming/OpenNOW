@@ -38,14 +38,63 @@ ApplicationWindow {
         visible: windowTheme.clientDecorations && window.visibility === ApplicationWindow.Windowed
     }
     property bool applicationCloseConfirmed: false
+    property bool sessionQuitPending: false
+    property bool sessionQuitStopping: false
+    signal sessionQuitCancelled()
+
+    function requestSessionQuit() {
+        if (window.sessionQuitPending)
+            return
+        window.sessionQuitPending = true
+        AppController.showOverlay("application-quit-confirm")
+    }
+
+    function cancelSessionQuit() {
+        if (!window.sessionQuitPending)
+            return
+        window.sessionQuitPending = false
+        window.sessionQuitStopping = false
+        window.sessionQuitCancelled()
+        if (AppController.overlay === "application-quit-confirm")
+            AppController.showOverlay("")
+    }
+
+    function confirmApplicationQuit() {
+        if (window.sessionQuitPending) {
+            if (window.sessionQuitStopping)
+                return
+            window.sessionQuitStopping = true
+            AppController.showOverlay("")
+            ShellStore.stopStreamingSession()
+            window.finishSessionQuit()
+            return
+        }
+        window.applicationCloseConfirmed = true
+        window.close()
+    }
+
+    function finishSessionQuit() {
+        if (!window.sessionQuitStopping || !ShellStore.sessionWorkIdle || CoreClient.allocationsSettled !== true)
+            return
+        window.applicationCloseConfirmed = true
+        window.close()
+    }
+
     property bool librarySearchPending: false
     property string pendingConsoleScreenshotSession: ""
     property int pendingConsoleScreenshotFrames: 0
-    readonly property Item consoleModalFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+    readonly property Item consoleSheetFocusOwner: consoleSystemWarning.opened ? consoleSystemWarning
+        : consoleStreamEndNotice.opened ? consoleStreamEndNotice
         : (!window.desktopSurfaceActive || AppController.overlay === "session-report")
             && consoleOverlayHost.supportedOverlay ? consoleOverlayHost : null
+    readonly property Item consoleModalFocusOwner: !window.desktopSurfaceActive && clockSkewDialog.visible
+        ? clockSkewDialog.contentItem : consoleSheetFocusOwner
     onConsoleModalFocusOwnerChanged: if (consoleModalFocusOwner) Qt.callLater(window.restoreConsoleModalFocus)
     onClosing: event => {
+        if (window.sessionQuitStopping && !applicationCloseConfirmed) {
+            event.accepted = false
+            return
+        }
         if (!applicationCloseConfirmed && ShellStore.applicationQuitNeedsConfirmation) {
             event.accepted = false
             AppController.showOverlay("application-quit-confirm")
@@ -251,6 +300,7 @@ ApplicationWindow {
 
     Connections {
         target: ShellStore
+        function onSessionWorkIdleChanged() { Qt.callLater(window.finishSessionQuit) }
         function onActiveSessionChanged() {
             if (!ShellStore.activeSession
                     || String(ShellStore.activeSession.sessionId || "") !== window.pendingConsoleScreenshotSession)
@@ -280,6 +330,12 @@ ApplicationWindow {
     }
 
     Connections {
+        target: CoreClient
+        function onAllocationsSettledChanged() { Qt.callLater(window.finishSessionQuit) }
+        ignoreUnknownSignals: true
+    }
+
+    Connections {
         target: window.pendingConsoleScreenshotSession !== "" ? window : null
         function onFrameSwapped() {
             if (!window.active || !window.consoleStreamReady || AppController.overlay !== ""
@@ -305,6 +361,10 @@ ApplicationWindow {
         const owner = window.consoleModalFocusOwner
         if (!window.active || !owner)
             return
+        if (owner === clockSkewDialog.contentItem) {
+            clockSkewDialog.claimKeyboard()
+            return
+        }
         for (let item = window.activeFocusItem; item; item = item.parent) {
             if (item === owner)
                 return
@@ -411,6 +471,8 @@ ApplicationWindow {
     }
 
     function quitIfSessionFinished() {
+        if (window.sessionQuitPending)
+            return
         if (!QuitAfterSession)
             return
         if (ShellStore.forceNewAfterStop || ShellStore.launchInspectRequestId !== ""
@@ -826,6 +888,9 @@ ApplicationWindow {
                 Qt.callLater(() => window.showConfiguredStreamStats())
             }
             function onOverlayChanged() {
+                if (window.sessionQuitPending && !window.sessionQuitStopping
+                        && AppController.overlay !== "application-quit-confirm")
+                    window.cancelSessionQuit()
                 if (AppController.overlay !== "")
                     window.pendingConsoleScreenshotSession = ""
                 if (window.desktopSurfaceActive && window.activeRoute === "stream"
@@ -984,13 +1049,14 @@ ApplicationWindow {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
         quittingApplication: true
+        endingSessionOnQuit: window.sessionQuitPending
         opened: window.desktopSurfaceActive && AppController.overlay === "application-quit-confirm"
         z: 1200
-        onCancelRequested: AppController.showOverlay("")
-        onConfirmRequested: {
-            window.applicationCloseConfirmed = true
-            window.close()
+        onCancelRequested: {
+            window.cancelSessionQuit()
+            AppController.showOverlay("")
         }
+        onConfirmRequested: window.confirmApplicationQuit()
     }
 
     DesktopStreamExitConfirm {
@@ -1004,6 +1070,33 @@ ApplicationWindow {
         z: 1200
         onCancelRequested: ShellStore.cancelAccountSwitch()
         onConfirmRequested: ShellStore.confirmAccountSwitch()
+    }
+
+    Item {
+        readonly property real consoleScale: Math.min(parent.width / 1920, parent.height / 1080)
+        visible: consoleStreamEndNotice.present
+        width: parent.width / consoleScale
+        height: parent.height / consoleScale
+        scale: consoleScale
+        transformOrigin: Item.TopLeft
+        z: 1150
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+
+        // The desktop shell owns its own notice; the console surface shows this
+        // one, so a surface switch hands the same pending notice across.
+        ConsoleStreamEndNotice {
+            id: consoleStreamEndNotice
+            anchors.fill: parent
+            opened: !window.desktopSurfaceActive && ShellStore.streamEndNotice !== null
+                && AppController.overlay === "" && !window.onboardingVisible && window.consoleLaunchInputReady
+                && !consoleSystemWarning.opened && ["stream", "inserting", "joining"].indexOf(window.activeRoute) < 0
+            onOpenedChanged: if (!opened) Qt.callLater(() => {
+                if (window.desktopSurfaceActive || window.consoleModalFocusOwner || !routeLoader.item)
+                    return
+                routeLoader.item.forceActiveFocus()
+            })
+        }
     }
 
     Item {
@@ -1039,9 +1132,9 @@ ApplicationWindow {
                 : switchingAccount ? qsTr("Switch to %1?").arg(switchTargetName) : endingSession
                 ? (waitingForSession ? qsTr("Leave this session request?") : qsTr("End this session?"))
                 : qsTr("Update could not be completed")
-            message: quittingApplication
+            message: quittingApplication && !window.sessionQuitPending
                 ? qsTr("OpenNOW will close and disconnect from any active cloud session.")
-                : switchingAccount
+                : switchingAccount || quittingApplication
                 ? qsTr("Your game will close on the remote rig. This session cannot be resumed after it ends.")
                 : endingSession
                 ? (waitingForSession ? qsTr("Your session request will be cancelled and you will leave the queue.")
@@ -1076,8 +1169,7 @@ ApplicationWindow {
             })
             onConfirmRequested: {
                 if (quittingApplication) {
-                    window.applicationCloseConfirmed = true
-                    window.close()
+                    window.confirmApplicationQuit()
                 } else if (switchingAccount) {
                     ShellStore.confirmAccountSwitch()
                 } else if (endingSession) {
@@ -1284,10 +1376,12 @@ ApplicationWindow {
     }
 
     ClockSkewDialog {
+        id: clockSkewDialog
         parent: Overlay.overlay
         anchors.centerIn: parent
         message: ShellStore.clockSkewDismissed ? "" : ShellStore.clockSkewMessage
-        sessionSafe: window.desktopSurfaceActive && ShellStore.clockSkewSessionSafe
+        sessionSafe: ShellStore.clockSkewSessionSafe
+            && (window.desktopSurfaceActive || window.consoleSheetFocusOwner === null)
         onDismissed: ShellStore.clockSkewDismissed = true
     }
 

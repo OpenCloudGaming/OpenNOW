@@ -69,7 +69,7 @@ impl Session {
         let response = self.request(
             "hello",
             "core.hello",
-            json!({"protocolVersion":5,"shell":"qt"}),
+            json!({"protocolVersion":6,"shell":"qt"}),
         );
         assert_eq!(response["ok"], true);
     }

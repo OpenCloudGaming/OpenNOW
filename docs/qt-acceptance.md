@@ -22,6 +22,79 @@ When checking this path, use a native Windows window. The offscreen platform can
 the explicit adapter-selection precondition before any layout workload starts. Set
 `QT_FORCE_STDERR_LOGGING=1` to capture Qt diagnostics from the GUI executable.
 
+## Windows stream pacing and Cloud G-Sync
+
+Rebuild Qt and the embedded streamer together with FFI ABI 18. The Windows main window
+requests an opaque surface so Qt can use an HWND flip swapchain rather than requiring
+alpha composition. Internal QML overlays remain on the same video surface.
+Windows startup defaults `QT_QPA_UPDATE_IDLE_TIME` to `0` before Qt creates the
+application, preserving explicit overrides. This removes Qt's extra update-request idle
+timer delay while retaining coalesced requests. It does not start a polling render loop.
+
+During a stream, fixed-refresh presentation requests a maximum queue latency of one
+through the Qt swapchain's waitable interface. Cloud G-Sync can select tearing-enabled,
+arrival-driven presentation only when the core-resolved feature is enabled, the window
+is active, exposed and fullscreen, and the matching NVIDIA output reports VRR capability
+and a driver request or enabled state. The nonwaitable path limits the DXGI device queue
+to one. Focus loss, windowed mode and unsupported output retain VSync; stream stop restores
+the original swap flags and latency settings. Eligibility is not proof of VRR scanout.
+This does not implement NVIDIA's separate hardware-timed composition presenter or a
+local Reflex Sleep/marker loop. Other platforms retain their existing presentation policy.
+
+Timing-v5 feedback uses exact source-timestamp correlation and coherent DXGI presentation
+statistics. Qt `frameSwapped` remains queued-presentation diagnostics, not scanout proof.
+The rendering estimate uses measured CPU preparation/rendering time, not GPU service time.
+Reports require supported, explicit server estimator settings and sufficient valid samples;
+unsupported or ambiguous timing suppresses feedback instead of sending nominal FPS values.
+See the [FFI timing contract](../native/opennow-streamer/crates/opennow-streamer-ffi/README.md#measured-presentation-feedback-introduced-in-abi-16).
+
+Run the focused checks before hardware acceptance:
+
+```sh
+ctest --test-dir build/opennow-qt --output-on-failure -R 'opennow-(senderpacing|streampresentation.*|nativepresentation|nativeframegeneration|nativestreamruntime|streamvideo)-tests'
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-transport presentation
+```
+
+On a Windows NVIDIA/VRR display, compare the same game, stream FPS, codec and color format
+with frame generation and upscaling off. Check windowed/fullscreen operation, focus loss,
+F3/Ctrl+G overlays, resizing, HDR changes, display migration, reconnect and session restart.
+Inspect PresentMon presentation mode, cadence, repeated/dropped frames and latency, plus
+the driver/display VRR indicator. Confirm that capability logs do not substitute for actual
+VRR engagement. Check unavailable statistics and server feedback-mode changes without
+inventing timing samples. Linux/offscreen smoke tests do not validate this hardware path.
+
+### Verify sender-timed frames separately from local VRR
+
+Use a matching Qt executable and ABI-18 native library. Disable frame generation for the
+comparison. Keep the game, resolution, codec, color format, bitrate and display mode unchanged.
+
+For recognized normal NVST frame prefixes, inspect the `Sender frame pacing` diagnostic.
+`metadata=correlated` means that a unique decoder timestamp matched the sender metadata.
+It does not mean that the server accepted Cloud G-Sync. `sender_paced=1` requires a nonzero
+per-frame `0x200` flag. A frame without that flag retains immediate, latest-frame presentation.
+The first I-frame alone cannot establish the mode used by later frames.
+
+For sender-paced frames, compare changing source cadence rather than expecting a constant
+selected FPS. Qt derives deadlines from capture-counter deltas, with a separate extension-clock
+fallback when the primary counter is zero. It retains at most one unrecorded frame and wakes
+through a GUI timer without sleeping on the GUI or render thread. Clock-source changes,
+backward timestamps, epoch changes and long stalls reset the timing anchor. The maximum
+future wait is two observed source intervals, capped at two 30-FPS intervals. This does not
+reproduce NVIDIA's full native frame queue or recover frames lost by the latest-wins mailbox.
+
+Check `senderTimingFrames`, `senderPacedFrames`, `senderDeferredFrames` and
+`senderFramePending` in the swap diagnostics. Repeat with F3 and Ctrl+G overlays open,
+in windowed and fullscreen modes, and after minimizing, resizing, reconnecting and restarting.
+The presenter and transport must stay alive across local overlays. Optional interpolation
+does not run on a sender-paced frame, so it cannot replace that frame's timing with its own clock.
+With FSR enabled and interpolation disabled, `fsrResourceGeneration` must remain unchanged
+across sender-paced frames of the same size and format. It counts successful FSR resource
+creations over the render callback's lifetime, including valid rebuilds after graphics changes.
+
+The explicit NVIDIA `SetVRRState` request is not enabled. Its private ABI does not establish
+baseline restoration or safe backbuffer replacement. The existing DXGI eligibility path remains
+separate from this sender-timing path and does not prove VRR scanout.
+
 ## FSR 1 upscaling on Windows and Linux
 
 Stream settings and onboarding offer Off or FSR 1 on Windows and Linux. macOS retains
@@ -63,6 +136,54 @@ OpenNOW Socket → Desktop Renew → Renew 08 and Renew 09a–c in Paper. These 
 not network quality or hardware decode. Unsupported FEC recovery and decoder queue values are
 not populated from the design's example numbers. The bitrate bar divides measured Mbps by the
 prepared session's allocation and clamps its fill to 0–100%.
+
+## Steam Deck mouse latency measurements
+
+Compare OpenNOW and the official client on the same display output, codec, resolution,
+stream FPS and game settings. Record the requested FPS separately from measured stream
+FPS and display refresh. A requested 90 FPS stream on a 60 Hz output does not establish
+that either client receives 90 FPS or that a presentation queue is growing.
+
+While the cursor feels delayed, capture F3 and export diagnostics before stopping the
+session. Include Desktop or Game Mode, windowed or fullscreen, frame-generation state,
+the mouse model and its actual report rate. `/sys/module/usbhid/parameters/mousepoll=0`
+is a driver override value, not a measurement of the mouse's report rate.
+
+The embedded NVST input path writes payload-free `INFO input-timing` JSON summaries
+to `native-streamer.log` at most once per one-second telemetry interval while mouse
+input is being submitted. The existing bounded asynchronous logger persists these
+summaries for an export after stopping, subject to log rotation or diagnostic-queue
+pressure. No pointer coordinates, button states or key values are logged.
+
+`relative` and `absolute` are separate; an unsampled mode is null. `submitted` counts
+transport-submission calls returning success in that interval. `windowSamples` is bounded
+to the latest 256 measured submissions per mode. `captureToTransportSubmitMs` reports
+nearest-rank p50, p95 and maximum over that window, using the original capture time
+even after an input-readiness retry. Windows native capture timestamps originate in
+the capture owner; Qt mouse timestamps originate when FFI enqueues the event, after
+Qt delivery. These are not hardware-to-network or end-to-end latency measurements.
+
+This stage includes native input-queue residence, polling and the transport submission call.
+Transport success does not prove admission or delivery: motion may be discarded under
+pressure, which the existing `nvst-input admission dropped_motion` logs report separately.
+It excludes OS/compositor-to-Qt delivery, the transport worker's pending SCTP queue,
+network delivery, host input processing and scanout. Decoder residence and Qt
+submit-to-swap are separate stages and cannot fill those gaps. In particular,
+submit-to-swap is not input-to-photon latency. Low capture-to-submission measurements
+rule out only that measured stage, not the reported cursor delay.
+
+Account-free checks:
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-core mouse
+QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-streamvideo-tests absoluteMouseReportsDoNotWaitForAFrame
+```
+
+The synthetic timing tests inject capture and queue times. The Qt test dispatches
+mouse-report bursts through the real window into fake native operations without
+processing a rendered frame, in windowed and fullscreen modes with capture enabled
+and disabled for overlays. These checks do not reproduce SteamOS, physical mouse
+reporting, VA-API decode latency or a GFN session.
 
 ## Check existing-session recovery
 

@@ -82,8 +82,18 @@ add_custom_target(opennow-license-notices ALL
 )
 add_dependencies(opennow-qt opennow-license-notices)
 
+option(NO_SOFT_RENDERING "Forbid software video decoding and graphics composition on Linux" OFF)
+if(NO_SOFT_RENDERING)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "NO_SOFT_RENDERING is supported only on Linux")
+    endif()
+    add_compile_definitions(NO_SOFT_RENDERING)
+endif()
 set(OPENNOW_STREAMER_TARGET_DIR "${CMAKE_BINARY_DIR}/streamer-rust-target" CACHE PATH
     "Streamer Cargo artifacts; use a shorter path if Windows MSBuild exceeds MAX_PATH")
+if(NO_SOFT_RENDERING)
+    set(OPENNOW_STREAMER_TARGET_DIR "${OPENNOW_STREAMER_TARGET_DIR}/hardware-only")
+endif()
 set(OPENNOW_STREAMER_ARTIFACT_ROOT "${OPENNOW_STREAMER_TARGET_DIR}")
 if(OPENNOW_RUST_TARGET)
     set(OPENNOW_STREAMER_ARTIFACT_ROOT
@@ -130,6 +140,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # switch rebuild the vendored FFmpeg instead of paying for it once.
     list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS
         --features linux-ffmpeg-bundled,linux-vaapi)
+    if(NO_SOFT_RENDERING)
+        list(APPEND OPENNOW_STREAMER_CARGO_FEATURE_ARGS --features hardware-only)
+    endif()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(OPENNOW_VAAPI REQUIRED libva libva-drm libdrm)
     if(OPENNOW_RUST_TARGET MATCHES "^aarch64-.*-linux-"
@@ -137,6 +150,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         pkg_check_modules(OPENNOW_V4L2_REQUEST REQUIRED libdrm libudev)
     endif()
 endif()
+set(OPENNOW_STREAMER_FEATURE_STAMP "${CMAKE_BINARY_DIR}/streamer-build-features.txt")
+file(GENERATE OUTPUT "${OPENNOW_STREAMER_FEATURE_STAMP}"
+    CONTENT "${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}\n")
 set(OPENNOW_RUST_EFFECTIVE_TARGET "${OPENNOW_RUST_TARGET}")
 if(WIN32 AND NOT OPENNOW_RUST_EFFECTIVE_TARGET)
     find_program(OPENNOW_RUSTC_EXECUTABLE rustc REQUIRED)
@@ -271,6 +287,7 @@ add_custom_command(
             --release
             ${OPENNOW_STREAMER_FFI_RUSTC_ARGS}
     DEPENDS
+        "${OPENNOW_STREAMER_FEATURE_STAMP}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/crates/opennow-streamer-ffi/include/opennow_streamer_ffi.h"
@@ -340,6 +357,7 @@ add_custom_command(
             ${OPENNOW_STREAMER_CARGO_FEATURE_ARGS}
             --release
     DEPENDS
+        "${OPENNOW_STREAMER_FEATURE_STAMP}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.lock"
         "${CMAKE_CURRENT_SOURCE_DIR}/../native/opennow-streamer/Cargo.toml"
         ${OPENNOW_STREAMER_RUST_SOURCES}

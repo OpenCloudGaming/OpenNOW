@@ -197,6 +197,17 @@ impl VulkanDevicePreferences {
 }
 
 #[cfg(feature = "vulkan")]
+pub(crate) fn physical_device_allowed(device_type: ash::vk::PhysicalDeviceType) -> bool {
+    !cfg!(feature = "hardware-only")
+        || matches!(
+            device_type,
+            ash::vk::PhysicalDeviceType::INTEGRATED_GPU
+                | ash::vk::PhysicalDeviceType::DISCRETE_GPU
+                | ash::vk::PhysicalDeviceType::VIRTUAL_GPU
+        )
+}
+
+#[cfg(feature = "vulkan")]
 pub(crate) fn score_physical_device(
     index: usize,
     properties: &ash::vk::PhysicalDeviceProperties,
@@ -369,6 +380,9 @@ mod implementation {
             if let Ok(devices) = unsafe { temp_instance.enumerate_physical_devices() } {
                 for (index, &device) in devices.iter().enumerate() {
                     let props = unsafe { temp_instance.get_physical_device_properties(device) };
+                    if !super::physical_device_allowed(props.device_type) {
+                        continue;
+                    }
                     let queues = unsafe {
                         temp_instance.get_physical_device_queue_family_properties(device)
                     };
@@ -383,6 +397,12 @@ mod implementation {
         }
         candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.2));
 
+        if cfg!(feature = "hardware-only") && candidates.is_empty() {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only build found no hardware Vulkan GPU",
+            ));
+        }
         let candidate_indices: Vec<(Option<usize>, String)> = if candidates.is_empty() {
             vec![(None, "default".to_string())]
         } else {
@@ -486,6 +506,12 @@ mod implementation {
             )
         };
         let properties = unsafe { instance.get_physical_device_properties(physical) };
+        if !super::physical_device_allowed(properties.device_type) {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "hardware-only build forbids software Vulkan devices",
+            ));
+        }
         let adapter = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }.to_string_lossy();
         eprintln!(
             "embedded Vulkan adapter={adapter} vendor={:#x} device={:#x} driver={} api={}.{}.{}",
@@ -1018,6 +1044,25 @@ mod implementation {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn hardware_only_device_policy_accepts_graphics_only_gpus_but_not_cpu_devices() {
+        use ash::vk;
+        for device_type in [
+            vk::PhysicalDeviceType::DISCRETE_GPU,
+            vk::PhysicalDeviceType::INTEGRATED_GPU,
+            vk::PhysicalDeviceType::VIRTUAL_GPU,
+        ] {
+            assert!(super::physical_device_allowed(device_type));
+        }
+        for device_type in [vk::PhysicalDeviceType::CPU, vk::PhysicalDeviceType::OTHER] {
+            assert_eq!(
+                super::physical_device_allowed(device_type),
+                !cfg!(feature = "hardware-only")
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

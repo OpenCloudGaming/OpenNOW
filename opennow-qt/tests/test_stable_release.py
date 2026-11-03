@@ -1,8 +1,11 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +14,23 @@ from nightly_release import assemble, expected_packages, nightly_version
 
 
 class StableReleaseTest(unittest.TestCase):
+    def test_generated_release_notes_describe_both_signed_macos_dmgs(self):
+        workflow = (ROOT / ".github/workflows/qt-stable-release.yml").read_text()
+        step = workflow.split("      - name: Prepare public release notes\n", 1)[1].split("      - name:", 1)[0]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script], cwd=directory,
+                env={**os.environ, "RELEASE_VERSION": "1.2.3", "SOURCE_SHA": "a" * 40,
+                     "CANDIDATE_RUN_ID": "123"}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            notes = (Path(directory) / "release-notes.md").read_text()
+        for required in ("macOS 13+", "Developer ID-signed and notarized", "Apple Silicon (arm64)",
+                         "Intel (x64)", "OpenNOW-Qt-1.2.3-Darwin-arm64.dmg",
+                         "OpenNOW-Qt-1.2.3-Darwin-x64.dmg"):
+            self.assertIn(required, notes)
+        self.assertNotIn("Intel macOS is not included", notes)
+
     def test_stable_version_uses_project_version_without_nightly_suffix(self):
         cmake = ROOT / "opennow-qt/CMakeLists.txt"
         self.assertEqual(nightly_version(cmake, 1, 1, "stable"), "1.0.4")
@@ -30,10 +50,11 @@ class StableReleaseTest(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             names = expected_packages("1.0.0", "a" * 40, "stable")
-            self.assertEqual(len(names), 13)
+            self.assertEqual(len(names), 14)
             self.assertIn("OpenNOW-Qt-1.0.0-Linux-x64.flatpak", names)
             self.assertIn("OpenNOW-Qt-1.0.0-Linux-arm64.flatpak", names)
             self.assertIn("OpenNOW-Qt-1.0.0-Darwin-arm64.dmg", names)
+            self.assertIn("OpenNOW-Qt-1.0.0-Darwin-x64.dmg", names)
             self.assertIn("OpenNOW-Qt-1.0.0-Windows-x64-setup.exe", names)
             self.assertIn("OpenNOW-Qt-1.0.0-Windows-arm64-setup.exe", names)
             for name in names:

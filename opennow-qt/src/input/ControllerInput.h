@@ -205,6 +205,7 @@ private:
     void publishSlotSnapshot(int slotIndex, bool neutral = false);
     void releaseSonyContacts(int slotIndex);
     void cancelChordReplays();
+    void resumeStreamInput();
     [[nodiscard]] int effectiveSlot(int slotIndex) const;
     bool updateDirection(RepeatingDirection &direction, bool active);
     void reportActivity(int slot, const QString &control, int value);
@@ -235,6 +236,10 @@ private:
     QVariantList m_controllerMetadata;
     QVariantList m_availableControllerMetadata;
     QVariantList m_flightDevices;
+    QSet<SDL_JoystickID> m_noHidPathDevices;
+    QHash<SDL_JoystickID, quint64> m_flightFirstSeenScan;
+    quint64 m_hidScanGeneration = 0;
+    bool m_hidPathCheckPending = false;
     QHash<quint64, GenericHidAdmission> m_genericHidAdmissions;
     bool m_forwardFlightControls = true;
     SDL_JoystickID m_inputControllerId = 0;
@@ -253,6 +258,7 @@ private:
     bool m_leftStickNavigationEnabled = true;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
+    quint64 m_streamInputStartedNs = 0;
     quint64 m_nextIncarnation = 1;
 };
 

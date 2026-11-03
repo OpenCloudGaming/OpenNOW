@@ -1,16 +1,6 @@
 import QtQuick
 import OpenNOW
 
-// A notice that arrives when the stack already cannot fit must stay pending: held hidden it
-// must not be presented, must not start its display lifetime, and must not be recorded as
-// shown. The colour notice is raised first so it is presented and consumed legitimately, then
-// the HDR notice arrives into a stack that no longer fits. Packet loss is fed throughout, and it
-// is unstable for the second half of the hold, so a claim taken while the stack is hidden would
-// suppress the notice for the rest of the episode.
-//
-// The hold deliberately outlasts the presented colour notice's four seconds. Nothing may expire
-// while the column is hidden, so the stack cannot free itself during the hold and the case does
-// not depend on how fast the harness ticks.
 QtObject {
     id: fixture
     property int key: 0
@@ -25,6 +15,11 @@ QtObject {
     property int resumeTicks: 10
     property int releaseTick: 0
     property real heldColorLifetime: -1
+    property bool overflowQueue: Qt.application.arguments.indexOf("--toast-overflow-queue") >= 0
+    property bool sawQueuedHdr: false
+    property bool sawPresentedHdr: false
+    property bool sawPresentedLoss: false
+    property int presentationWaitTick: -1
 
     property QtObject settingsClient: QtObject {
         property int serial: 0
@@ -99,6 +94,7 @@ QtObject {
         require(ShellStore.streamColorNoticeShown === true,
             "the colour notice fits on its own and is presented first")
         ShellStore.acceptNativeEvent({type: "status", event: "first-frame", status: "streaming"})
+        if (!overflowQueue) column().maximumHeight = 0
         return true
     }
 
@@ -147,12 +143,15 @@ QtObject {
 
     function advance() {
         ++tick
+        if (overflowQueue) return advanceOverflow()
         if (!released) {
             assertPending()
             if (tick % lossFeedTicks === 1) feedLoss()
             if (tick < hiddenTicks) return 0
             assertPending()
             require(AppController.showOverlay("") === true, "the stats overlay closes")
+            const toasts = column()
+            toasts.maximumHeight = Qt.binding(() => Math.max(0, toasts.parent.height - toasts.y - 24))
             feedLoss()
             released = true
             releaseTick = tick
@@ -164,6 +163,47 @@ QtObject {
         }
         require(tick - releaseTick < resumeTicks,
             "the interrupted colour notice resumes once the space returns")
+        return 0
+    }
+
+    function advanceOverflow() {
+        const toasts = column()
+        const color = find(window.contentItem, "streamColorFormatToast")
+        const hdr = find(window.contentItem, "streamHdrDowngradeToast")
+        const loss = find(window.contentItem, "streamPacketLossToast")
+        if (tick % lossFeedTicks === 1) feedLoss()
+        require(toasts.y + toasts.height <= toasts.parent.height - 24,
+            "the visible subset stays within the available stream space")
+        if (toasts.colorNotice) {
+            require(color.visible, "the first fitting toast remains visible when another notice is queued")
+            require(!hdr.visible && toasts.hdrLifetime === 0 && shown().length === 0,
+                "a queued HDR notice is neither timed nor recorded as shown")
+            sawQueuedHdr = true
+        } else if (toasts.hdrNotice) {
+            require(hdr.visible,
+                "the queued HDR notice is presented after the first toast expires without resizing")
+            if (shown().length === 0) return waitForPresentation()
+            require(shown().length === 1, "the presented HDR notice is recorded exactly once")
+            presentationWaitTick = -1
+            sawPresentedHdr = true
+        } else if (toasts.lossNotice) {
+            require(loss.visible, "the queued packet-loss notice fits after the preceding notices expire")
+            if (health().lastNoticeAt === null) return waitForPresentation()
+            presentationWaitTick = -1
+            sawPresentedLoss = true
+        } else if (sawQueuedHdr && sawPresentedHdr && sawPresentedLoss) {
+            require(video.visible && ShellStore.activeSession.sessionId === "stream-toast-pending",
+                "draining notices preserves the video surface and session")
+            return 1
+        }
+        require(tick < 560, "the bounded toast queue drains without changing the window or overlay")
+        return 0
+    }
+
+    function waitForPresentation() {
+        if (presentationWaitTick < 0) presentationWaitTick = tick
+        require(tick - presentationWaitTick < resumeTicks,
+            "the visible notice is claimed after its visibility binding settles")
         return 0
     }
 }

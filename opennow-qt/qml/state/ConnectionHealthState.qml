@@ -82,14 +82,17 @@ QtObject {
         sampleAccepted()
     }
 
-    function claimNotice() {
+    function canClaimNotice() {
         const now = clock()
         expire(now)
-        if (status !== "unstable" || noticeClaimed) return false
-        if (lastNoticeAt !== null && now - lastNoticeAt < 30000)
-            return false
+        return status === "unstable" && !noticeClaimed
+            && (lastNoticeAt === null || now - lastNoticeAt >= 30000)
+    }
+
+    function claimNotice() {
+        if (!canClaimNotice()) return false
         noticeClaimed = true
-        lastNoticeAt = now
+        lastNoticeAt = clock()
         return true
     }
 

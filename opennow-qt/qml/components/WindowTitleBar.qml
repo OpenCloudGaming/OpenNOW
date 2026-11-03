@@ -65,12 +65,37 @@ Rectangle {
 
         width: 46
         height: root.height - 1
+        activeFocusOnTab: true
+        enabled: visible
         Accessible.role: Accessible.Button
+        Accessible.focusable: true
+        Accessible.focused: activeFocus
         Accessible.onPressAction: button.activated()
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                event.accepted = true
+                if (!event.isAutoRepeat)
+                    button.activated()
+            }
+        }
+        Keys.onReleased: event => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)
+                event.accepted = true
+        }
 
         Rectangle {
             anchors.fill: parent
             color: !hover.hovered ? "transparent" : button.destructive ? "#E5484D" : root.hoverFill
+        }
+        Rectangle {
+            objectName: "windowControlFocusRing"
+            anchors.fill: parent
+            anchors.margins: 3
+            radius: 3
+            color: "transparent"
+            border.width: 2
+            border.color: Theme.focus
+            visible: button.activeFocus
         }
         Item {
             id: glyphArea

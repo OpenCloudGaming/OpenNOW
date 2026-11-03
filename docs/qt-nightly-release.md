@@ -57,7 +57,7 @@ an existing tag or asset. Remove abandoned drafts separately if needed.
 
 ## Download formats
 
-Each release contains eleven packages with distinct version/platform/architecture filenames:
+Each release contains twelve packages with distinct version/platform/architecture filenames:
 
 - `OpenNOW-Qt-<version>-Windows-x64.zip` and `...-Windows-arm64.zip` are unsigned portable builds.
   Extract the entire archive, then launch `bin/OpenNOW.exe`. Windows may display SmartScreen or
@@ -78,15 +78,16 @@ Each release contains eleven packages with distinct version/platform/architectur
   The internal Debian version uses `1.0.0~nightly.<run>.<attempt>` so a later stable `1.0.0`
   correctly supersedes it.
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg` contains the Apple Silicon application for macOS 13+.
-  Open the disk image and drag OpenNOW into Applications. There is no Intel or universal download.
+  Intel Macs use `OpenNOW-Qt-<version>-Darwin-x64.dmg`. These are separate native packages, not universal binaries.
+  Open the disk image and drag OpenNOW into Applications.
   Gatekeeper can block this non-notarized application. After checking the release and download,
   use the explicit **Open Anyway** confirmation in **System Settings → Privacy & Security** if
   macOS offers it. Do not disable Gatekeeper globally. CI also retains a separate macOS ZIP for
   validation; that ZIP is not a public release asset.
 
-The public signed set contains 28 files: eleven packages, two `.AppImage.zsync` sidecars,
-thirteen `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
-Its checksums cover all 27 other files. The no-key
+The public signed set contains 30 files: twelve packages, two `.AppImage.zsync` sidecars,
+fourteen `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
+Its checksums cover all 29 other files. The no-key
 artifact-only inventory has no manifests; its checksums cover the packages and release metadata.
 Checksums detect corruption; they do not replace a publisher signature. The inventory rejects
 missing platforms, duplicate basenames, wrong versions, empty files, and unexpected assets
@@ -154,7 +155,7 @@ automatic updates must not bypass the helper's identity checks.
 
 Authenticode and Apple Developer ID signatures authenticate platform applications. Ed25519
 manifests authenticate the exact updater payload bytes; they do not remove SmartScreen or
-Gatekeeper warnings. Apple Silicon ad-hoc executable signatures are not Developer ID signatures
+Gatekeeper warnings. macOS ad-hoc executable signatures are not Developer ID signatures
 or notarization. Keep the Ed25519 private key on the isolated signer, never on platform build workers.
 
 The separate [`qt-release-candidate`](qt-release-candidate.md) workflow remains a signed,

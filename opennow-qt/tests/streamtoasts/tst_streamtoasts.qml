@@ -158,6 +158,22 @@ TestCase {
         verify(!toast.visible)
     }
 
+    function test_noticeEligibilityDoesNotConsumeAClaim() {
+        const health = ShellStore.connectionHealth
+        sustainedLoss(2)
+        verify(health.canClaimNotice())
+        verify(health.canClaimNotice())
+        verify(!health.noticeClaimed)
+        compare(health.lastNoticeAt, null)
+        verify(health.claimNotice())
+        verify(!health.canClaimNotice())
+        compare(health.lastNoticeAt, sampleTime)
+        sample(0)
+        sustainedLoss(2)
+        verify(!health.canClaimNotice())
+        verify(!health.noticeClaimed)
+    }
+
     function test_packetLossHistoryAndCooldown() {
         const stack = createTemporaryObject(stackComponent, testCase)
         verify(stack !== null)
@@ -202,6 +218,47 @@ TestCase {
         tryCompare(stack, "lossNotice", false, 1000)
         sample(3)
         verify(!stack.lossNotice)
+    }
+
+    function test_boundedSubsetDrainsWithoutResizing() {
+        const stack = createTemporaryObject(stackComponent, testCase, {maximumHeight: 0})
+        const color = findChild(stack, "streamColorFormatToast")
+        const connected = findChild(stack, "streamControllerToast")
+        ControllerInput.controllers = [controller(1, 82)]
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        verify(!color.visible && !connected.visible && !ShellStore.streamColorNoticeShown)
+        stack.maximumHeight = Math.max(color.height, connected.height)
+        verify(color.visible && !connected.visible)
+        verify(ShellStore.streamColorNoticeShown)
+        verify(stack.height <= stack.maximumHeight)
+        const heldControllerLifetime = stack.controllerLifetime
+        wait(100)
+        compare(stack.controllerLifetime, heldControllerLifetime)
+        tryCompare(stack, "colorNotice", false, 5000)
+        verify(connected.visible)
+        verify(stack.height <= stack.maximumHeight)
+        tryCompare(stack, "controllerNotice", null, 5000)
+        compare(stack.pendingNotices, 0)
+    }
+
+    function test_unfittingNoticeDoesNotHideSmallerNotices() {
+        const stack = createTemporaryObject(stackComponent, testCase, {maximumHeight: 0})
+        const color = findChild(stack, "streamColorFormatToast")
+        const connected = findChild(stack, "streamControllerToast")
+        ShellStore.streamColorNotice = {sessionId: "test-session", source: "decoder",
+            requestedColorQuality: "10bit_444", actualColorQuality: "10bit_420"}
+        verify(color.height > connected.height)
+        stack.maximumHeight = connected.height
+        ControllerInput.controllers = [controller(1, 82)]
+        verify(connected.visible && !color.visible)
+        verify(!ShellStore.streamColorNoticeShown)
+        compare(stack.colorLifetime, 0)
+        tryCompare(stack, "controllerNotice", null, 5000)
+        verify(stack.colorNotice && !color.visible)
+        compare(stack.colorLifetime, 0)
+        stack.maximumHeight = color.height
+        verify(color.visible && ShellStore.streamColorNoticeShown)
     }
 
     function test_sessionAndVisibilityReset() {

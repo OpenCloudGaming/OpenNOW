@@ -36,7 +36,9 @@ class Install:
 
 
 def run_quiet(command: list[str]) -> subprocess.CompletedProcess:
-    return host.run(command, timeout=15)
+    environment = host.host_environment()
+    environment.update(LC_ALL="C", LANG="C")
+    return subprocess.run(command, capture_output=True, text=True, timeout=15, check=False, env=environment)
 
 
 def version_key(version: str | None) -> tuple:
@@ -64,21 +66,27 @@ def flatpak_data_dir(home: Path) -> Path:
 def detect_flatpak(home: Path, run: Runner) -> Install | None:
     for scope in ("--user", "--system"):
         try:
-            result = run(["flatpak", "info", scope, FLATPAK_ID])
+            result = run(["flatpak", "info", scope, "--show-commit", FLATPAK_ID])
         except (OSError, subprocess.SubprocessError):
             return None
         if result.returncode != 0:
             continue
+        revision = result.stdout.strip() or None
         fields = {}
-        for line in result.stdout.splitlines():
-            key, _, value = line.strip().partition(":")
-            fields[key] = value.strip()
+        try:
+            info = run(["flatpak", "info", scope, FLATPAK_ID])
+        except (OSError, subprocess.SubprocessError):
+            info = None
+        if info is not None and info.returncode == 0:
+            for line in info.stdout.splitlines():
+                key, _, value = line.strip().partition(":")
+                fields[key] = value.strip()
         droiddeck = os.access(DROIDDECK_FLATPAK_RUN, os.X_OK)
         return Install(
             kind="flatpak",
             path=FLATPAK_ID,
             version=fields.get("Version") or None,
-            revision=fields.get("Commit") or None,
+            revision=revision,
             exe=DROIDDECK_FLATPAK_RUN if droiddeck else "/usr/bin/flatpak",
             args=(FLATPAK_ID,) if droiddeck else ("run", scope, FLATPAK_ID),
             data_dir=str(flatpak_data_dir(home)),

@@ -139,7 +139,7 @@ if(WIN32)
     set(CPACK_STRIP_FILES FALSE)
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop;ZIP")
-    set(CPACK_DMG_VOLUME_NAME "OpenNOW")
+    include("${CMAKE_CURRENT_LIST_DIR}/../packaging/macos-dmg.cmake")
 else()
     # Linux packages intentionally use the distribution Qt runtime. AppImage
     # assembly uses linuxdeploy in release CI so plugin selection is explicit.

@@ -72,6 +72,7 @@ pub enum ColorPrimaries {
 pub enum ChromaLocation {
     Left,
     Center,
+    TopLeft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,19 @@ pub struct StreamFormat {
 }
 
 impl StreamFormat {
+    pub(crate) fn chroma_offset(self, coded_height: Option<u32>) -> [f32; 2] {
+        if self.pixel_format.is_444() {
+            return [0.0, 0.0];
+        }
+        let x = 0.5 / self.width.max(1) as f32;
+        let y = 0.5 / coded_height.unwrap_or(self.height).max(self.height).max(1) as f32;
+        match self.chroma_location {
+            ChromaLocation::Left => [x, 0.0],
+            ChromaLocation::Center => [0.0, 0.0],
+            ChromaLocation::TopLeft => [x, y],
+        }
+    }
+
     pub fn video_default(width: u32, height: u32) -> Result<Self> {
         let format = Self {
             width,
@@ -546,6 +560,40 @@ impl DecodedVideoFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chroma_offsets_preserve_vertical_siting_and_coded_extent() {
+        for pixel_format in [
+            PixelFormat::Nv12,
+            PixelFormat::I420,
+            PixelFormat::P010,
+            PixelFormat::Nv24,
+            PixelFormat::P410,
+        ] {
+            for (chroma_location, expected) in [
+                (ChromaLocation::Left, [0.5 / 1920.0, 0.0]),
+                (ChromaLocation::Center, [0.0, 0.0]),
+                (ChromaLocation::TopLeft, [0.5 / 1920.0, 0.5 / 1088.0]),
+            ] {
+                let format = StreamFormat {
+                    pixel_format,
+                    chroma_location,
+                    ..StreamFormat::video_default(1920, 1080).unwrap()
+                };
+                assert_eq!(
+                    format.chroma_offset(Some(1088)),
+                    if pixel_format.is_444() {
+                        [0.0, 0.0]
+                    } else {
+                        expected
+                    }
+                );
+                if !pixel_format.is_444() && chroma_location == ChromaLocation::TopLeft {
+                    assert_eq!(format.chroma_offset(None), [0.5 / 1920.0, 0.5 / 1080.0]);
+                }
+            }
+        }
+    }
 
     #[test]
     fn sdr_defaults_remain_bt709_when_resolution_changes() {
