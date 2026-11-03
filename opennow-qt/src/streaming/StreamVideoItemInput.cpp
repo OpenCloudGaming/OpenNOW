@@ -698,7 +698,7 @@ void StreamVideoItem::mousePressEvent(QMouseEvent *event)
 void StreamVideoItem::mouseReleaseEvent(QMouseEvent *event)
 {
     const auto button = mouseButton(event->button());
-    if (m_captureActive && button != 0) {
+    if (button != 0 && (m_captureActive || m_pressedMouseButtons.contains(button))) {
         if (m_pressedMouseButtons.remove(button) && !m_rawInputActive) {
             if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             s_nativeRuntime->submitMouseButton(button, false);
