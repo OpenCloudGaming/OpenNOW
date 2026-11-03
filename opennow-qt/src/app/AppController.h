@@ -75,6 +75,9 @@ public:
 
     void setOverlayTransitionGuard(std::function<bool(bool)> guard);
 
+    // Physical DPI of the window's screen (or primary). Used for remote UI scale.
+    Q_INVOKABLE int screenDpi(QWindow *window = nullptr) const;
+
 public slots:
     void setReducedMotion(bool reducedMotion);
     void setControllerCount(int count);

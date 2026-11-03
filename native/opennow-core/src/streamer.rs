@@ -1344,7 +1344,7 @@ fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool 
         })
 }
 
-const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
+const EMBEDDED_RESOLUTIONS: [(u64, u64); 22] = [
     (1280, 720),
     (1600, 900),
     (1920, 1080),
@@ -1358,6 +1358,7 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (1680, 1050),
     (1920, 1200),
     (2560, 1600),
+    (3456, 2160),
     (3840, 2400),
     (2560, 1080),
     (3440, 1440),
@@ -1445,13 +1446,15 @@ fn normalize_embedded_mode(
     if width.checked_mul(height).is_none() {
         return Ok(());
     }
+    // H.264 stays near the historical pixel cap, with an exception for GFN's
+    // Mac 3.5K mode (3456x2160) which the official client streams as H.264.
     let max_pixels = if codec == "h264" { 4_953_599 } else { u64::MAX };
     let fits = |width: u64, height: u64| {
         width <= max_width
             && height <= max_height
-            && width
-                .checked_mul(height)
-                .is_some_and(|pixels| pixels <= max_pixels)
+            && width.checked_mul(height).is_some_and(|pixels| {
+                pixels <= max_pixels || (codec == "h264" && width == 3456 && height == 2160)
+            })
     };
     if fits(width, height) {
         return Ok(());
@@ -3651,7 +3654,7 @@ mod tests {
             ("h265", "5120x2880", 165, "3840x2160", 165),
             ("h265", "5120x2160", 165, "2560x1080", 165),
             ("h265", "5120x1440", 165, "3840x1080", 165),
-            ("h265", "3840x2400", 165, "2560x1600", 165),
+            ("h265", "3840x2400", 165, "3456x2160", 165),
             ("h265", "4096x2304", 165, "4096x2304", 165),
         ] {
             let settings = json!({"codec":codec,"resolution":resolution,"fps":fps});
