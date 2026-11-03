@@ -1042,6 +1042,13 @@ impl CloudMatchService {
         self.complete_stop(session_id)
     }
 
+    pub(crate) fn acknowledge_native_session_end(
+        &self,
+        session_id: &str,
+    ) -> Result<(), ServiceError> {
+        self.complete_stop(session_id).map(|_| ())
+    }
+
     fn complete_stop(&self, session_id: &str) -> Result<Value, ServiceError> {
         self.clear_cleanup(session_id)?;
         self.clear_allocation_record(Some(session_id))?;

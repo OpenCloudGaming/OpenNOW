@@ -2026,7 +2026,8 @@ impl GfnService {
                     .into(),
             });
         }
-        self.cloudmatch.clear_active(&notification.session_id);
+        self.cloudmatch
+            .acknowledge_native_session_end(&notification.session_id)?;
         routing.active_owner = None;
         Ok(json!({"sessionId":notification.session_id,"cleared":true}))
     }

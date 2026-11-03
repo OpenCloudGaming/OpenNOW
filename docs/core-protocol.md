@@ -358,7 +358,10 @@ requires no valid authentication token. It releases only the exact accepted seat
 whose account and provider match. An extra `ownerScope.generation` is ignored:
 control reconciliation can change the core generation before the shell consumes
 its response, but it does not change the remote seat's identity.
-Pending allocation handoffs and cleanup records are not released.
+For the accepted seat, acknowledgement removes its durable allocation-recovery
+obligation before releasing its active owner. If durable cleanup fails, ownership
+is retained so the shell can retry. Pending allocation handoffs and unrelated
+cleanup records are not released.
 A matching pending handoff returns
 `session_update_busy` so the shell retries after handoff. The response is
 `{sessionId, cleared}`; duplicate or stale notifications return `cleared: false`
