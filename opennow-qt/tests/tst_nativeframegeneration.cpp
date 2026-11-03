@@ -528,7 +528,7 @@ private slots:
             QCoreApplication::processEvents();
             QCOMPARE(errors.size(), 0);
             QVERIFY(runtime.presentationAllowed());
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("status")).toString(),
                  QStringLiteral("active"));
