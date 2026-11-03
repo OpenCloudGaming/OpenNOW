@@ -1974,7 +1974,12 @@ fn monitor_request_dpi(params: &Value, settings: &Value) -> i64 {
             if let Some(dpi) = source
                 .get(key)
                 .and_then(Value::as_i64)
-                .or_else(|| source.get(key).and_then(Value::as_f64).map(|v| v.round() as i64))
+                .or_else(|| {
+                    source
+                        .get(key)
+                        .and_then(Value::as_f64)
+                        .map(|v| v.round() as i64)
+                })
                 .filter(|dpi| (72..=480).contains(dpi))
             {
                 return dpi;
