@@ -1344,8 +1344,9 @@ fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool 
         })
 }
 
-const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
+const EMBEDDED_RESOLUTIONS: [(u64, u64); 28] = [
     (1280, 720),
+    (1366, 768),
     (1600, 900),
     (1920, 1080),
     (2560, 1440),
@@ -1358,7 +1359,9 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (1680, 1050),
     (1920, 1200),
     (2560, 1600),
+    (3456, 2160),
     (3840, 2400),
+    (1680, 720),
     (2560, 1080),
     (3440, 1440),
     (3840, 1600),
@@ -1366,6 +1369,10 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (5120, 2160),
     (3840, 1080),
     (5120, 1440),
+    (1024, 768),
+    (1112, 834),
+    (1600, 1200),
+    (1280, 1024),
 ];
 
 fn normalize_embedded_mode(
@@ -3651,7 +3658,7 @@ mod tests {
             ("h265", "5120x2880", 165, "3840x2160", 165),
             ("h265", "5120x2160", 165, "2560x1080", 165),
             ("h265", "5120x1440", 165, "3840x1080", 165),
-            ("h265", "3840x2400", 165, "2560x1600", 165),
+            ("h265", "3840x2400", 165, "3456x2160", 165),
             ("h265", "4096x2304", 165, "4096x2304", 165),
         ] {
             let settings = json!({"codec":codec,"resolution":resolution,"fps":fps});
@@ -3680,6 +3687,59 @@ mod tests {
     }
 
     #[test]
+    fn embedded_added_resolution_presets_respect_decoder_limits() {
+        for (preset, requested, max_width, max_height) in [
+            ("1024x768", "1600x1200", 1024, 768),
+            ("1112x834", "1600x1200", 1112, 834),
+            ("1366x768", "2732x1536", 1366, 768),
+            ("1280x1024", "2560x2048", 1280, 1024),
+            ("1680x720", "3360x1440", 1680, 720),
+            ("1600x1200", "2048x1536", 1600, 1200),
+            ("3456x2160", "3840x2400", 4096, 2304),
+        ] {
+            let mut caps = json!({"protocolVersion":8,"videoBackends":[{
+                "backend":"hardware","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420"]}
+                ]
+            }]});
+            let settings = json!({"codec":"h265","resolution":preset,"fps":120});
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset);
+            assert!(fallbacks.is_empty());
+            caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+                json!({"width":max_width,"height":max_height});
+            let settings = json!({"codec":"h265","resolution":requested,"fps":120});
+            let saved = settings.clone();
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset, "{requested}");
+            assert_eq!(resolved["fps"], 120);
+            assert_eq!(settings, saved);
+            assert_eq!(fallbacks.len(), 1);
+            let (width, height) = resolved["resolution"]
+                .as_str()
+                .unwrap()
+                .split_once('x')
+                .unwrap();
+            assert!(width.parse::<u64>().unwrap() <= max_width);
+            assert!(height.parse::<u64>().unwrap() <= max_height);
+        }
+        let caps = json!({"protocolVersion":8,"videoBackends":[{
+            "backend":"hardware","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]}
+            ]
+        }]});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "2560x1600");
+        assert_eq!(fallbacks.len(), 1);
+    }
+
+    #[test]
     fn embedded_v4l2_request_h264_steps_down_to_the_hantro_limit() {
         let caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"v4l2","platform":"linux","available":true,"codecs":[
@@ -3690,7 +3750,7 @@ mod tests {
         }]});
         for (codec, resolution, expected) in [
             ("h264", "2560x1440", "1920x1080"),
-            ("h264", "3440x1440", "1920x1080"),
+            ("h264", "3440x1440", "1680x720"),
             ("h264", "1920x1080", "1920x1080"),
             ("av1", "2560x1440", "2560x1440"),
         ] {
