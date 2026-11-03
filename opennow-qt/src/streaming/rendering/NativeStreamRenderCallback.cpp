@@ -461,7 +461,7 @@ public:
         }
         // The engine may synthesise fewer frames than requested (the block-matching
         // engine knows only the midpoint); the schedule follows what exists.
-        const int generated = std::min(m_interpolator.generatedCount(), m_pacer.factor() - 1);
+        const int generated = (std::min)(m_interpolator.generatedCount(), m_pacer.factor() - 1);
         m_effectiveFactor.store(generated + 1);
         if (generated < 1 || !m_textures.selectTexture(m_interpolator.generatedTexture(1))) {
             disableFrameGeneration();
@@ -539,7 +539,7 @@ public:
     void setFrameGeneration(int factor, double refreshRate) override
     {
         factor = factor >= StreamFramePacer::MinimumFactor
-            ? std::min(factor, StreamFramePacer::MaximumFactor) : 0;
+            ? (std::min)(factor, StreamFramePacer::MaximumFactor) : 0;
         if (m_frameGenerationFactor != factor || m_refreshRate != refreshRate)
             m_resetFrameGeneration = true;
         m_frameGenerationFactor = factor;
