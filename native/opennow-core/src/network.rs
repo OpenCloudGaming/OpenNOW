@@ -189,9 +189,7 @@ fn measure_region(region_url: &str) -> Value {
     }
     let client = match builder.build() {
         Ok(client) => client,
-        Err(_) => {
-            return json!({"url":region_url,"pingMs":null,"error":"HTTPS client unavailable"})
-        }
+        Err(_) => return json!({"url":region_url,"pingMs":null,"error":"HTTPS client unavailable"}),
     };
 
     if crate::requests::check().is_err() {
@@ -373,6 +371,9 @@ mod tests {
         }))
         .expect("offline measurements remain serializable");
         assert_eq!(result["results"][0]["pingMs"], Value::Null);
-        assert_eq!(result["results"][0]["error"], "HTTPS warm-up request failed");
+        assert_eq!(
+            result["results"][0]["error"],
+            "HTTPS warm-up request failed"
+        );
     }
 }
