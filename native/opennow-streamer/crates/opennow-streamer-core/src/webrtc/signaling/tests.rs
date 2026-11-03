@@ -104,6 +104,7 @@ fn local_exchange_registers_v3_for_fresh_and_reconnected_provider_sessions() {
                     Err(error) => panic!("mock accept failed: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
