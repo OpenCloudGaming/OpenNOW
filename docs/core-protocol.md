@@ -1117,8 +1117,12 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
+`shortcutToggleFrameGeneration` (default `Ctrl+Shift+G`) switches local frame generation
+on or off during a stream. The Qt shell handles it like `shortcutToggleMicrophone`; it is
+not part of the `shortcuts` map in `streamer.prepare`.
+
 These commands use the embedded streamer's JSON protocol 8. The core RPC protocol
-remains 5 and the native C ABI remains 15. Both the shell and capability probes
+remains 5 and the native C ABI is 18. Both the shell and capability probes
 require protocol 8 so recovery cannot silently use the old stop contract.
 
 - Manual `recording-start` uses its command `id` as the recording identity. A

@@ -1,6 +1,8 @@
 #version 440
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 fragColor;
+// geometry.xy: texel size; geometry.w: t, the time of the generated frame between the
+// previous (0) and the current (1) source frame. t = 0.5 is the classic midpoint.
 layout(std140, binding = 0) uniform Parameters {
     vec4 geometry;
 };
@@ -22,10 +24,14 @@ void main()
         fragColor = actual;
         return;
     }
-    vec2 p = uv - texture(forwardFlow, uv).xy * 0.5;
-    vec2 q = uv - texture(backwardFlow, uv).xy * 0.5;
-    p = uv - texture(forwardFlow, p).xy * 0.5;
-    q = uv - texture(backwardFlow, q).xy * 0.5;
+    // The previous frame travels t of its forward flow and the current frame (1 - t) of
+    // its backward flow to meet at the generated frame.
+    float t = clamp(geometry.w, 0.0, 1.0);
+    float s = 1.0 - t;
+    vec2 p = uv - texture(forwardFlow, uv).xy * t;
+    vec2 q = uv - texture(backwardFlow, uv).xy * s;
+    p = uv - texture(forwardFlow, p).xy * t;
+    q = uv - texture(backwardFlow, q).xy * s;
     vec4 forward = texture(forwardFlow, p);
     vec4 backward = texture(backwardFlow, q);
     vec2 disagreement = (forward.xy + texture(backwardFlow, p + forward.xy).xy) / geometry.xy;
@@ -42,7 +48,7 @@ void main()
         && length(reverseDisagreement) < 1.5 && backward.z < 0.10 && backwardError < 0.12
         && (backward.w > 0.015 || length(backward.xy / geometry.xy) < 0.25);
     if (forwardReliable && backwardReliable)
-        fragColor = error < 0.12 ? (a + b) * 0.5 : actual;
+        fragColor = error < 0.12 ? mix(a, b, t) : actual;
     else if (forwardReliable)
         fragColor = a;
     else if (backwardReliable)

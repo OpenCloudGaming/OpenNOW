@@ -54,14 +54,14 @@ Item {
     readonly property var featureBadges: {
         const badges = []
         if (shown("Video") && (profile.enableHdr === true || profile.hdr === true)) badges.push({text:"HDR", ink:"#C6A46A"})
-        if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN 2×"), ink:"#F5A623"})
+        if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN %1×").arg(ShellStore.frameGenerationFactor()), ink:"#F5A623"})
         if (shown("Video") && Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx") badges.push({text:"METALFX", ink:"#7FD4FF"})
         if (flightVisible) badges.push({text:qsTr("FLIGHT") + " " + activeFlightDevices.length
             + (activeFlightDevices.length === flightDevices.length ? "" : "/" + flightDevices.length), ink:flightColor, glyph:"stick"})
         return badges
     }
     readonly property bool telemetryActive: live.status === "streaming"
-    readonly property bool frameGenerationEnabled: String(ShellStore.settings.frameGeneration || "off") === "2x"
+    readonly property bool frameGenerationEnabled: ShellStore.frameGenerationFactor() >= 2
     readonly property var cards: metricCards()
     readonly property var compactMetrics: compactItems()
     property var history: ({})
@@ -93,11 +93,23 @@ Item {
         case "warming-up": return qsTr("Warming up")
         case "active": return qsTr("Active")
         case "display-refresh": return qsTr("Display refresh")
-        case "source-rate-limit": return qsTr("120 FPS generation limit")
+        case "source-rate-limit": return qsTr("Source rate too high")
         case "hdr-unavailable": return qsTr("Unavailable with HDR")
-        case "overloaded": return qsTr("Overloaded")
-        case "discontinuity": return qsTr("Discontinuity")
+        case "overloaded": return qsTr("Paused") + " · " + qsTr("the display stopped taking frames")
+        case "discontinuity": return qsTr("Discontinuity") + frameGenerationReasonSuffix()
         default: return qsTr("Unavailable")
+        }
+    }
+    // Why the pacer re-warmed, from the render callback's last decision.
+    function frameGenerationReasonSuffix() {
+        const skipped = Math.max(0, Number(frameGenerationStats.sequenceDelta || 0) - 1)
+        switch (String(frameGenerationStats.rejectionReason || "none")) {
+        case "sequence-gap": return " · " + qsTr("%1 source frames skipped").arg(skipped)
+        case "arrival-gap": return " · " + qsTr("%1 ms between frames").arg(Math.round(Number(frameGenerationStats.arrivalDeltaMs || 0)))
+        case "timestamp-regression": return " · " + qsTr("timestamp went backwards")
+        case "timestamp-jump": return " · " + qsTr("timestamp jumped %1 ms").arg(Math.round(Number(frameGenerationStats.timestampDeltaMs || 0)))
+        case "cadence-unavailable": return " · " + qsTr("no usable frame cadence")
+        default: return ""
         }
     }
     function sample(card) {

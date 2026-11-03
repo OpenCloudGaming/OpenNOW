@@ -11,6 +11,9 @@ Item {
     // rates the current membership tier does not entitle. Accepts raw values
     // matching options entries, or {label,value} objects.
     property var disabledValues: []
+    // Prefix for each chip's objectName; controls whose values can collide with another
+    // control on the same page (plain numbers) pass their own.
+    property string optionObjectNamePrefix: "settingsOption-"
     // Optional per-option hint shown as a tooltip, e.g. "Requires Ultimate".
     property var disabledHint: ""
     signal selected(int index, var value)
@@ -75,7 +78,7 @@ Item {
                 required property var modelData
                 readonly property bool on: index === root.selectedIndex && !locked
                 readonly property bool locked: root.isDisabled(modelData)
-                objectName: "settingsOption-" + String(root.optionValue(modelData))
+                objectName: root.optionObjectNamePrefix + String(root.optionValue(modelData))
                 readonly property string label: root.optionLabel(modelData)
                 width: root.widthFor(modelData)
                 height: root.height - DesktopTokens.px(8)

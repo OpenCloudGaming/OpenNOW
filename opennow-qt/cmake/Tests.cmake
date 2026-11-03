@@ -447,6 +447,33 @@ if(BUILD_TESTING)
         set_tests_properties(opennow-frameinterpolator-tests PROPERTIES
             RUN_SERIAL TRUE TIMEOUT 180)
     endif()
+    qt_add_executable(opennow-framegenerationbenchmark-tests
+        tests/tst_framegenerationbenchmark.cpp
+        src/streaming/rendering/FrameGenerationBenchmark.cpp
+        src/streaming/rendering/StreamFrameInterpolator.cpp)
+    target_include_directories(opennow-framegenerationbenchmark-tests PRIVATE src)
+    target_link_libraries(opennow-framegenerationbenchmark-tests PRIVATE
+        Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
+    qt_add_shaders(opennow-framegenerationbenchmark-tests "opennow-framegen-benchmark-test-shaders"
+        PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
+    if(OPENNOW_XVFB_RUN)
+        add_test(NAME opennow-framegenerationbenchmark-tests
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-framegenerationbenchmark-tests>" -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/frame-generation-benchmark-results.xml,junitxml")
+        set_tests_properties(opennow-framegenerationbenchmark-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
+    else()
+        add_test(NAME opennow-framegenerationbenchmark-tests
+            COMMAND opennow-framegenerationbenchmark-tests -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/frame-generation-benchmark-results.xml,junitxml")
+        if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(opennow-framegenerationbenchmark-tests
+                PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
+    endif()
+    set_tests_properties(opennow-framegenerationbenchmark-tests PROPERTIES TIMEOUT 120)
+    if(WIN32)
+        set_tests_properties(opennow-framegenerationbenchmark-tests PROPERTIES RUN_SERIAL TRUE)
+    endif()
     qt_add_executable(opennow-streamcolor-tests tests/tst_streamcolor.cpp)
     target_include_directories(opennow-streamcolor-tests PRIVATE src)
     target_link_libraries(opennow-streamcolor-tests PRIVATE
@@ -668,6 +695,16 @@ if(BUILD_TESTING)
         COMMAND opennow-qt --smoke-test --allow-multiple-instances --desktop
             --route stream --smoke-stream-controllers --reduced-motion)
     set_tests_properties(qml-desktop-stream-controllers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    foreach(window_mode windowed fullscreen)
+        set(menu_args --smoke-test --allow-multiple-instances --desktop --route stream
+            --smoke-stream-controllers --controller-scene main-generation-pointer --reduced-motion)
+        if(window_mode STREQUAL "fullscreen")
+            list(APPEND menu_args --fullscreen)
+        endif()
+        add_test(NAME qml-desktop-stream-menu-navigation-${window_mode} COMMAND opennow-qt ${menu_args})
+        set_tests_properties(qml-desktop-stream-menu-navigation-${window_mode} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    endforeach()
     foreach(surface desktop console)
         set(microphone_settings_route settings-audio)
         set(microphone_overlay desktop-stream-menu)
@@ -1481,6 +1518,7 @@ if(BUILD_TESTING)
         opennow-streampresentationfeedback-tests
         opennow-senderpacing-tests
         opennow-frameinterpolator-tests
+        opennow-framegenerationbenchmark-tests
         opennow-fsrupscaler-tests
         opennow-streamcolor-tests
         opennow-localization-tests
@@ -1530,6 +1568,7 @@ if(BUILD_TESTING)
             opennow-streamtoasts-tests
             opennow-waylandhdroutput-tests
             opennow-frameinterpolator-tests
+            opennow-framegenerationbenchmark-tests
             opennow-fsrupscaler-tests
             opennow-localization-tests
             opennow-qt-tests
@@ -1597,6 +1636,7 @@ if(BUILD_TESTING)
                 opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
+                opennow-framegenerationbenchmark-tests
                 opennow-fsrupscaler-tests
                 opennow-localization-tests
                 opennow-qt-tests
