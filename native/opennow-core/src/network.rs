@@ -271,10 +271,8 @@ fn region_endpoint(region_url: &str) -> Result<(String, Vec<SocketAddr>), String
     let port = parsed
         .port_or_known_default()
         .ok_or_else(|| "Region URL has no TCP port".to_owned())?;
-    let addresses = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|_| "Region host could not be resolved".to_owned())?
-        .collect::<Vec<_>>();
+    let addresses = resolve_bounded(host.clone(), port)
+        .ok_or_else(|| "Region host could not be resolved".to_owned())?;
     if addresses.is_empty() {
         return Err("Region host has no routable address".to_owned());
     }
@@ -342,6 +340,59 @@ mod tests {
             );
             assert_eq!(measure_region("https://unresolvable.invalid"), Value::Null);
         });
+    }
+
+    #[test]
+    fn cancelled_region_endpoint_does_not_resolve_numeric_hosts() {
+        let requests = Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("dns", "network.regions.ping").unwrap();
+        requests.cancel("dns");
+        let started = Instant::now();
+        crate::requests::scope(permit.token.clone(), || {
+            assert!(region_endpoint("http://127.0.0.1:443").is_err());
+        });
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn region_measurement_bounds_a_stalled_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let worker = thread::spawn(move || {
+            use std::io::Read;
+            let started = Instant::now();
+            loop {
+                match listener.accept() {
+                    Ok((mut connection, _)) => {
+                        connection
+                            .set_read_timeout(Some(CONNECT_TIMEOUT + Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = Vec::new();
+                        connection.read_to_end(&mut request).unwrap();
+                        assert!(request.starts_with(b"HEAD "));
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(started.elapsed() < CONNECT_TIMEOUT + Duration::from_secs(2));
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("loopback accept failed: {error}"),
+                }
+            }
+        });
+        let started = Instant::now();
+        let result = ping_regions(&json!({
+            "regions":[{"url":format!("http://127.0.0.1:{port}")}]
+        }))
+        .unwrap();
+        assert_eq!(result["results"][0]["pingMs"], Value::Null);
+        assert_eq!(
+            result["results"][0]["error"],
+            "HTTPS warm-up request failed"
+        );
+        assert!(started.elapsed() < QUEUE_PROBE_TIMEOUT + CONNECT_TIMEOUT + Duration::from_secs(2));
+        worker.join().unwrap();
     }
 
     #[test]
