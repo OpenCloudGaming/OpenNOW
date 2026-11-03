@@ -21,9 +21,11 @@ public:
             m_callback = callback;
         }
         m_bounds = item->boundingRect();
-        if (m_callback)
-            m_callback->setFrameGeneration(item->frameGeneration() && item->isVisible(),
-                m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
+        if (m_callback) {
+            const double detected = m_window->screen() ? m_window->screen()->refreshRate() : 0.0;
+            m_callback->setFrameGeneration(item->isVisible() ? item->frameGenerationFactor() : 0,
+                item->displayRefreshOverrideHz() > 0 ? double(item->displayRefreshOverrideHz()) : detected);
+        }
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
         m_metalFxUpscaling = item->metalFxUpscaling() && item->isVisible();
         m_fsrUpscaling = item->fsrUpscaling() && item->isVisible();

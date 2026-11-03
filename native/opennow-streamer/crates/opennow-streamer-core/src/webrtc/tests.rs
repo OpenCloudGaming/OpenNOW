@@ -497,7 +497,7 @@ impl PeerFixture {
                             .uri()
                             .query()
                             .unwrap()
-                            .contains("version=2&peer_role=1&pairing_id=fixture-seat")
+                            .contains("version=3.0&peer_role=1&pairing_id=fixture-seat")
                     );
                     assert_eq!(request.headers()["Origin"], "https://play.geforcenow.com");
                     assert_eq!(
@@ -518,6 +518,11 @@ impl PeerFixture {
                 peer_info["peer_info"]["resolution"],
                 format!("{}x{}", profile.width, profile.height)
             );
+            assert_eq!(peer_info["peer_info"]["version"], 3);
+            assert_eq!(peer_info["peer_info"]["signalingVersion"], "3.0");
+            assert_eq!(peer_info["peer_info"]["peer_role"], 1);
+            assert_eq!(peer_info["peer_info"]["browserVersion"], "131.0.0.0");
+            assert!(peer_info["peer_info"].get("peerRole").is_none());
             websocket.get_mut().set_nonblocking(true).unwrap();
             websocket.set_config(|config| config.max_write_buffer_size = 1024 * 1024);
             fixture_write(

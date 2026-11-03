@@ -1785,6 +1785,7 @@ dependencies = [
  "aes",
  "crc32fast",
  "ctr",
+ "fastrand",
  "getrandom 0.3.4",
  "ghash",
  "hmac",

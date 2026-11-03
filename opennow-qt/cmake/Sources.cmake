@@ -49,6 +49,8 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/StreamFrameInterpolator.cpp
     src/streaming/rendering/StreamFrameInterpolator.h
     src/streaming/rendering/StreamFramePacer.h
+    src/streaming/rendering/FrameGenerationBenchmark.cpp
+    src/streaming/rendering/FrameGenerationBenchmark.h
     src/streaming/rendering/StreamSenderPacer.h
 )
 

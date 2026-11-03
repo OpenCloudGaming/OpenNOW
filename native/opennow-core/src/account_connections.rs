@@ -550,7 +550,15 @@ fn wait_for_callback(
     while Instant::now() < deadline && !cancelled.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .map_err(|error| error.to_string())?;
                 let mut buffer = [0_u8; 8192];
                 let count = stream
                     .read(&mut buffer)
@@ -891,6 +899,48 @@ mod tests {
             ensure_provider_feature(&provider_definitions(), "STEAM", "supportsLinking").is_err()
         );
         assert!(ensure_provider_feature(&provider_definitions(), "STEAM", "supportsSync").is_ok());
+    }
+
+    #[test]
+    fn callback_accepts_headers_sent_after_the_connection_is_established() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = std::net::TcpStream::connect_timeout(
+            &listener.local_addr().unwrap(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        client.set_nonblocking(false).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let result = (|| -> std::io::Result<String> {
+                client.write_all(
+                    b"GET /?platform=GOG&display_name=Fixture&expires_in=3600 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )?;
+                let mut response = String::new();
+                client.read_to_string(&mut response)?;
+                Ok(response)
+            })();
+            worker_cancelled.store(true, Ordering::Release);
+            result
+        });
+        let callback = wait_for_callback(listener, "GOG", &cancelled);
+        let response = worker.join().unwrap().unwrap();
+        assert_eq!(
+            callback.unwrap(),
+            json!({"platform":"GOG","displayName":"Fixture","expiresIn":"3600"})
+        );
+        assert!(response.starts_with("HTTP/1.1 302 Found\r\n"));
+        assert!(response.contains(
+            "\r\nLocation: https://static-als.nvidia.com/result?platform=GOG&ui_locales=en_US\r\n"
+        ));
     }
 
     #[test]

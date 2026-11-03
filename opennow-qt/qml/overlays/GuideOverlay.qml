@@ -39,6 +39,7 @@ FocusScope {
         {label: qsTr("Toggle recording"), value: shortcutHint("shortcutToggleRecording", "F12")},
         {label: qsTr("Save clip"), value: shortcutHint("shortcutSaveClip", "Ctrl+F12")},
         {label: qsTr("Toggle Anti-AFK"), value: shortcutHint("shortcutToggleAntiAfk", "Ctrl+Shift+K")},
+        {label: qsTr("Toggle frame generation"), value: shortcutHint("shortcutToggleFrameGeneration", "Ctrl+Shift+G")},
         {label: qsTr("Microphone"), value: ShellStore.microphoneToggleAvailable
             ? shortcutHint("shortcutToggleMicrophone", "Ctrl+Shift+M") : ShellStore.microphoneLabel},
         {label: qsTr("End session"), value: shortcutHint("shortcutStopStream", "Ctrl+Shift+Q")}

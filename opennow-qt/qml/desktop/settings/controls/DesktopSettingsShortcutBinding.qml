@@ -7,7 +7,7 @@ QtObject {
         shortcutToggleFullscreen: "F11", shortcutStopStream: "Ctrl+Shift+Q",
         shortcutToggleAntiAfk: "Ctrl+Shift+K", shortcutToggleMicrophone: "Ctrl+Shift+M",
         shortcutScreenshot: "Ctrl+F11", shortcutToggleRecording: "F12",
-        shortcutSaveClip: "Ctrl+F12"
+        shortcutSaveClip: "Ctrl+F12", shortcutToggleFrameGeneration: "Ctrl+Shift+G"
     })
     readonly property var commands: [
         {key: "shortcutToggleStats", title: qsTr("Stats overlay")},
@@ -18,6 +18,7 @@ QtObject {
         {key: "shortcutToggleRecording", title: qsTr("Toggle recording")},
         {key: "shortcutSaveClip", title: qsTr("Save replay clip")},
         {key: "shortcutToggleAntiAfk", title: qsTr("Toggle Anti-AFK")},
+        {key: "shortcutToggleFrameGeneration", title: qsTr("Toggle frame generation")},
         {key: "shortcutStopStream", title: qsTr("End the session")}
     ]
 

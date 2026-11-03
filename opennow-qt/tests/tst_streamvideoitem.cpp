@@ -4105,6 +4105,87 @@ private slots:
         QTRY_VERIFY(item->captureActive());
     }
 
+    void mouseReleaseSurvivesCaptureLoss_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::addColumn<bool>("relative");
+        QTest::addColumn<bool>("raw");
+        for (const bool fullscreen : {false, true}) {
+            for (const bool relative : {false, true}) {
+                for (const bool raw : {false, true}) {
+                    const auto name = QStringLiteral("%1-%2-%3")
+                        .arg(fullscreen ? "fullscreen" : "windowed")
+                        .arg(relative ? "relative" : "absolute")
+                        .arg(raw ? "raw" : "qt");
+                    QTest::newRow(qPrintable(name)) << fullscreen << relative << raw;
+                }
+            }
+        }
+    }
+
+    void mouseReleaseSurvivesCaptureLoss()
+    {
+        QFETCH(bool, fullscreen);
+        QFETCH(bool, relative);
+        QFETCH(bool, raw);
+        static bool rawInput;
+        static QList<QPair<quint8, bool>> buttons;
+        rawInput = raw;
+        buttons.clear();
+        auto api = CursorSession::api();
+        api.setCaptureActive = [](const OpenNowStreamer *, bool, bool, std::uintptr_t, bool *active) {
+            *active = rawInput;
+            return OPENNOW_STREAMER_OK;
+        };
+        api.submitMouseButton = [](const OpenNowStreamer *, std::uint8_t button, bool pressed) {
+            buttons.append({button, pressed});
+            return OPENNOW_STREAMER_OK;
+        };
+        CursorSession session(api);
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        if (fullscreen) session.window.showFullScreen();
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(1920, 1080));
+        item.setRelativeMouse(relative);
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        const QPointF position(item.width() / 2, item.height() / 2);
+        for (const auto button : {Qt::LeftButton, Qt::RightButton}) {
+            QMouseEvent press(QEvent::MouseButtonPress, position, position,
+                              button, Qt::LeftButton | Qt::RightButton, Qt::NoModifier);
+            item.mousePressEvent(&press);
+            QVERIFY(press.isAccepted());
+        }
+        QCOMPARE(item.m_pressedMouseButtons.size(), 2);
+        QCOMPARE(buttons.size(), raw ? 0 : 2);
+        item.setRelativeMouse(!relative);
+        QCOMPARE(item.m_pendingRelativeMouse, std::optional<bool>(!relative));
+        item.m_captureActive = false;
+        for (const auto button : {Qt::LeftButton, Qt::RightButton}) {
+            QMouseEvent release(QEvent::MouseButtonRelease, position, position,
+                                button, Qt::NoButton, Qt::NoModifier);
+            item.mouseReleaseEvent(&release);
+            QVERIFY(release.isAccepted());
+        }
+        QVERIFY(item.m_pressedMouseButtons.isEmpty());
+        QVERIFY(!item.m_pendingRelativeMouse.has_value());
+        QCOMPARE(item.relativeMouse(), !relative);
+        QList<QPair<quint8, bool>> expected;
+        if (!raw) expected = {{1, true}, {3, true}, {1, false}, {3, false}};
+        QCOMPARE(buttons, expected);
+        item.setInputEnabled(false);
+        for (const auto button : {Qt::LeftButton, Qt::MiddleButton}) {
+            QMouseEvent release(QEvent::MouseButtonRelease, position, position,
+                                button, Qt::NoButton, Qt::NoModifier);
+            item.mouseReleaseEvent(&release);
+            QVERIFY(!release.isAccepted());
+        }
+        QCOMPARE(buttons, expected);
+    }
+
     void cursorModeChangesDoNotReleaseAnActiveDrag()
     {
         StreamVideoItem item;

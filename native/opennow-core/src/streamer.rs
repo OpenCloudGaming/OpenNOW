@@ -1452,13 +1452,15 @@ fn normalize_embedded_mode(
     if width.checked_mul(height).is_none() {
         return Ok(());
     }
+    // H.264 stays near the historical pixel cap, with an exception for GFN's
+    // Mac 3.5K mode (3456x2160) which the official client streams as H.264.
     let max_pixels = if codec == "h264" { 4_953_599 } else { u64::MAX };
     let fits = |width: u64, height: u64| {
         width <= max_width
             && height <= max_height
-            && width
-                .checked_mul(height)
-                .is_some_and(|pixels| pixels <= max_pixels)
+            && width.checked_mul(height).is_some_and(|pixels| {
+                pixels <= max_pixels || (codec == "h264" && width == 3456 && height == 2160)
+            })
     };
     if fits(width, height) {
         return Ok(());
@@ -3725,11 +3727,20 @@ mod tests {
             assert!(width.parse::<u64>().unwrap() <= max_width);
             assert!(height.parse::<u64>().unwrap() <= max_height);
         }
-        let caps = json!({"protocolVersion":8,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"hardware","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]}
             ]
         }]});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "3456x2160");
+        assert!(fallbacks.is_empty());
+        caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+            json!({"width":2560,"height":1600});
         let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
             &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
             &caps,
