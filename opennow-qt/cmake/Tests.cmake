@@ -458,11 +458,13 @@ if(BUILD_TESTING)
         PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
     if(OPENNOW_XVFB_RUN)
         add_test(NAME opennow-framegenerationbenchmark-tests
-            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-framegenerationbenchmark-tests>" -o -,txt)
+            COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-framegenerationbenchmark-tests>" -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/frame-generation-benchmark-results.xml,junitxml")
         set_tests_properties(opennow-framegenerationbenchmark-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
     else()
         add_test(NAME opennow-framegenerationbenchmark-tests
-            COMMAND opennow-framegenerationbenchmark-tests -o -,txt)
+            COMMAND opennow-framegenerationbenchmark-tests -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/frame-generation-benchmark-results.xml,junitxml")
         if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
             set_tests_properties(opennow-framegenerationbenchmark-tests
                 PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
