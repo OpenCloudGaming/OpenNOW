@@ -365,6 +365,7 @@ mod tests {
             loop {
                 match listener.accept() {
                     Ok((mut connection, _)) => {
+                        connection.set_nonblocking(false).unwrap();
                         connection
                             .set_read_timeout(Some(CONNECT_TIMEOUT + Duration::from_secs(2)))
                             .unwrap();
