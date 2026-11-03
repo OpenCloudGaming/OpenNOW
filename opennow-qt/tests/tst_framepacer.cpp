@@ -135,6 +135,88 @@ private slots:
         }
     }
 
+    void skippedSourcePairUsesItsFullSpan_data()
+    {
+        QTest::addColumn<int>("factor");
+        QTest::addColumn<bool>("timestamps");
+        for (int factor : {2, 3, 4}) {
+            QTest::newRow(qPrintable(QString::number(factor) + QStringLiteral("-sender-clock"))) << factor << true;
+            QTest::newRow(qPrintable(QString::number(factor) + QStringLiteral("-arrival-clock"))) << factor << false;
+        }
+    }
+
+    void skippedSourcePairUsesItsFullSpan()
+    {
+        QFETCH(int, factor);
+        QFETCH(bool, timestamps);
+        constexpr std::int64_t interval = 16'666'667;
+        StreamFramePacer pacer;
+        for (std::uint64_t sequence = 1; sequence <= 10; ++sequence) {
+            const auto now = std::int64_t(sequence - 1) * interval;
+            QCOMPARE(pacer.source(sequence, timestamps ? now : 0, now, 60.0 * factor, factor),
+                     sequence == 1 ? StreamFramePacer::Result::WarmingUp : StreamFramePacer::Result::Interpolate);
+        }
+        const auto now = 11 * interval;
+        QCOMPARE(pacer.source(12, timestamps ? now : 0, now, 60.0 * factor, factor),
+                 StreamFramePacer::Result::Interpolate);
+        QCOMPARE(pacer.interval(), std::uint64_t(interval));
+        QCOMPARE(pacer.factor(), factor);
+        QCOMPARE(pacer.sequenceDelta(), 2ULL);
+        pacer.generated(now, factor - 1);
+        const auto slot = 2 * interval / factor;
+        for (int step = 1; step < factor; ++step) {
+            const auto due = now + step * slot;
+            QCOMPARE(pacer.takeNext(due - 1, 0).kind, StreamFramePacer::Next::Kind::None);
+            const auto next = pacer.takeNext(due, 0);
+            QCOMPARE(next.kind, step == factor - 1
+                ? StreamFramePacer::Next::Kind::Original : StreamFramePacer::Next::Kind::Generated);
+            QCOMPARE(next.index, step == factor - 1 ? 0 : step + 1);
+        }
+        QVERIFY(!pacer.pending());
+        const auto nextArrival = now + interval;
+        QCOMPARE(pacer.source(13, timestamps ? nextArrival : 0, nextArrival, 60.0 * factor, factor),
+                 StreamFramePacer::Result::Interpolate);
+        QCOMPARE(pacer.interval(), std::uint64_t(interval));
+        pacer.generated(nextArrival, factor - 1);
+        QCOMPARE(pacer.takeNext(nextArrival + interval / factor - 1, 0).kind, StreamFramePacer::Next::Kind::None);
+        QCOMPARE(pacer.takeNext(nextArrival + interval / factor, 0).kind, factor == 2
+            ? StreamFramePacer::Next::Kind::Original : StreamFramePacer::Next::Kind::Generated);
+    }
+
+    void skippedSourceStillRejectsRawArrivalGaps_data()
+    {
+        QTest::addColumn<qint64>("arrivalGap");
+        QTest::addColumn<bool>("timestamps");
+        for (qint64 gap : {50'000'000LL, 50'000'001LL, 90'000'000LL}) {
+            QTest::newRow(qPrintable(QString::number(gap) + QStringLiteral("-sender-clock"))) << gap << true;
+            QTest::newRow(qPrintable(QString::number(gap) + QStringLiteral("-arrival-clock"))) << gap << false;
+        }
+    }
+
+    void skippedSourceStillRejectsRawArrivalGaps()
+    {
+        QFETCH(qint64, arrivalGap);
+        QFETCH(bool, timestamps);
+        constexpr std::int64_t interval = 16'666'667;
+        StreamFramePacer pacer;
+        for (std::uint64_t sequence = 1; sequence <= 10; ++sequence) {
+            const auto now = std::int64_t(sequence - 1) * interval;
+            QCOMPARE(pacer.source(sequence, timestamps ? now : 0, now, 120),
+                     sequence == 1 ? StreamFramePacer::Result::WarmingUp : StreamFramePacer::Result::Interpolate);
+        }
+        const bool rejected = arrivalGap > 50'000'000;
+        QCOMPARE(pacer.source(12, timestamps ? 11 * interval : 0, 9 * interval + arrivalGap, 120),
+                 rejected ? StreamFramePacer::Result::Discontinuity : StreamFramePacer::Result::Interpolate);
+        QCOMPARE(pacer.arrivalDelta(), arrivalGap);
+        QCOMPARE(pacer.rejection(), rejected ? StreamFramePacer::Rejection::ArrivalGap : StreamFramePacer::Rejection::None);
+        if (rejected) {
+            QCOMPARE(pacer.interval(), 0ULL);
+            QVERIFY(!pacer.pending());
+        } else {
+            QCOMPARE(pacer.interval(), std::uint64_t(interval));
+        }
+    }
+
     void refusesSourcesFasterThanTheSlotWidth()
     {
         StreamFramePacer pacer;

@@ -88,7 +88,7 @@ public:
         if (!consecutive) return reject(Rejection::SequenceGap);
         if (rewound) return reject(Rejection::TimestampRegression);
         if (jumped) return reject(Rejection::TimestampJump);
-        if (arrivalPerFrame > gapLimit) return reject(Rejection::ArrivalGap);
+        if (m_arrivalDelta > gapLimit) return reject(Rejection::ArrivalGap);
         const auto median = [](const std::array<std::int64_t, 8> &ring, std::size_t count) {
             if (!count) return std::int64_t(0);
             auto sorted = ring;
@@ -157,7 +157,7 @@ public:
         m_pending = true;
         m_pendingCount = count;
         m_pendingIndex = 1;
-        m_slot = std::int64_t(m_interval / std::uint64_t(count + 1));
+        m_slot = std::int64_t(m_interval * (m_sequenceDelta == 2 ? 2 : 1) / std::uint64_t(count + 1));
         m_nextDue = now + m_slot;
     }
 
