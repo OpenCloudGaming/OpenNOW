@@ -1,3 +1,4 @@
+use hyper_util::client::legacy::connect::HttpInfo;
 use serde_json::{Value, json};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
@@ -195,12 +196,14 @@ fn measure_region(region_url: &str) -> Value {
     if crate::requests::check().is_err() {
         return Value::Null;
     }
-    if client.head(region_url).send().is_err() {
-        return json!({"url":region_url,"pingMs":null,"error":"HTTPS warm-up request failed"});
-    }
+    let mut previous_connection = match https_round_trip(&client, region_url) {
+        Some((_, connection)) => connection,
+        None => {
+            return json!({"url":region_url,"pingMs":null,"error":"HTTPS warm-up request failed"});
+        }
+    };
 
     let mut samples = Vec::with_capacity(3);
-    let mut baseline_ms: Option<u128> = None;
     for attempt in 0..3 {
         if crate::requests::check().is_err() {
             return Value::Null;
@@ -208,28 +211,21 @@ fn measure_region(region_url: &str) -> Value {
         if attempt > 0 {
             thread::sleep(Duration::from_millis(100));
         }
-        let Some(sample_ms) = https_round_trip(&client, region_url) else {
-            continue;
-        };
-        let sample_ms = match accept_keep_alive_sample(sample_ms, baseline_ms) {
-            Some(ms) => ms,
-            None => {
-                // Server closed the pooled connection; the next request pays for
-                // a fresh TLS handshake. Retry once, then drop the outlier so it
-                // does not mix ~174 ms handshakes into ~20 ms keep-alive RTTs.
-                if crate::requests::check().is_err() {
-                    return Value::Null;
-                }
-                match https_round_trip(&client, region_url)
-                    .and_then(|ms| accept_keep_alive_sample(ms, baseline_ms))
-                {
-                    Some(ms) => ms,
-                    None => continue,
-                }
+        for _ in 0..2 {
+            if crate::requests::check().is_err() {
+                return Value::Null;
             }
-        };
-        baseline_ms = Some(baseline_ms.map_or(sample_ms, |base| base.min(sample_ms)));
-        samples.push(sample_ms);
+            let Some((sample_ms, connection)) = https_round_trip(&client, region_url) else {
+                previous_connection = None;
+                break;
+            };
+            if let Some(sample_ms) =
+                accept_keep_alive_sample(sample_ms, connection, &mut previous_connection)
+            {
+                samples.push(sample_ms);
+                break;
+            }
+        }
     }
     if samples.is_empty() {
         return json!({"url":region_url,"pingMs":null,"error":"All HTTPS measurements failed"});
@@ -239,23 +235,37 @@ fn measure_region(region_url: &str) -> Value {
     json!({"url":region_url,"pingMs":u64::try_from(average).unwrap_or(u64::MAX)})
 }
 
-fn https_round_trip(client: &reqwest::blocking::Client, region_url: &str) -> Option<u128> {
-    let started = Instant::now();
-    // Any HTTP response, including errors, proves the round trip; only
-    // transport failure counts as a failed sample.
-    client.head(region_url).send().ok()?;
-    Some(started.elapsed().as_millis())
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ConnectionIdentity {
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
 }
 
-fn accept_keep_alive_sample(sample_ms: u128, baseline_ms: Option<u128>) -> Option<u128> {
-    let Some(baseline) = baseline_ms else {
-        return Some(sample_ms);
-    };
-    let reconnect_floor = baseline.saturating_mul(3).max(baseline.saturating_add(50));
-    if sample_ms >= reconnect_floor && sample_ms >= 100 {
-        return None;
-    }
-    Some(sample_ms)
+fn https_round_trip(
+    client: &reqwest::blocking::Client,
+    region_url: &str,
+) -> Option<(u128, Option<ConnectionIdentity>)> {
+    let started = Instant::now();
+    let response = client.head(region_url).send().ok()?;
+    let elapsed_ms = started.elapsed().as_millis();
+    let connection = response
+        .extensions()
+        .get::<HttpInfo>()
+        .map(|info| ConnectionIdentity {
+            local_addr: info.local_addr(),
+            remote_addr: info.remote_addr(),
+        });
+    Some((elapsed_ms, connection))
+}
+
+fn accept_keep_alive_sample(
+    sample_ms: u128,
+    connection: Option<ConnectionIdentity>,
+    previous_connection: &mut Option<ConnectionIdentity>,
+) -> Option<u128> {
+    let reused = connection.is_some() && connection == *previous_connection;
+    *previous_connection = connection;
+    reused.then_some(sample_ms)
 }
 
 fn region_endpoint(region_url: &str) -> Result<(String, Vec<SocketAddr>), String> {
@@ -283,6 +293,156 @@ fn region_endpoint(region_url: &str) -> Result<(String, Vec<SocketAddr>), String
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    fn measure_loopback_region(requests_per_connection: &[usize]) -> (Value, Vec<usize>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let stop = finished.clone();
+        let requests_per_connection = requests_per_connection.to_vec();
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut requests = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                assert!(Instant::now() < deadline, "loopback fixture deadline");
+                let mut connection = match listener.accept() {
+                    Ok((connection, _)) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => panic!("loopback accept failed: {error}"),
+                };
+                connection.set_nonblocking(false).unwrap();
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                connection
+                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let limit = requests_per_connection
+                    .get(requests.len())
+                    .copied()
+                    .unwrap_or(1);
+                requests.push(0);
+                for index in 0..limit {
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        assert!(Instant::now() < deadline, "loopback request deadline");
+                        let mut byte = [0];
+                        if connection.read(&mut byte).unwrap() == 0 {
+                            return requests;
+                        }
+                        request.push(byte[0]);
+                        assert!(request.len() < 4096);
+                    }
+                    assert!(request.starts_with(b"HEAD "));
+                    thread::sleep(Duration::from_millis(10));
+                    let persistence = if index + 1 == limit {
+                        "close"
+                    } else {
+                        "keep-alive"
+                    };
+                    write!(
+                        connection,
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: {persistence}\r\n\r\n"
+                    )
+                    .unwrap();
+                    *requests.last_mut().unwrap() += 1;
+                }
+            }
+            requests
+        });
+        let result = ping_regions(&json!({
+            "regions":[{"url":format!("http://127.0.0.1:{port}")}]
+        }));
+        finished.store(true, Ordering::Release);
+        let requests = worker.join().unwrap();
+        (result.unwrap()["results"][0].clone(), requests)
+    }
+
+    #[test]
+    fn region_measurement_accepts_keep_alive_round_trips() {
+        let (result, requests) = measure_loopback_region(&[4]);
+        assert!(result["pingMs"].is_u64(), "{result}");
+        assert_eq!(requests, vec![4]);
+    }
+
+    #[test]
+    fn region_measurement_rejects_connections_closed_after_every_response() {
+        let (result, requests) = measure_loopback_region(&[1; 7]);
+        assert_eq!(result["pingMs"], Value::Null, "{result}");
+        assert_eq!(result["error"], "All HTTPS measurements failed");
+        assert_eq!(requests, vec![1; 7]);
+    }
+
+    #[test]
+    fn region_measurement_discards_first_reconnect_then_measures_reuse() {
+        let (result, requests) = measure_loopback_region(&[1, 4]);
+        assert!(result["pingMs"].is_u64(), "{result}");
+        assert_eq!(requests, vec![1, 4]);
+    }
+
+    #[test]
+    fn keep_alive_samples_require_matching_transport_endpoints_not_fast_responses() {
+        let first = ConnectionIdentity {
+            local_addr: "127.0.0.1:40000".parse().unwrap(),
+            remote_addr: "127.0.0.1:443".parse().unwrap(),
+        };
+        let reconnected = ConnectionIdentity {
+            local_addr: "127.0.0.1:40001".parse().unwrap(),
+            ..first
+        };
+        let different_peer = ConnectionIdentity {
+            remote_addr: "127.0.0.2:443".parse().unwrap(),
+            ..reconnected
+        };
+        let mut previous = None;
+        assert_eq!(
+            accept_keep_alive_sample(1, Some(first), &mut previous),
+            None
+        );
+        assert_eq!(
+            accept_keep_alive_sample(500, Some(first), &mut previous),
+            Some(500)
+        );
+        assert_eq!(
+            accept_keep_alive_sample(1, Some(reconnected), &mut previous),
+            None
+        );
+        assert_eq!(
+            accept_keep_alive_sample(20, Some(reconnected), &mut previous),
+            Some(20)
+        );
+        assert_eq!(
+            accept_keep_alive_sample(1, Some(different_peer), &mut previous),
+            None
+        );
+    }
+
+    #[test]
+    fn keep_alive_samples_fail_closed_without_connection_metadata() {
+        let connection = ConnectionIdentity {
+            local_addr: "127.0.0.1:40000".parse().unwrap(),
+            remote_addr: "127.0.0.1:443".parse().unwrap(),
+        };
+        let mut previous = Some(connection);
+        assert_eq!(accept_keep_alive_sample(1, None, &mut previous), None);
+        assert!(previous.is_none());
+        assert_eq!(accept_keep_alive_sample(1, None, &mut previous), None);
+        assert_eq!(
+            accept_keep_alive_sample(1, Some(connection), &mut previous),
+            None
+        );
+        assert_eq!(
+            accept_keep_alive_sample(10, Some(connection), &mut previous),
+            Some(10)
+        );
+    }
 
     #[test]
     fn queue_tcp_measurement_warms_up_then_takes_two_samples_without_http() {

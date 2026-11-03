@@ -13,6 +13,7 @@ ed25519-dalek = "2.2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hkdf = "0.12"
 httpdate = "1"
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
 md5 = "0.7"
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
