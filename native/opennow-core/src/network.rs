@@ -129,7 +129,49 @@ fn bounded_tcp_ping(addresses: &[SocketAddr]) -> Option<u64> {
     None
 }
 
-pub fn ping_regions(params: &Value) -> Result<Value, String> {
+struct RegionResolver {
+    cancellation: crate::requests::Cancellation,
+    jobs: Option<mpsc::SyncSender<ResolveJob>>,
+}
+
+impl reqwest::dns::Resolve for RegionResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let cancellation = self.cancellation.clone();
+        let jobs = self.jobs.clone();
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let deadline = Instant::now() + QUEUE_PROBE_TIMEOUT;
+            let (result, receive) = mpsc::sync_channel(1);
+            let error = || std::io::Error::other("Region DNS unavailable");
+            cancellation.check().map_err(|_| error())?;
+            jobs.ok_or_else(error)?
+                .try_send(ResolveJob {
+                    host,
+                    port: 0,
+                    deadline,
+                    cancellation: cancellation.clone(),
+                    result,
+                })
+                .map_err(|_| error())?;
+            loop {
+                if cancellation.cancelled() || Instant::now() >= deadline {
+                    return Err(error().into());
+                }
+                match receive.try_recv() {
+                    Ok(addresses) if !addresses.is_empty() => {
+                        return Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs);
+                    }
+                    Ok(_) | Err(mpsc::TryRecvError::Disconnected) => return Err(error().into()),
+                    Err(mpsc::TryRecvError::Empty) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            }
+        })
+    }
+}
+
+pub fn ping_regions(params: &Value, settings: &Value) -> Result<Value, String> {
     let cancellation = crate::requests::current();
     cancellation.check().map_err(|error| error.message)?;
     let regions = params["regions"]
@@ -140,6 +182,7 @@ pub fn ping_regions(params: &Value) -> Result<Value, String> {
             "At most {MAX_REGIONS} regions can be measured at once"
         ));
     }
+    let proxy = crate::proxy::config_from_settings(settings)?;
     let inputs = regions
         .iter()
         .map(|region| region["url"].as_str().unwrap_or_default().to_owned())
@@ -147,10 +190,12 @@ pub fn ping_regions(params: &Value) -> Result<Value, String> {
     let results = Arc::new(Mutex::new(vec![Value::Null; inputs.len()]));
     thread::scope(|scope| {
         for (index, region_url) in inputs.into_iter().enumerate() {
+            let proxy = proxy.as_ref();
             let output = Arc::clone(&results);
             let cancellation = cancellation.clone();
             scope.spawn(move || {
-                let result = crate::requests::scope(cancellation, || measure_region(&region_url));
+                let result =
+                    crate::requests::scope(cancellation, || measure_region(&region_url, proxy));
                 output.lock().expect("region ping output poisoned")[index] = result;
             });
         }
@@ -163,32 +208,34 @@ pub fn ping_regions(params: &Value) -> Result<Value, String> {
     Ok(json!({"results":results}))
 }
 
-fn measure_region(region_url: &str) -> Value {
+fn measure_region(region_url: &str, proxy: Option<&crate::proxy::ProxyConfig>) -> Value {
     if crate::requests::check().is_err() {
         return Value::Null;
     }
-    let (host, addresses) = match region_endpoint(region_url) {
-        Ok(endpoint) => endpoint,
-        Err(error) => return json!({"url":region_url,"pingMs":null,"error":error}),
-    };
+    if let Err(error) = region_endpoint(region_url) {
+        return json!({"url":region_url,"pingMs":null,"error":error});
+    }
 
     // Local VPN tunnels and transparent proxies complete TCP handshakes on the
     // spot, so a TCP connect measures the tunnel, not the region. An HTTPS
     // response must be produced by the origin, so latency is an HTTPS RTT on a
     // reused connection. Redirects stay disabled so a fast origin that 30x's to
-    // a slow host cannot inflate the sample. Addresses are pinned into the
-    // client so reqwest does not start a DNS job that outlives CONNECT_TIMEOUT
-    // when the Client drops.
-    let mut builder = reqwest::blocking::Client::builder()
+    // a slow host cannot inflate the sample.
+    let builder = reqwest::blocking::Client::builder()
         .timeout(CONNECT_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none());
-    for address in &addresses {
-        builder = builder.resolve(&host, *address);
-    }
-    let client = match builder.build() {
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(RegionResolver {
+            cancellation: crate::requests::current(),
+            jobs: resolver().cloned(),
+        }));
+    let client = match crate::proxy::builder_for_config(builder, proxy).and_then(|builder| {
+        builder
+            .build()
+            .map_err(|_| "HTTPS client unavailable".to_owned())
+    }) {
         Ok(client) => client,
         Err(_) => return json!({"url":region_url,"pingMs":null,"error":"HTTPS client unavailable"}),
     };
@@ -268,26 +315,25 @@ fn accept_keep_alive_sample(
     reused.then_some(sample_ms)
 }
 
-fn region_endpoint(region_url: &str) -> Result<(String, Vec<SocketAddr>), String> {
+fn region_endpoint(region_url: &str) -> Result<(), String> {
+    crate::requests::check().map_err(|error| error.message)?;
     let parsed = Url::parse(region_url).map_err(|_| "Invalid region URL".to_owned())?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return Err("Unsupported region URL scheme".to_owned());
     }
-    let host = parsed
+    parsed
         .host_str()
         .filter(|host| !host.is_empty())
-        .ok_or_else(|| "Region URL has no host".to_owned())?
-        .to_owned();
-    let port = parsed
+        .ok_or_else(|| "Region URL has no host".to_owned())?;
+    parsed
         .port_or_known_default()
         .ok_or_else(|| "Region URL has no TCP port".to_owned())?;
-    let addresses = resolve_bounded(host.clone(), port)
-        .ok_or_else(|| "Region host could not be resolved".to_owned())?;
-    if addresses.is_empty() {
-        return Err("Region host has no routable address".to_owned());
-    }
-    Ok((host, addresses))
+    Ok(())
 }
+
+#[cfg(all(test, windows))]
+#[path = "network_windows_tests.rs"]
+mod windows_tests;
 
 #[cfg(test)]
 mod tests {
@@ -357,9 +403,12 @@ mod tests {
             }
             requests
         });
-        let result = ping_regions(&json!({
-            "regions":[{"url":format!("http://127.0.0.1:{port}")}]
-        }));
+        let result = ping_regions(
+            &json!({
+                "regions":[{"url":format!("http://127.0.0.1:{port}")}]
+            }),
+            &json!({}),
+        );
         finished.store(true, Ordering::Release);
         let requests = worker.join().unwrap();
         (result.unwrap()["results"][0].clone(), requests)
@@ -489,16 +538,85 @@ mod tests {
     }
 
     #[test]
+    fn stalled_proxy_dns_and_client_drop_obey_the_resolver_deadline() {
+        for scheme in ["http", "https", "socks4", "socks5"] {
+            let elapsed = stalled_proxy_dns(scheme, false);
+            assert!(elapsed >= QUEUE_PROBE_TIMEOUT, "{scheme}: {elapsed:?}");
+            assert!(
+                elapsed < QUEUE_PROBE_TIMEOUT + Duration::from_secs(1),
+                "{scheme}: {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_proxy_dns_does_not_wait_for_resolution_or_client_drop() {
+        for scheme in ["http", "https", "socks4", "socks5"] {
+            assert!(
+                stalled_proxy_dns(scheme, true) < Duration::from_secs(1),
+                "{scheme}"
+            );
+        }
+    }
+
+    fn stalled_proxy_dns(scheme: &str, cancel: bool) -> Duration {
+        let (jobs, receive) = mpsc::sync_channel(1);
+        let requests = Arc::new(crate::requests::Requests::default());
+        let permit = requests.admit("dns", "network.regions.ping").unwrap();
+        let cancellation = permit.token.clone();
+        thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                let proxy =
+                    crate::proxy::normalize_proxy_url(&format!("{scheme}://proxy.invalid:8080"))
+                        .unwrap();
+                let builder = reqwest::blocking::Client::builder()
+                    .timeout(CONNECT_TIMEOUT)
+                    .connect_timeout(CONNECT_TIMEOUT)
+                    .dns_resolver(Arc::new(RegionResolver {
+                        cancellation,
+                        jobs: Some(jobs),
+                    }));
+                let client = crate::proxy::builder_for_config(builder, Some(&proxy))
+                    .unwrap()
+                    .build()
+                    .unwrap();
+                let started = Instant::now();
+                assert!(client.head("http://127.0.0.1:80/probe").send().is_err());
+                drop(client);
+                started.elapsed()
+            });
+            let mut stalled_job = receive.recv_timeout(Duration::from_secs(1)).unwrap();
+            if stalled_job.host == "127.0.0.1" {
+                stalled_job
+                    .result
+                    .send(vec!["127.0.0.1:0".parse().unwrap()])
+                    .unwrap();
+                stalled_job = receive.recv_timeout(Duration::from_secs(1)).unwrap();
+            }
+            assert_eq!(stalled_job.host, "proxy.invalid", "{scheme}");
+            if cancel {
+                requests.cancel("dns");
+            }
+            let elapsed = worker.join().unwrap();
+            drop(stalled_job);
+            elapsed
+        })
+    }
+
+    #[test]
     fn cancelled_region_measurement_does_not_start_network_work() {
         let requests = Arc::new(crate::requests::Requests::default());
         let permit = requests.admit("ping", "network.regions.ping").unwrap();
         requests.cancel("ping");
         crate::requests::scope(permit.token.clone(), || {
             assert_eq!(
-                ping_regions(&json!({"regions":[]})).unwrap_err(),
+                ping_regions(&json!({"regions":[]}), &json!({})).unwrap_err(),
                 "Request cancelled"
             );
-            assert_eq!(measure_region("https://unresolvable.invalid"), Value::Null);
+            assert_eq!(
+                measure_region("https://unresolvable.invalid", None),
+                Value::Null
+            );
         });
     }
 
@@ -543,9 +661,12 @@ mod tests {
             }
         });
         let started = Instant::now();
-        let result = ping_regions(&json!({
-            "regions":[{"url":format!("http://127.0.0.1:{port}")}]
-        }))
+        let result = ping_regions(
+            &json!({
+                "regions":[{"url":format!("http://127.0.0.1:{port}")}]
+            }),
+            &json!({}),
+        )
         .unwrap();
         assert_eq!(result["results"][0]["pingMs"], Value::Null);
         assert_eq!(
@@ -558,7 +679,7 @@ mod tests {
 
     #[test]
     fn region_ping_rejects_invalid_and_unbounded_input() {
-        let invalid = ping_regions(&json!({"regions":[{"url":"file:///tmp/nope"}]}))
+        let invalid = ping_regions(&json!({"regions":[{"url":"file:///tmp/nope"}]}), &json!({}))
             .expect("invalid regions return per-item results");
         assert_eq!(invalid["results"][0]["pingMs"], Value::Null);
         assert_eq!(
@@ -569,7 +690,7 @@ mod tests {
         let regions = (0..=MAX_REGIONS)
             .map(|_| json!({"url":"https://example.invalid"}))
             .collect::<Vec<_>>();
-        assert!(ping_regions(&json!({"regions":regions})).is_err());
+        assert!(ping_regions(&json!({"regions":regions}), &json!({})).is_err());
     }
 
     #[test]
@@ -578,9 +699,12 @@ mod tests {
         let port = listener.local_addr().expect("listener address").port();
         drop(listener);
 
-        let result = ping_regions(&json!({
-            "regions":[{"url":format!("http://127.0.0.1:{port}")}]
-        }))
+        let result = ping_regions(
+            &json!({
+                "regions":[{"url":format!("http://127.0.0.1:{port}")}]
+            }),
+            &json!({}),
+        )
         .expect("offline measurements remain serializable");
         assert_eq!(result["results"][0]["pingMs"], Value::Null);
         assert_eq!(

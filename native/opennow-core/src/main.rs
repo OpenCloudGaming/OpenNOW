@@ -736,9 +736,12 @@ fn dispatch(
                 .map(|value| (value, None))
                 .map_err(gfn_error)
         }
-        "network.regions.ping" => network::ping_regions(params)
-            .map(|value| (value, None))
-            .map_err(|message| ("region_ping_failed".to_owned(), message)),
+        "network.regions.ping" => {
+            let settings = core.settings.lock().expect("settings poisoned").all();
+            network::ping_regions(params, &settings)
+                .map(|value| (value, None))
+                .map_err(|message| ("region_ping_failed".to_owned(), message))
+        }
         "queue.servers.list" => queue_servers::list()
             .map(|value| (value, None))
             .map_err(gfn_error),
