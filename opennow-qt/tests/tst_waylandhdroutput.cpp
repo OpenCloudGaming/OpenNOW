@@ -31,6 +31,7 @@ private slots:
             value.white = white;
             const auto state = WaylandHdrOutput::stateForDescription(value);
             QVERIFY(state.supported);
+            QVERIFY(state.targetLuminanceProvided);
             QCOMPARE(state.whiteNits, float(white));
         }
     }
@@ -39,13 +40,31 @@ private slots:
     {
         QVERIFY(!WaylandHdrOutput::stateForDescription({}).supported);
         for (bool Description::*field : {&Description::ready, &Description::complete,
-                 &Description::primaries, &Description::pq, &Description::luminances,
-                 &Description::targetLuminance}) {
+                 &Description::primaries, &Description::pq, &Description::luminances}) {
             auto value = hdrDescription();
             value.*field = false;
             const auto state = WaylandHdrOutput::stateForDescription(value);
             QVERIFY(!state.supported);
             QCOMPARE(state.whiteNits, 203.0f);
+        }
+    }
+
+    void mutter48MissingTargetUsesEncodingVolumeWithoutDisplayMeasurement()
+    {
+        auto value = hdrDescription();
+        value.targetLuminance = false;
+        value.targetMinimum = value.targetMaximum = std::numeric_limits<double>::quiet_NaN();
+        value.primariesValue = {0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.329};
+        const auto state = WaylandHdrOutput::stateForDescription(value);
+        QVERIFY(state.supported);
+        QVERIFY(!state.targetLuminanceProvided);
+        QCOMPARE(state.targetMinimumNits, 0.005f);
+        QCOMPARE(state.targetMaximumNits, 10000.0f);
+        QCOMPARE(state.whiteNits, 203.0f);
+        QCOMPARE(state.targetPrimaries, value.primariesValue);
+        for (double peak : {203.0, 10001.0, std::numeric_limits<double>::quiet_NaN()}) {
+            value.maximum = peak;
+            QVERIFY(!WaylandHdrOutput::stateForDescription(value).supported);
         }
     }
 
