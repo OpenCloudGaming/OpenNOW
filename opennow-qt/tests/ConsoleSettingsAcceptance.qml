@@ -9,6 +9,23 @@ QtObject {
     property Item rows: null
     property Item sections: null
     property Item themesSection: null
+    property Component desktopSettings: Component { DesktopSettingsScreen { visible: false } }
+    property QtObject client: QtObject {
+        property string state: "ready"
+        property string lastError: ""
+        property var calls: []
+        signal responseReceived(string requestId, var result)
+        signal requestFailed(string requestId, string code, string message)
+        signal eventReceived(string name, var payload)
+        function markUiReady() {}
+        function logShellDiagnostic(message) {}
+        function request(method, params, timeout) {
+            const id = "resolution-fixture-" + (calls.length + 1)
+            calls = calls.concat([{id:id, method:method, params:params}])
+            return id
+        }
+        function cancel(id) { return true }
+    }
 
     function check(ok, message) { if (!ok) throw new Error("Console settings: " + message) }
     function find(item, name) {
@@ -44,11 +61,85 @@ QtObject {
             "console shares the desktop entitlement decisions")
         check(JSON.stringify(row.labels) === JSON.stringify(shared.map(item => item.label)),
             "console shows the shared resolution labels")
+        ShellStore.applySetting("resolution", "1234x800")
+        row = screen.settingsModel().find(item => item.key === "resolution")
+        check(row.values[0] === "1234x800" && row.values.length === shared.length + 1,
+            "a saved resolution outside the shared list stays selectable")
         ShellStore.applySetting("resolution", "1366x768")
         row = screen.settingsModel().find(item => item.key === "resolution")
-        check(row.values[0] === "1366x768" && row.values.length === shared.length + 1,
-            "a saved resolution outside the shared list stays selectable")
+        check(row.values.filter(value => value === "1366x768").length === 1 && row.values.length === shared.length,
+            "1366x768 is a shared preset, not an extra current-resolution choice")
         ShellStore.applySetting("resolution", "1920x1080")
+    }
+
+    function checkResolutionPresets(parent) {
+        const added = [
+            ["1112x834", "4:3"], ["1024x768", "4:3"], ["1366x768", "16:9"],
+            ["1280x1024", "5:4"], ["1680x720", "21:9"], ["1600x1200", "4:3"], ["3456x2160", "16:10"]
+        ]
+        const existing = ["1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160", "5120x2880", "7680x4320",
+            "1280x800", "1440x900", "1680x1050", "1920x1200", "2560x1600", "3840x2400",
+            "2560x1080", "3440x1440", "3840x1600", "3840x1800", "5120x2160", "3840x1080", "5120x1440"]
+        const subscription = ShellStore.subscription
+        ShellStore.subscription = null
+        const items = ShellStore.resolutionItems()
+        const choices = sharedResolutionChoices()
+        check(choices.length === existing.length + added.length, "only the seven unambiguous sizes are added")
+        check(new Set(choices.map(item => item.value)).size === choices.length, "all preset sizes are unique")
+        check(JSON.stringify(choices.filter(item => existing.indexOf(item.value) >= 0).map(item => item.value)) === JSON.stringify(existing),
+            "existing preset sizes and their order are preserved")
+        check(!choices.some(item => item.value === "3640x1080"), "the ambiguous requested size is not guessed")
+        check(choices.every(item => !item.disabled), "offline choices remain available")
+        const desktop = desktopSettings.createObject(parent)
+        const picker = find(desktop, "renewResolutionPicker")
+        check(picker !== null, "the real desktop resolution picker exists")
+        for (const preset of added) {
+            const index = items.findIndex(item => item.value === preset[0])
+            check(index >= 0, preset[0] + " is a shared choice")
+            const heading = items.slice(0, index).filter(item => item.kind === "heading").pop()
+            check(heading.label.split(" ")[0] === preset[1], preset[0] + " has the correct aspect heading")
+            check(items[index].detail === preset[0].replace("x", "×"), preset[0] + " displays exact dimensions")
+        }
+        for (const entitlement of [null, {entitledResolutions:[]},
+                {entitledResolutions:[{width:7680, height:4320, fps:120}]},
+                {entitledResolutions:added.map(preset => {
+                    const size = preset[0].split("x").map(Number)
+                    return {width:size[0], height:size[1], fps:60}
+                })},
+                {entitledResolutions:[{width:1366, height:768, fps:29}]}]) {
+            ShellStore.subscription = entitlement
+            check(JSON.stringify(picker.items) === JSON.stringify(ShellStore.resolutionItems()),
+                "desktop uses the shared choices and entitlement flags")
+            checkResolutionParity()
+            for (const preset of added) {
+                const exact = entitlement && entitlement.entitledResolutions.some(item =>
+                    item.width + "x" + item.height === preset[0] && item.fps >= 30)
+                const option = picker.choices.find(item => item.value === preset[0])
+                check(option.disabled === Boolean(entitlement && !exact), preset[0] + " requires an exact usable entitlement when loaded")
+                check(picker.available.some(item => item.value === preset[0]) === !option.disabled,
+                    preset[0] + " cannot be selected by the desktop stepper when unsupported")
+            }
+        }
+        ShellStore.subscription = null
+        const owner = ShellStore.settingsOwnerState
+        for (const preset of added) {
+            for (const surface of ["desktop", "console"]) {
+                const callCount = client.calls.length
+                if (surface === "desktop") picker.selected(preset[0])
+                else screen.applyChoice("resolution", preset[0])
+                const write = client.calls.slice(callCount).find(call => call.method === "settings.set" && call.params.key === "resolution")
+                check(write && write.params.value === preset[0], surface + " serializes " + preset[0] + " without changing dimensions")
+                client.eventReceived("settings.changed", {key:"resolution", value:preset[0]})
+                client.responseReceived(write.id, {key:"resolution", value:preset[0]})
+                check(owner.confirmedSettings.resolution === preset[0] && ShellStore.settings.resolution === preset[0],
+                    surface + " retains the confirmed saved resolution")
+                check(picker.value === preset[0] && screen.resolutionLabel(preset[0]) === picker.current.label + " · " + picker.current.detail,
+                    "desktop and console reflect the saved preset")
+                ShellStore.applySetting("resolution", "1920x1080")
+            }
+        }
+        ShellStore.subscription = subscription
+        desktop.destroy()
     }
 
     function checkAccentSwatches() {
@@ -103,7 +194,7 @@ QtObject {
         rows = find(screen, "consoleSettingsList")
         sections = find(screen, "consoleSettingsSections")
         check(rows !== null && sections !== null, "rows and sections exist")
-        checkResolutionParity()
+        checkResolutionPresets(parent)
         checkAccentSwatches()
         const fpsValues = ShellStore.canonicalFpsValues()
         checkRetainedDelegate(2, "fps", [fpsValues[0], fpsValues[1], fpsValues[0]])
