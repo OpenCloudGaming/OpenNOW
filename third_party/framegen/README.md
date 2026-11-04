@@ -1,17 +1,14 @@
-# Framegen third-party notice (FG-Legacy)
+# Framegen design attribution
 
-OpenNOW's local frame generation is built on [Framegen](https://github.com/MONZikWasTaken/Framegen),
-the real-time neural frame interpolation project by MONZik. Inside OpenNOW the integration is
-called **FG-Legacy**: it carries the Framegen v7-small (v7s) model into the native Qt/QRhi
-renderer, and it is planned to be replaced later by the FlyHigh project (a new model and runtime
-from the same author, built for the same slot).
+The interpolation design, pacing rules and capability test credit
+[Framegen](https://github.com/MONZikWasTaken/Framegen) by MONZik. The upstream
+runtime attribution is MIT; its full notice remains in
+[THIRD_PARTY_NOTICES](../../THIRD_PARTY_NOTICES).
 
-The Frame generation settings row links to the upstream repository.
+The shipped native engine is OpenNOW's QRhi block-matching interpolator, identified
+as `motion`, with 2×, 3× and 4× output. It does not contain Framegen's v7-small
+neural runtime or model weights. The settings link to the upstream project is
+attribution, not evidence that a neural model is installed.
 
-| Component | Origin | License |
-| --- | --- | --- |
-| Interpolator design, pacing rules and capability test | Framegen runtime (`framegen` npm: JS + WGSL), ported to QRhi | MIT |
-| Model weights (`rt_v7s.*`, v7-small) | Framegen release | Non-commercial research / personal use only, see [WEIGHTS_LICENSE.md](./WEIGHTS_LICENSE.md) |
-
-OpenNOW previously shipped Framegen in its Electron client (PR #718 / #763). The Qt rebuild
-removed that integration together with these notices; FG-Legacy restores both.
+[WEIGHTS_LICENSE.md](./WEIGHTS_LICENSE.md) records the upstream model's separate
+terms for reference only. No model weights are redistributed in this tree.

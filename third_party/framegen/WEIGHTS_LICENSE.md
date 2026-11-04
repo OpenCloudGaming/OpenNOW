@@ -1,10 +1,11 @@
-# Framegen model weights
+# Upstream Framegen model-weight terms
 
-The FG-Legacy model weights are the Framegen v7-small neural frame-interpolation weights
-(`rt_v7s.bin` / `rt_v7s.json`), redistributed unchanged from the Framegen release.
+No Framegen model weights are redistributed in this tree. This file retains a
+reference to the upstream v7-small model's separate terms; it does not describe
+files bundled with OpenNOW's native block-matching engine.
 
 **Non-commercial research and personal use only.** See the upstream notice:
 https://github.com/MONZikWasTaken/Framegen/blob/main/WEIGHTS_LICENSE.md
 
-Framegen **runtime code** (JavaScript/WGSL, and the QRhi port in OpenNOW) is MIT-licensed
-separately.
+The upstream Framegen runtime code is MIT-licensed separately. Its attribution
+remains in OpenNOW's THIRD_PARTY_NOTICES.
