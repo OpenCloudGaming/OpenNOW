@@ -1,0 +1,57 @@
+# Native orchestration boundaries
+
+The supplied binaries suggest a browser-hosted application adapter above Geronimo and Bifrost, with a separate background agent and native media modules. This is a static architecture map, not an exhaustive reconstruction or a recommendation to reproduce the vendor's desktop runtime. Runtime behavior is unverified on this Linux host. See [Artifacts](artifacts.md) and [Method](method.md) for provenance and scope.
+
+Evidence uses `D`, `S`, `I`, and `U` as defined in [Provider routing and session configuration](providers.md). All addresses below are x86_64 thin Mach-O virtual addresses. Static claims come from the supplied slices' symbol tables, section-mapped printable strings, and load commands.
+
+## Candidate session-context path
+
+1. **S.** `macos/MacOS/GeForceNOW` contains `GFNQueryHandler::OnQueryNative` at `0x1000c3660`, plus prepare/start context literals `deviceId`, `serverAddress`, `clientHeaders`, `keyboardLayout`, `metaData`, `supportedControls`, `spanData`, `streamingProfile`, and `partnerCustomData` at `0x100109929`, `0x100109a12`, `0x100109943`, `0x100109aaa`, `0x100109bd8`, `0x100109be1`, `0x100109c12`, `0x100109c9c`, and `0x100109d2a`. The literal offsets are those addresses minus the `0x100000000` image base. These names are candidates for the application-to-native context, not a recovered schema.
+2. **S.** `archive/libGeronimo.dylib` contains `SessionControllerImpl::prepare` at `0x94d50`, `setAuthInfo` at `0x957d0`, `setNVbSessionParams` at `0x95880`, and `startSession` overloads at `0x95ef0` and `0x95fa0`. `SessionInfo::SessionInfo(NVbEventData_t::_SessionInfo const&)` is at `0x24c60`. These symbols identify parameter and result conversion boundaries.
+3. **S.** `archive/libBifrost2.dylib` contains `BifrostClient::startSession` at `0x10240`, `GridServer::provisionSeat` at `0x20fc0`, `requestSession` at `0x22a50`, `PopulateSessionRequestData` at `0x27060`, and `pollSession` at `0x255f0`. It contains the server-reconfiguration log at `0xc688e8`, `foff=0xc688e8`, and session endpoint template at `0xc6a2f0`, `foff=0xc6a2f0`.
+4. **S.** Geronimo's event adapter includes `onNVbCallback` at `0x94120`, `handleNVbCallback` at `0x94130`, `pushBifrostEventsToQueue` at `0x94650`, `processEvents` at `0x94720`, and `flushBifrostEventQueue` at `0x93d10`. `SessionControllerDelegate` exposes setup-progress, setup-success, setup-failure, resume-failure, and auth-refresh callbacks at `0x96d20`, `0x96d50`, `0x96d30`, `0x96d40`, and `0x96d80`.
+5. **S.** Main has corresponding application callbacks `SimpleGridApp::onSessionSetupSuccess` at `0x1000deb40`, `onSessionSetUpFailure` at `0x1000e2280`, `onResumeFailure` at `0x1000e31c0`, `onStreamingTerminated` at `0x1000e42f0`, `updateAuthToken` at `0x1000e4a10`, and `onSessionSetupProgress` at `0x1000e7da0`.
+
+**D.** Main's dispatcher at `0x1000c3660` reads prepare fields and makes direct named `GridApp::prepare`, `setAuthInfo`, `start`, and `resume` calls. Its `SetAuthToken` branch calls `SimpleGridApp::setAuthToken`, `0x1000dc6b0`. REA evidence `ev_7d61adb9093f23fedb850d9bedd6ad247ac77c9c4c6ac8dd786a05d77f7b91cd` proves those application-to-Geronimo entry calls. The dispatcher body has unnamed CEF virtual calls and imperfect aggregate argument types, so it is not a complete ABI reconstruction.
+
+**I.** The remaining candidate path is Geronimo parameter conversion to Bifrost provisioning, then queued callbacks back to application state. The symbols do not prove callback thread identity, queue limits, polling periods, or shutdown order. Those relationships need further caller and branch tracing.
+
+**D.** Main's auth-refresh callback at `0x1000e4a10` clears the saved token, emits `UPDATE_AUTH_TOKEN` with tracing data to the application callback, then waits once for a condition-variable signal with a 30-second budget. `setAuthToken`, `0x1000dc6b0`, stores the replacement and notifies waiters. The callback copies a nonempty replacement only before expiry. The body has no visible predicate-wait loop. REA evidence `ev_df413a2254c91df99ecfc94734391097a195321b85e58195797b3b5dd0242ad2` proves this handoff. The blocking thread and synchronization outside those bodies are unresolved. It does not prove that native code owns interactive login.
+
+## Configuration belongs to several owners
+
+**S.** Main directly depends on Geronimo, Bifrost, and SDL2 according to its x86_64 load commands. Geronimo depends on Bifrost, SDL2, and `libGsAudioWebRTC.dylib`. [Artifacts](artifacts.md) records the slice identities and dependencies. These relationships prove linkage, not that WebRTC carries the actual video stream.
+
+**S.** Main's `BrowserApp::GeronimoInit` is at `0x100014020`, `BrowserApp::GetConfig` at `0x10001a5d0`, and `OnBeforeCommandLineProcessing` at `0x10000fa70`. Its literal configuration names include `config-path` at `0x100101434`, `nv-nvtelemetry-config-path` at `0x10010169a`, and `nv-nvtelemetry-config-path-override` at `0x1001016d2`. Geronimo has separate remote-configuration IPC names `remoteConfigType`, `remoteConfigVersion`, and `traceRouteVerboseMode` at `0xdaf3b4`, `0xdaf3c5`, and `0xdaf3d9`, each with equal `foff`.
+
+**D.** `OnBeforeCommandLineProcessing`, `0x10000fa70`, translates explicit `nv-proxy-*` values through command-line virtual calls, but skips its explicit proxy translation when `nv-proxy-server` equals `true`. An absent `nv-proxy-server` takes a `no-proxy-server` call. `GeronimoInit`, `0x100014020`, separately constructs shared `JsonStorage` and selects a tracing environment from a stored setting. REA startup evidence above proves these branches, with the virtual method names and the external tracing-setting key unresolved.
+
+**I.** Configuration should not be treated as one environment blob. Browser proxy switches, tracing environment, remote media configuration, session parameters, and network-test SDK configuration have different consumers. The exact schemas and cross-owner precedence are not recovered. See [providers.md](providers.md) for source-addressed keys and fallback limits.
+
+## Background agent and launcher evidence
+
+**S.** Geronimo contains `AgentPluginHandler::sendRemoteConfigIpcMessage` at `0x1e7b0`, IPC literals `GameStream` at `0xdaf2f0`, `ClientAgent` at `0xdaf2fb`, and `IPC_GERONIMO_PAYLOAD_TYPE` at `0xdaf307`, all with equal `foff`. `archive/nvc/GFN/libGameStreamClientAgent.dylib` contains provider-identity vocabulary at `0x144a05`, a zone-health log at `0x1456cc`, and a zone-health network-error log at `0x145705`. Its `HttpRedirectPreventer` delegate is at `0x110530`. This is evidence of an agent IPC and HTTP-helper role, not proof that the agent owns login or follows provider redirects.
+
+**S.** The 51,120-byte x86_64 `macos/MacOS/GeForceNOWStreamer.app/Contents/MacOS/GeForceNOWStreamer` slice has stub-argument literals `NVDAGFNStubAppType` at `0x10000376a`, `foff=0x376a`, and `NVDAGFNStreamerArgs` at `0x10000377d`, `foff=0x377d`. It contains the launch selector `launchApplicationAtURL:options:configuration:error:` at `0x100003327`, `foff=0x3327`. Its listed dependencies are Foundation, AppKit, CoreFoundation, libobjc, and libSystem, not Bifrost or Geronimo.
+
+**I.** That tiny stub is a launcher candidate rather than the media implementation. Static dependency absence is not proof against dynamic loading. No stub function was decompiled in this draft, so argument routing and launch-option behavior remain unknown.
+
+## Native input, recording, and telemetry
+
+These are brief inventories, not recovered wire formats or runtime guarantees.
+
+| Evidence | Functions and implications | Next verification |
+| --- | --- | --- |
+| S, Geronimo | `APP_deviceChanged` at `0xd410`, `APP_inputObserved` at `0xd6f0`, `GeronimoIOInterface::sendAllCachedNvstInputs` at `0x50e90`, `sendNvstInputEvent` at `0x551f0`, `sendRawHidGamepad` at `0x550d0`, and `sendGamepadBitmap` at `0x55160` identify native input handling and cached-input vocabulary. | Query the two send functions and their focus/device-loss callers to establish neutral-state release and queue behavior. |
+| D/S, Bifrost | `SessionController::sendInputEvent` at `0x56270` and `Streamer::createInputStream` at `0x8bf00` identify candidate owners. `Streamer::sendInputEvent` at `0x8f810` was traced and has session/input guards plus a one-shot idle-timeout notification after successful lower-layer input. | See [transport-feedback.md](transport-feedback.md). Event serialization, transport selection, and neutral-state release remain unresolved. |
+| S, Geronimo | `VideoRecorderThread::run` at `0xd1410` and `process` at `0xd16d0` identify a native recording-worker candidate. | Query queue ownership, blocking behavior, and shutdown from these functions and their callers. |
+| S, `archive/dependencies/libgfncapture.dylib` | `CCaptureCore::StartDVRCapture` at `0x18120`, `SaveDVRCapture` at `0x18bd0`, `StopDVRCapture` at `0x19cb0`, `StartManualCapture` at `0x1a2c0`, and `StopManualCapture` at `0x1a710` establish separate DVR and manual-capture entry points. `CNvMp4MuxSink::CreateAssetWriterInput` is at `0x17a80`. | Establish reachable capture calls, encoded versus decoded-frame inputs, bounds, and consent before copying behavior. |
+| S, Geronimo | `NvTelemetry::Geronimo::SetLocalizedEndpoints` at `0x164d30`, `SetDistributedTracingState` at `0x165000`, `SetDeviceConsent` at `0x165110`, and `Nsk::GsTelemetry::configure` at `0x24a900` identify configuration and consent vocabulary. | Query the initialization and consent branches. A configured telemetry endpoint does not prove a session-service endpoint. |
+| S, `archive/NvTelemetryBridge.dylib` | `NvTelemetryBridge::SendEvent` at `0x94fc`, `SendAnonymousEvent` at `0x9818`, and `SetLocalizedEndpoints` at `0xdd2a` identify telemetry API distinctions. | Determine reachable producers and consent handling rather than treating bundled analytics code as proof of collection. |
+| S, Bifrost | `SessionController::setStatisticsOption` at `0x561a0`, `sendSummaryStatistics` at `0x56390`, and `sendFrameStatistics` at `0x56570` identify statistics controls and reporting functions. | Trace negotiated settings and data producers. Do not confuse local analytics with protocol feedback. |
+
+## Unknowns and compatibility recommendation
+
+**U.** This document does not recover alliance login, provider discovery, authenticated-service hostname selection, complete session JSON, most configuration defaults, numeric status meanings, cross-owner fallback precedence, or all callback queue bounds. The proxy branch, auth-refresh time budget, and conditional latency-routing policy are documented in [providers.md](providers.md); the bounded unified-video receive queue is documented in [transport-feedback.md](transport-feedback.md). No runtime credentials or tokens were collected. Missing application resources prevent a defensible account-login reconstruction.
+
+**Recommendation.** For OpenNOW's Qt/native stack, preserve this separation without copying the browser host. The application core should prepare authenticated provider/session context. The bounded native runtime should receive that context and report typed setup, refresh, termination, and media-health events. Qt should own presentation and local input capture. Native input, recording, and telemetry should remain separately owned and bounded, with explicit release and consent paths. These are compatibility recommendations, not behavior proved by the supplied binaries.
