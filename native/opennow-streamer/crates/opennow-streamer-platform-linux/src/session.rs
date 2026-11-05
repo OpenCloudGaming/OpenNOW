@@ -1059,11 +1059,27 @@ fn run_audio_worker(
                 concealed,
                 &cancelled,
             ) {
-                Ok(()) => {}
+                Ok(()) => confirm_audio_reopen(&mut reopen, &events, backend),
                 Err(AudioWriteError::Closed) => return,
-                Err(AudioWriteError::Failed { backend: lost, reason, stalled }) => {
+                Err(AudioWriteError::Failed {
+                    backend: lost,
+                    reason,
+                    stalled,
+                }) => {
+                    let failure = AudioOutputFailure {
+                        lost,
+                        reason,
+                        stalled,
+                    };
                     match recover_audio_output(
-                        &config, &packets, &events, &unavailable, &recovery, &mut reopen, lost, reason, stalled,
+                        sink,
+                        &|| open_audio_sink(&config),
+                        &packets,
+                        &events,
+                        &unavailable,
+                        &recovery,
+                        &mut reopen,
+                        failure,
                     ) {
                         Some(reopened) => {
                             backend = reopened.backend();
@@ -1100,11 +1116,27 @@ fn run_audio_worker(
             }
         };
         match write_audio(&mut sink, &mut backend, &config, &events, pcm, &cancelled) {
-            Ok(()) => {}
+            Ok(()) => confirm_audio_reopen(&mut reopen, &events, backend),
             Err(AudioWriteError::Closed) => return,
-            Err(AudioWriteError::Failed { backend: lost, reason, stalled }) => {
+            Err(AudioWriteError::Failed {
+                backend: lost,
+                reason,
+                stalled,
+            }) => {
+                let failure = AudioOutputFailure {
+                    lost,
+                    reason,
+                    stalled,
+                };
                 match recover_audio_output(
-                    &config, &packets, &events, &unavailable, &recovery, &mut reopen, lost, reason, stalled,
+                    sink,
+                    &|| open_audio_sink(&config),
+                    &packets,
+                    &events,
+                    &unavailable,
+                    &recovery,
+                    &mut reopen,
+                    failure,
                 ) {
                     Some(reopened) => {
                         backend = reopened.backend();
@@ -1151,7 +1183,11 @@ enum AudioWriteError {
 /// after AUDIO_REOPEN_LIMIT failures in a row.
 struct AudioReopen {
     failures: u32,
-    last_failure: Option<Instant>,
+    /// When a reopened output first accepted PCM. Only playback counts towards
+    /// AUDIO_HEALTHY_AFTER, not the backoff delay before it.
+    healthy_since: Option<Instant>,
+    /// The output a reopen replaced, until its replacement accepts PCM.
+    unconfirmed: Option<AudioBackend>,
 }
 
 const AUDIO_REOPEN_LIMIT: u32 = 6; // 0.5 + 1 + 2 + 4 + 4 + 4 s
@@ -1168,20 +1204,20 @@ impl AudioReopen {
     fn new() -> Self {
         Self {
             failures: 0,
-            last_failure: None,
+            healthy_since: None,
+            unconfirmed: None,
         }
     }
 
     /// Delay before the next attempt, or None once the limit is reached.
-    fn next_delay(&mut self) -> Option<Duration> {
-        let now = Instant::now();
+    fn next_delay(&mut self, now: Instant) -> Option<Duration> {
         if self
-            .last_failure
-            .is_some_and(|last| now.duration_since(last) >= AUDIO_HEALTHY_AFTER)
+            .healthy_since
+            .take()
+            .is_some_and(|since| now.duration_since(since) >= AUDIO_HEALTHY_AFTER)
         {
             self.failures = 0;
         }
-        self.last_failure = Some(now);
         if self.failures >= AUDIO_REOPEN_LIMIT {
             return None;
         }
@@ -1189,23 +1225,54 @@ impl AudioReopen {
         self.failures += 1;
         Some(delay)
     }
+
+    /// The output accepted PCM. Returns the output a reopen replaced, if this
+    /// is the first PCM since that reopen.
+    fn confirm(&mut self, now: Instant) -> Option<AudioBackend> {
+        let replaced = self.unconfirmed.take()?;
+        self.healthy_since = Some(now);
+        Some(replaced)
+    }
+}
+
+fn confirm_audio_reopen(reopen: &mut AudioReopen, events: &EventQueue, backend: AudioBackend) {
+    if let Some(from) = reopen.confirm(Instant::now()) {
+        emit(
+            events,
+            BackendEvent::AudioOutputRecovered { from, to: backend },
+        );
+    }
+}
+
+/// What write_audio gave up on.
+struct AudioOutputFailure {
+    lost: AudioBackend,
+    reason: String,
+    stalled: bool,
 }
 
 /// After write_audio could neither restart nor replace the output: a stalled
 /// output is reopened (with AudioReopen's backoff and limit), a failed one
-/// disables audio for the session as before.
+/// disables audio for the session as before. Takes the sink because it has to
+/// be closed first: an exclusive ALSA device stays busy while it is held open,
+/// so a reopen would fail on its own predecessor.
 #[allow(clippy::too_many_arguments)]
 fn recover_audio_output(
-    config: &AudioConfig,
+    sink: Box<dyn AudioSink + Send>,
+    open: &dyn Fn() -> Result<Box<dyn AudioSink + Send>>,
     packets: &BoundedQueue<AudioPacket>,
     events: &EventQueue,
     unavailable: &AtomicBool,
     recovery: &AudioRecovery,
     reopen: &mut AudioReopen,
-    lost: AudioBackend,
-    reason: String,
-    stalled: bool,
+    failure: AudioOutputFailure,
 ) -> Option<Box<dyn AudioSink + Send>> {
+    drop(sink);
+    let AudioOutputFailure {
+        lost,
+        reason,
+        stalled,
+    } = failure;
     if !stalled {
         audio_unavailable(
             packets,
@@ -1217,7 +1284,7 @@ fn recover_audio_output(
         );
         return None;
     }
-    match reopen_audio_sink(config, packets, events, lost, reopen) {
+    match reopen_audio_sink(open, packets, events, lost, reopen) {
         AudioReopenOutcome::Reopened(sink) => Some(sink),
         AudioReopenOutcome::Closed => None,
         AudioReopenOutcome::GaveUp => {
@@ -1235,14 +1302,14 @@ fn recover_audio_output(
 }
 
 fn reopen_audio_sink(
-    config: &AudioConfig,
+    open: &dyn Fn() -> Result<Box<dyn AudioSink + Send>>,
     packets: &BoundedQueue<AudioPacket>,
     events: &EventQueue,
     lost: AudioBackend,
     reopen: &mut AudioReopen,
 ) -> AudioReopenOutcome {
     loop {
-        let Some(delay) = reopen.next_delay() else {
+        let Some(delay) = reopen.next_delay(Instant::now()) else {
             return AudioReopenOutcome::GaveUp;
         };
         let deadline = Instant::now() + delay;
@@ -1253,15 +1320,11 @@ fn reopen_audio_sink(
             std::thread::sleep(Duration::from_millis(50));
         }
         packets.clear();
-        match open_audio_sink(config) {
+        match open() {
             Ok(sink) => {
-                emit(
-                    events,
-                    BackendEvent::AudioOutputRecovered {
-                        from: lost,
-                        to: sink.backend(),
-                    },
-                );
+                // Recovery is reported by confirm_audio_reopen once this sink
+                // accepts PCM: opening one proves nothing about a stalled path.
+                reopen.unconfirmed = Some(lost);
                 return AudioReopenOutcome::Reopened(sink);
             }
             Err(error) => emit(
@@ -2150,11 +2213,107 @@ mod tests {
     #[test]
     fn audio_reopen_backs_off_and_gives_up_at_the_limit() {
         let mut reopen = super::AudioReopen::new();
-        let delays: Vec<u64> = std::iter::from_fn(|| reopen.next_delay())
+        let now = Instant::now();
+        let delays: Vec<u64> = std::iter::from_fn(|| reopen.next_delay(now))
             .map(|delay| delay.as_millis() as u64)
             .collect();
         assert_eq!(delays, [500, 1000, 2000, 4000, 4000, 4000]);
-        assert_eq!(reopen.next_delay(), None);
+        assert_eq!(reopen.next_delay(now), None);
+    }
+
+    #[test]
+    fn audio_reopen_counts_only_playback_as_healthy() {
+        let mut reopen = super::AudioReopen::new();
+        let start = Instant::now();
+        for _ in 0..4 {
+            assert!(reopen.next_delay(start).is_some());
+        }
+
+        // Output resumes after the 4 s delay and stalls 7 s later, 11 s after
+        // the delay was scheduled: 7 s of playback is not healthy yet.
+        reopen.unconfirmed = Some(crate::AudioBackend::Alsa);
+        assert!(reopen.confirm(start + Duration::from_secs(4)).is_some());
+        assert!(reopen.next_delay(start + Duration::from_secs(11)).is_some());
+        assert_eq!(reopen.failures, 5);
+
+        // A reopen that never accepted PCM is not healthy however long it took.
+        assert!(reopen.next_delay(start + Duration::from_secs(60)).is_some());
+        assert_eq!(reopen.failures, 6);
+
+        reopen.unconfirmed = Some(crate::AudioBackend::Alsa);
+        assert!(reopen.confirm(start + Duration::from_secs(60)).is_some());
+        assert_eq!(
+            reopen.next_delay(start + Duration::from_secs(70)),
+            Some(Duration::from_millis(500)),
+        );
+    }
+
+    struct ExclusiveSink(Arc<AtomicBool>);
+
+    impl super::AudioSink for ExclusiveSink {
+        fn backend(&self) -> crate::AudioBackend {
+            crate::AudioBackend::Alsa
+        }
+
+        fn write(&mut self, _pcm: &[f32], _cancelled: &dyn Fn() -> bool) -> super::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for ExclusiveSink {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn stalled_output_is_closed_before_reopening_and_recovery_waits_for_pcm() {
+        let held_open = Arc::new(AtomicBool::new(true));
+        let opened_while_held = AtomicBool::new(false);
+        let open = || -> super::Result<Box<dyn super::AudioSink + Send>> {
+            opened_while_held.store(held_open.load(Ordering::Acquire), Ordering::Release);
+            Ok(Box::new(ExclusiveSink(Arc::new(AtomicBool::new(true)))))
+        };
+        let packets = super::BoundedQueue::new(4);
+        let events: super::EventQueue = Arc::new(super::BoundedQueue::new(16));
+        let unavailable = AtomicBool::new(false);
+        let recovery = super::AudioRecovery {
+            consecutive_rejections: 0,
+            rejections: 0,
+            resets: 0,
+        };
+        let mut reopen = super::AudioReopen::new();
+        let sink = super::recover_audio_output(
+            Box::new(ExclusiveSink(Arc::clone(&held_open))),
+            &open,
+            &packets,
+            &events,
+            &unavailable,
+            &recovery,
+            &mut reopen,
+            super::AudioOutputFailure {
+                lost: crate::AudioBackend::Alsa,
+                reason: "stalled".to_owned(),
+                stalled: true,
+            },
+        );
+        assert!(sink.is_some());
+        assert!(!opened_while_held.load(Ordering::Acquire));
+        assert!(
+            collect_events(&events)
+                .iter()
+                .all(|event| !matches!(event, super::BackendEvent::AudioOutputRecovered { .. })),
+            "opening a sink must not report recovery"
+        );
+
+        super::confirm_audio_reopen(&mut reopen, &events, crate::AudioBackend::Alsa);
+        assert!(collect_events(&events).iter().any(|event| matches!(
+            event,
+            super::BackendEvent::AudioOutputRecovered {
+                from: crate::AudioBackend::Alsa,
+                to: crate::AudioBackend::Alsa,
+            }
+        )));
     }
 
     #[test]
