@@ -770,7 +770,11 @@ fn run_video_worker(
         let call_duration = call_started.elapsed();
         match result {
             Ok(frames) => {
-                if frame.is_some() || !frames.is_empty() {
+                // Only a submitted frame ends the wait for a keyframe: the gate
+                // already let it through. Polled output can be left over from
+                // before a stale backlog was dropped, and says nothing about
+                // the deltas that follow.
+                if frame.is_some() {
                     need_keyframe = false;
                 }
                 if !frames.is_empty() {
