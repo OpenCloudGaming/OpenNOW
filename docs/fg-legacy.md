@@ -1,16 +1,21 @@
 # Native frame generation
 
-The shipped Qt/native engine is the block-matching interpolator in
-`opennow-qt/src/streaming/rendering/StreamFrameInterpolator.cpp`. It uses QRhi
-vertex/fragment passes, including `framegen_motion.frag` and
-`framegen_synthesize.frag`, on the existing native video surface. The benchmark
-identifies this engine as `motion`.
+On Windows the OpenNOW process uses the FlyHigh engine (`flyhigh.dll` and the
+`flyhigh/` model next to the executable, imported through
+`FlyHighNetwork`). If that engine cannot start, frame generation turns off. It
+does not fall back to block matching.
 
-No Framegen v7-small neural runtime, compute-shader inference graph or model
-weights are bundled. In particular, this tree does not contain `rt_v7s.bin` or
-`rt_v7s.json`, and it does not implement `OPENNOW_FRAME_GENERATION_ENGINE` or
-`OPENNOW_FG_LEGACY_MODEL_HEIGHT`. This document describes the shipped engine, not
-a proposed neural replacement.
+The block-matching interpolator in
+`opennow-qt/src/streaming/rendering/StreamFrameInterpolator.cpp` remains for
+builds where FlyHigh is not enabled: test binaries, and platforms other than the
+Windows client. It uses QRhi vertex/fragment passes, including
+`framegen_motion.frag` and `framegen_synthesize.frag`. The capability-test
+profile key is still `motion`. `OPENNOW_FLYHIGH=0` or
+`OPENNOW_FRAME_GENERATION_ENGINE=motion` forces that path in a process that
+would otherwise load FlyHigh.
+
+No Framegen v7-small neural runtime is bundled. This tree does not contain
+`rt_v7s.bin` or `rt_v7s.json`.
 
 ## Interpolation and quality limits
 

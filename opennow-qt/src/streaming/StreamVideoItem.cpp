@@ -311,6 +311,19 @@ void StreamVideoItem::setDisplayRefreshOverrideHz(int hz)
     update();
 }
 
+bool StreamVideoItem::generatedFramesOnly() const
+{
+    return m_generatedFramesOnly;
+}
+
+void StreamVideoItem::setGeneratedFramesOnly(bool enabled)
+{
+    if (m_generatedFramesOnly == enabled) return;
+    m_generatedFramesOnly = enabled;
+    emit generatedFramesOnlyChanged();
+    update();
+}
+
 void StreamVideoItem::setFrameGenerationFactor(int factor)
 {
     factor = factor >= 2 ? std::min(factor, 4) : 0;

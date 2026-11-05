@@ -136,6 +136,7 @@ FocusScope {
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGenerationFactor: ShellStore.frameGenerationFactor()
+        generatedFramesOnly: ShellStore.generatedFramesOnly
         displayRefreshOverrideHz: Number(ShellStore.settings.frameGenerationDisplayHz || 0)
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
         fsrUpscaling: Qt.platform.os !== "osx" && ShellStore.settings.upscaling === "fsr1"
