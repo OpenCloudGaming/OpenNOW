@@ -428,6 +428,9 @@ struct DmaBufKey {
 
 pub struct ImportedNv12Frame {
     pub image: u64,
+    /// Separate chroma image when the planes were imported as two single-plane
+    /// images (P010 on drivers without 10-bit multi-planar formats); 0 otherwise.
+    pub chroma_image: u64,
     pub luma_view: u64,
     pub chroma_view: u64,
     pub modifier: u64,
@@ -441,6 +444,8 @@ pub struct ImportedNv12Frame {
     luma_view_handle: vk::ImageView,
     chroma_view_handle: vk::ImageView,
     memory: vk::DeviceMemory,
+    chroma_image_handle: Option<vk::Image>,
+    chroma_memory: Option<vk::DeviceMemory>,
     device: ash::Device,
     source: Arc<DecodedVideoFrame>,
 }
@@ -471,6 +476,12 @@ impl Drop for ImportedNv12Frame {
             self.device.destroy_image_view(self.luma_view_handle, None);
             self.device.destroy_image(self.image_handle, None);
             self.device.free_memory(self.memory, None);
+            if let Some(image) = self.chroma_image_handle {
+                self.device.destroy_image(image, None);
+            }
+            if let Some(memory) = self.chroma_memory {
+                self.device.free_memory(memory, None);
+            }
         }
     }
 }
@@ -1237,6 +1248,10 @@ impl LinuxFrameProducer {
                         .image(vk::Image::from_raw(frame.image))
                         .subresource_range(image_color_range()),
                 );
+                if frame.chroma_image != 0 {
+                    let barrier = *acquire.last().expect("luma barrier pushed");
+                    acquire.push(barrier.image(vk::Image::from_raw(frame.chroma_image)));
+                }
             }
             PreparedLinuxFrame::Cpu(_) | PreparedLinuxFrame::Sand(_) => {}
         }
@@ -1339,7 +1354,7 @@ impl LinuxFrameProducer {
                     PreparedLinuxFrame::DmaBuf(frame)
                         if frame.source.format.pixel_format == PixelFormat::P010 =>
                     {
-                        10
+                        if frame.chroma_image != 0 { 16 } else { 10 }
                     }
                     _ => 8,
                 },
@@ -1383,19 +1398,27 @@ impl LinuxFrameProducer {
                         .subresource_range(image_color_range())
                 }));
             }
-            PreparedLinuxFrame::DmaBuf(frame) => release.push(
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .src_queue_family_index(self.render.queue_family)
-                    // Released back to the foreign V4L2/VA-API producer; see the
-                    // matching acquire barrier above.
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
-                    .src_access_mask(vk::AccessFlags::SHADER_READ)
-                    .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
-                    .image(vk::Image::from_raw(frame.image))
-                    .subresource_range(image_color_range()),
-            ),
+            PreparedLinuxFrame::DmaBuf(frame) => {
+                release.push(
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .new_layout(vk::ImageLayout::GENERAL)
+                        .src_queue_family_index(self.render.queue_family)
+                        // Released back to the foreign V4L2/VA-API producer; see the
+                        // matching acquire barrier above.
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+                        .src_access_mask(vk::AccessFlags::SHADER_READ)
+                        .dst_access_mask(
+                            vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                        )
+                        .image(vk::Image::from_raw(frame.image))
+                        .subresource_range(image_color_range()),
+                );
+                if frame.chroma_image != 0 {
+                    let barrier = *release.last().expect("luma barrier pushed");
+                    release.push(barrier.image(vk::Image::from_raw(frame.chroma_image)));
+                }
+            }
             PreparedLinuxFrame::Cpu(_) | PreparedLinuxFrame::Sand(_) => {}
         }
         unsafe {
@@ -2121,6 +2144,20 @@ fn import_nv12_dmabuf(
         ));
     }
     let p010 = source.format.pixel_format == PixelFormat::P010;
+    if p010 && !multi_planar_p010_samples(instance, physical_device, modifier) {
+        return import_p010_planes(
+            instance,
+            physical_device,
+            device,
+            render_queue_family,
+            fd,
+            object_size,
+            modifier,
+            luma,
+            chroma,
+            source,
+        );
+    }
     // The image must be created at the buffer's *coded* height, not the visible
     // one. Drivers are not required to honour the explicit plane offsets below
     // and may derive the chroma base from the image extent instead; when the
@@ -2289,6 +2326,267 @@ fn import_nv12_dmabuf(
         luma_view_handle: luma_view,
         chroma_view_handle: chroma_view,
         memory,
+        chroma_image: 0,
+        chroma_image_handle: None,
+        chroma_memory: None,
+        device: device.clone(),
+        source,
+    })
+}
+
+/// Whether P010 can be imported as one multi-planar image with this modifier:
+/// the format must be sampleable with the modifier and the 10-bit plane views
+/// must exist. An image of a format the driver cannot sample reads as zeros.
+fn multi_planar_p010_samples(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    modifier: u64,
+) -> bool {
+    let format = vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+    let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
+    let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+    unsafe {
+        instance.get_physical_device_format_properties2(physical_device, format, &mut properties)
+    };
+    let mut modifiers = vec![
+        vk::DrmFormatModifierPropertiesEXT::default();
+        list.drm_format_modifier_count as usize
+    ];
+    let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+        .drm_format_modifier_properties(&mut modifiers);
+    let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+    unsafe {
+        instance.get_physical_device_format_properties2(physical_device, format, &mut properties)
+    };
+    let sampled = modifiers.iter().any(|entry| {
+        entry.drm_format_modifier == modifier
+            && entry
+                .drm_format_modifier_tiling_features
+                .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+    });
+    sampled
+        && [
+            vk::Format::R10X6_UNORM_PACK16,
+            vk::Format::R10X6G10X6_UNORM_2PACK16,
+        ]
+        .into_iter()
+        .all(|view| {
+            let features =
+                unsafe { instance.get_physical_device_format_properties(physical_device, view) };
+            (features.optimal_tiling_features | features.linear_tiling_features)
+                .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE)
+        })
+}
+
+/// Import one plane of a YUV DMA-BUF as its own single-plane image.
+#[allow(clippy::too_many_arguments)]
+fn import_plane_image(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: &ash::Device,
+    fd: RawFd,
+    object_size: usize,
+    modifier: u64,
+    plane: DmaBufPlane,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+) -> Result<(vk::Image, vk::DeviceMemory)> {
+    let plane_layouts = [vk::SubresourceLayout {
+        offset: plane.offset as u64,
+        size: 0,
+        row_pitch: plane.pitch as u64,
+        array_pitch: 0,
+        depth_pitch: 0,
+    }];
+    let mut external = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut drm_modifier = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(modifier)
+        .plane_layouts(&plane_layouts);
+    let image_info = vk::ImageCreateInfo::default()
+        .push_next(&mut external)
+        .push_next(&mut drm_modifier)
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None) }
+        .map_err(|error| vk_error("create DMA-BUF plane image", error))?;
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let fd_loader = ash::khr::external_memory_fd::Device::new(instance, device);
+    let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
+    if let Err(error) = unsafe {
+        fd_loader.get_memory_fd_properties(
+            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+            fd,
+            &mut fd_properties,
+        )
+    } {
+        unsafe { device.destroy_image(image, None) };
+        return Err(vk_error("query DMA-BUF memory properties", error));
+    }
+    let memory_bits = requirements.memory_type_bits & fd_properties.memory_type_bits;
+    let properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let Some(memory_type) =
+        (0..properties.memory_type_count).find(|index| memory_bits & (1 << index) != 0)
+    else {
+        unsafe { device.destroy_image(image, None) };
+        return Err(Error::unavailable(
+            Subsystem::Vulkan,
+            "no memory type can import DMA-BUF",
+        ));
+    };
+    let imported_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if imported_fd < 0 {
+        unsafe { device.destroy_image(image, None) };
+        return Err(Error::backend(
+            Subsystem::Vulkan,
+            format!(
+                "duplicate DMA-BUF failed: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    let mut import = vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+        .fd(imported_fd);
+    let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+    let allocation = vk::MemoryAllocateInfo::default()
+        .push_next(&mut import)
+        .push_next(&mut dedicated)
+        .allocation_size(requirements.size.max(object_size as u64))
+        .memory_type_index(memory_type);
+    let memory = match unsafe { device.allocate_memory(&allocation, None) } {
+        Ok(memory) => memory,
+        Err(error) => {
+            unsafe {
+                libc::close(imported_fd);
+                device.destroy_image(image, None);
+            }
+            return Err(vk_error("import DMA-BUF plane memory", error));
+        }
+    };
+    if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
+        unsafe {
+            device.free_memory(memory, None);
+            device.destroy_image(image, None);
+        }
+        return Err(vk_error("bind DMA-BUF plane memory", error));
+    }
+    Ok((image, memory))
+}
+
+/// P010 as two single-plane images (R16 luma, R16G16 chroma) over the same
+/// DMA-BUF, the way libplacebo imports it, for drivers without the multi-planar
+/// format (Turnip on Adreno 740). The 10-bit samples sit in the high bits of
+/// each 16-bit word, so they read as 16-bit.
+#[allow(clippy::too_many_arguments)]
+fn import_p010_planes(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    device: &ash::Device,
+    render_queue_family: u32,
+    fd: RawFd,
+    object_size: usize,
+    modifier: u64,
+    luma: DmaBufPlane,
+    chroma: DmaBufPlane,
+    source: Arc<DecodedVideoFrame>,
+) -> Result<ImportedNv12Frame> {
+    let coded_height = crate::format::nv12_coded_height(&luma, &chroma, source.format.height);
+    let width = source.format.width;
+    let (luma_image, luma_memory) = import_plane_image(
+        instance,
+        physical_device,
+        device,
+        fd,
+        object_size,
+        modifier,
+        luma,
+        vk::Format::R16_UNORM,
+        width,
+        coded_height,
+    )?;
+    let (chroma_image, chroma_memory) = match import_plane_image(
+        instance,
+        physical_device,
+        device,
+        fd,
+        object_size,
+        modifier,
+        chroma,
+        vk::Format::R16G16_UNORM,
+        width.div_ceil(2),
+        coded_height.div_ceil(2),
+    ) {
+        Ok(planes) => planes,
+        Err(error) => {
+            unsafe {
+                device.destroy_image(luma_image, None);
+                device.free_memory(luma_memory, None);
+            }
+            return Err(error);
+        }
+    };
+    let cleanup = |views: &[vk::ImageView]| unsafe {
+        for view in views {
+            device.destroy_image_view(*view, None);
+        }
+        device.destroy_image(chroma_image, None);
+        device.free_memory(chroma_memory, None);
+        device.destroy_image(luma_image, None);
+        device.free_memory(luma_memory, None);
+    };
+    let luma_view = match create_plane_view(
+        device,
+        luma_image,
+        vk::Format::R16_UNORM,
+        vk::ImageAspectFlags::COLOR,
+    ) {
+        Ok(view) => view,
+        Err(error) => {
+            cleanup(&[]);
+            return Err(error);
+        }
+    };
+    let chroma_view = match create_plane_view(
+        device,
+        chroma_image,
+        vk::Format::R16G16_UNORM,
+        vk::ImageAspectFlags::COLOR,
+    ) {
+        Ok(view) => view,
+        Err(error) => {
+            cleanup(&[luma_view]);
+            return Err(error);
+        }
+    };
+    Ok(ImportedNv12Frame {
+        image: luma_image.as_raw(),
+        chroma_image: chroma_image.as_raw(),
+        luma_view: luma_view.as_raw(),
+        chroma_view: chroma_view.as_raw(),
+        modifier,
+        coded_height,
+        external_queue_family: vk::QUEUE_FAMILY_FOREIGN_EXT,
+        render_queue_family,
+        image_handle: luma_image,
+        luma_view_handle: luma_view,
+        chroma_view_handle: chroma_view,
+        memory: luma_memory,
+        chroma_image_handle: Some(chroma_image),
+        chroma_memory: Some(chroma_memory),
         device: device.clone(),
         source,
     })
