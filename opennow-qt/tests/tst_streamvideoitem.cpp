@@ -366,6 +366,49 @@ private slots:
         QVERIFY(!item.captureActive());
     }
 
+    void gamescopeSessionKeepsDisabledItemOutOfCapture()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        qputenv("GAMESCOPE_WAYLAND_DISPLAY", "gamescope-0");
+        auto clearSession = qScopeGuard([] { qunsetenv("GAMESCOPE_WAYLAND_DISPLAY"); });
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        item.setEnabled(false);  // the launch cover
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setInputEnabled(false);
+        item.setInputEnabled(true);
+        QVERIFY(!item.captureActive());
+        QVERIFY(!item.hasActiveFocus());
+        item.setEnabled(true);
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(item.hasActiveFocus());
+    }
+
+    void gamescopeSessionKeepsAbsoluteMouseWhenTheDefaultChanges()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        qputenv("GAMESCOPE_WAYLAND_DISPLAY", "gamescope-0");
+        auto clearSession = qScopeGuard([] { qunsetenv("GAMESCOPE_WAYLAND_DISPLAY"); });
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QVERIFY(!item.relativeMouse());
+        QVERIFY(session.runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                                      {QStringLiteral("id"), QStringLiteral("webrtc-restart")}}));
+        const QByteArray ready = R"({"id":"webrtc-restart","type":"ok","transport":"webrtc"})";
+        CursorSession::callbacks.response_callback(
+            reinterpret_cast<const std::uint8_t *>(ready.constData()), ready.size(),
+            CursorSession::callbacks.user_data);
+        QTRY_VERIFY(session.runtime.defaultRelativeMouse());
+        QVERIFY(!item.relativeMouse());
+        item.togglePointerLock();
+        QVERIFY(item.relativeMouse());
+        item.resetRemoteCursor();
+        QVERIFY(item.relativeMouse());
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");

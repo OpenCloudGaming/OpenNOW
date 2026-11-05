@@ -196,6 +196,7 @@ private:
 
     void applyRemoteCursor(const QByteArray &bytes);
     void resetRemoteCursor();
+    [[nodiscard]] bool defaultRelativeMouse() const;
     void setRemoteCursorShape(const QCursor &cursor);
     void updateLocalCursor();
     void refreshVideoSize();
