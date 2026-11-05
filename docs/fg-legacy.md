@@ -1,7 +1,7 @@
 # Native frame generation
 
-On Windows the OpenNOW process uses the FlyHigh engine (`flyhigh.dll` and the
-`flyhigh/` model next to the executable, imported through
+On Windows the OpenNOW process uses the [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine)
+(`flyhigh.dll` and the `flyhigh/` model next to the executable, imported through
 `FlyHighNetwork`). If that engine cannot start, frame generation turns off. It
 does not fall back to block matching.
 

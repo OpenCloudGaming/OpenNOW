@@ -476,7 +476,12 @@ bool FlyHighNetwork::pair(QRhiCommandBuffer *cb, QRhiTexture *previous, QRhiText
 
 bool FlyHighNetwork::frame(QRhiCommandBuffer *, int index)
 {
+#if defined(Q_OS_WIN)
     return m_state && index >= 1 && index <= m_state->generated;
+#else
+    Q_UNUSED(index);
+    return false;
+#endif
 }
 
 QRhiTexture *FlyHighNetwork::output(int index) const
