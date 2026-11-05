@@ -831,9 +831,23 @@ StreamTouchGestures::Mode StreamVideoItem::touchGestureMode() const
 void StreamVideoItem::submitTouchRelative(QPointF delta)
 {
     if (!s_nativeRuntime) return;
+    const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
+    if (!localCursorHidden()) {
+        // The cursor on screen is the local one and it marks where the host
+        // cursor is, so keep the two together: relative motion would leave it
+        // behind and the next tap would land somewhere else. A Wayland client
+        // cannot move the pointer, so there only the host side follows.
+        const QRectF bounds(viewport);
+        m_lastMousePosition = QPointF(
+            std::clamp(m_lastMousePosition.x() + delta.x(), bounds.left(), bounds.right()),
+            std::clamp(m_lastMousePosition.y() + delta.y(), bounds.top(), bounds.bottom()));
+        submitAbsoluteMouse(m_lastMousePosition);
+        if (!WaylandPointerCapture::isWayland())
+            QCursor::setPos(mapToGlobal(m_lastMousePosition).toPoint());
+        return;
+    }
     // Item pixels to stream pixels, so a finger stroke moves the cursor by
     // the same distance on screen; sensitivity is applied by the streamer.
-    const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
     if (viewport.width() > 0 && viewport.height() > 0 && m_videoSize.isValid()) {
         delta.rx() *= qreal(m_videoSize.width()) / viewport.width();
         delta.ry() *= qreal(m_videoSize.height()) / viewport.height();
@@ -876,11 +890,15 @@ void StreamVideoItem::touchEvent(QTouchEvent *event)
     }
     const auto now = qint64(event->timestamp());
     const auto mode = touchGestureMode();
+    // Points are listed by id, not by what happened first. New contacts go
+    // first: a finger that moved in the same event as a second one landed
+    // would otherwise read as a one-finger drag and press the button.
+    for (const auto &point : event->points()) {
+        if (point.state() == QEventPoint::Pressed)
+            m_touch.pressed(point.id(), point.position(), now, mode);
+    }
     for (const auto &point : event->points()) {
         switch (point.state()) {
-        case QEventPoint::Pressed:
-            m_touch.pressed(point.id(), point.position(), now, mode);
-            break;
         case QEventPoint::Updated:
             m_touch.moved(point.id(), point.position(), now);
             break;
@@ -1234,14 +1252,19 @@ void StreamVideoItem::setRemoteCursorShape(const QCursor &cursor)
     updateLocalCursor();
 }
 
+bool StreamVideoItem::localCursorHidden() const
+{
+    return m_relativeMouse || (m_serverCursorComposited && !m_usesMacPointerCapture
+                               && m_manualRelativeMouse != false);
+}
+
 void StreamVideoItem::updateLocalCursor()
 {
     if (!m_captureActive) {
         unsetCursor();
         return;
     }
-    if (m_relativeMouse || (m_serverCursorComposited && !m_usesMacPointerCapture
-                           && m_manualRelativeMouse != false)) {
+    if (localCursorHidden()) {
         setCursor(Qt::BlankCursor);
         return;
     }

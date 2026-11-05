@@ -214,6 +214,7 @@ private:
     void resetRemoteCursor();
     void setRemoteCursorShape(const QCursor &cursor);
     void updateLocalCursor();
+    [[nodiscard]] bool localCursorHidden() const;
     void refreshVideoSize();
     void syncCaptureState();
     void setNativeWindowMoveLoop(bool active);

@@ -422,32 +422,7 @@ FocusScope {
         opacity: afkMotion.progress
     }
 
-    // Three-finger tap switches touch between direct and trackpad
-    // (StreamVideoItem::switchTouchMode); say which one is on now.
-    property string touchModeNotice: ""
-    Connections {
-        target: streamVideo
-        function onTouchModeSwitched(mode) {
-            root.touchModeNotice = mode
-            touchModeNoticeTimer.restart()
-        }
-    }
-    Timer { id: touchModeNoticeTimer; interval: 1500; onTriggered: root.touchModeNotice = "" }
-    GlassPanel {
-        MotionProgress { id: touchModeMotion; shown: root.touchModeNotice !== "" }
-        visible: touchModeMotion.present
-        layer.enabled: HdrOutput.chromeRequired
-        layer.effect: HdrChromeEffect {}
-        z: 12
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: 34; width: 260; height: 58; panelRadius: 22; strong: true
-        Text {
-            anchors.centerIn: parent
-            text: root.touchModeNotice === "trackpad" ? qsTr("TOUCH: TRACKPAD") : qsTr("TOUCH: DIRECT")
-            color: Theme.label; font.family: Theme.monoFont; font.pixelSize: 13; font.weight: Font.Black; font.letterSpacing: 0.8
-        }
-        opacity: touchModeMotion.progress
-    }
+    StreamTouchModeNotice { surface: streamVideo }
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)

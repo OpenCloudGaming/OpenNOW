@@ -227,6 +227,7 @@ class StreamVideoItemTest final : public QObject
         inline static OpenNowStreamerConfig callbacks;
         inline static QList<QPoint> motions;
         inline static QList<QRect> absoluteMotions;
+        inline static QList<QPair<int, bool>> buttons;
 
         explicit CursorSession(NativeStreamRuntime::Api api = CursorSession::api()) : runtime(api) {}
 
@@ -258,6 +259,10 @@ class StreamVideoItemTest final : public QObject
                 absoluteMotions.append(QRect(x, y, width, height));
                 return OPENNOW_STREAMER_OK;
             };
+            api.submitMouseButton = [](const OpenNowStreamer *, std::uint8_t button, bool pressed) {
+                buttons.append({button, pressed});
+                return OPENNOW_STREAMER_OK;
+            };
             return api;
         }
 
@@ -265,6 +270,7 @@ class StreamVideoItemTest final : public QObject
         {
             motions.clear();
             absoluteMotions.clear();
+            buttons.clear();
             if (!runtime.start()) return false;
             StreamVideoItem::setNativeStreamRuntime(&runtime);
             if (!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
@@ -344,6 +350,59 @@ private slots:
                 QCOMPARE(swaps.size(), swapsBefore);
             }
         }
+    }
+
+    void touchSecondContactInTheSameEventIsNotADrag()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("direct"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(100, 100));
+        // Contact 1 moves past the slop in the event that adds contact 2, and
+        // the point list has contact 1 first.
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(160, 100)).press(2, QPoint(300, 100));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(160, 100)).release(2, QPoint(300, 100));
+        QVERIFY(CursorSession::buttons.isEmpty());
+    }
+
+    void trackpadTouchMovesTheLocalCursorWhenTheHostDrawsNone()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("trackpad"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        session.composition(false);
+        QTRY_VERIFY(!item.m_serverCursorComposited);
+        item.applyRemoteCursor(QByteArray::fromHex("0001"));
+        QVERIFY(!item.relativeMouse());
+        QCursor::setPos(item.mapToGlobal(QPointF(100, 100)).toPoint());
+        QTRY_COMPARE(item.mapFromGlobal(QCursor::pos()).toPoint(), QPoint(100, 100));
+        CursorSession::absoluteMotions.clear();
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(300, 300));
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(340, 320));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(340, 320));
+        QVERIFY(CursorSession::motions.isEmpty());
+        QCOMPARE(item.m_lastMousePosition, QPointF(140, 120));
+        QCOMPARE(CursorSession::absoluteMotions.last(),
+                 StreamVideoItem::absoluteMouseCoordinates(QPointF(140, 120), item.videoSize(), item.size()));
+        QCOMPARE(item.mapFromGlobal(QCursor::pos()).toPoint(), QPoint(140, 120));
     }
 
     void clipboardPasteRouting_data()
