@@ -243,6 +243,13 @@ impl FfmpegDecoder {
         let device_path = vaapi_device
             .as_ref()
             .map_or(ptr::null(), |path| path.as_ptr());
+        #[cfg(feature = "vulkan")]
+        if mode == FfmpegMode::Vulkan && !crate::vulkan_device::any_video_decode_queue() {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "no Vulkan device exposes a video decode queue",
+            ));
+        }
         if let Some(device_type) = mode.device_type() {
             let pixel_format =
                 hardware_pixel_format(decoder_definition, device_type).ok_or_else(|| {

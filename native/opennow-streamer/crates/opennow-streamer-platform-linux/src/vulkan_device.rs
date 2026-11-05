@@ -208,6 +208,44 @@ pub(crate) fn physical_device_allowed(device_type: ash::vk::PhysicalDeviceType) 
 }
 
 #[cfg(feature = "vulkan")]
+fn has_video_decode_queue(queue_families: &[ash::vk::QueueFamilyProperties]) -> bool {
+    queue_families.iter().any(|family| {
+        family
+            .queue_flags
+            .contains(ash::vk::QueueFlags::VIDEO_DECODE_KHR)
+    })
+}
+
+/// Whether any Vulkan device has a video decode queue family. FFmpeg's Vulkan
+/// hwdevice setup is not safe to reach without one (see the check in
+/// `implementation::create`), so Vulkan Video is skipped before it runs.
+#[cfg(feature = "vulkan")]
+pub(crate) fn any_video_decode_queue() -> bool {
+    use std::sync::OnceLock;
+    static RESULT: OnceLock<bool> = OnceLock::new();
+    *RESULT.get_or_init(|| {
+        let Ok(entry) = (unsafe { ash::Entry::load() }) else {
+            return false;
+        };
+        let app_info = ash::vk::ApplicationInfo::default().api_version(ash::vk::API_VERSION_1_1);
+        let info = ash::vk::InstanceCreateInfo::default().application_info(&app_info);
+        let Ok(instance) = (unsafe { entry.create_instance(&info, None) }) else {
+            return false;
+        };
+        let found = unsafe { instance.enumerate_physical_devices() }
+            .unwrap_or_default()
+            .into_iter()
+            .any(|device| {
+                has_video_decode_queue(&unsafe {
+                    instance.get_physical_device_queue_family_properties(device)
+                })
+            });
+        unsafe { instance.destroy_instance(None) };
+        found
+    })
+}
+
+#[cfg(feature = "vulkan")]
 pub(crate) fn score_physical_device(
     index: usize,
     properties: &ash::vk::PhysicalDeviceProperties,
@@ -374,6 +412,7 @@ mod implementation {
 
         // Enumerate and score candidate physical devices using a temporary instance.
         let mut candidates: Vec<(usize, String, i64)> = Vec::new();
+        let mut no_decode: Vec<String> = Vec::new();
         let app_info = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
         let instance_create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
         if let Ok(temp_instance) = unsafe { entry.create_instance(&instance_create_info, None) } {
@@ -389,6 +428,13 @@ mod implementation {
                     let adapter = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }
                         .to_string_lossy()
                         .into_owned();
+                    // Without a video decode queue, FFmpeg's Vulkan device setup
+                    // fetches a queue that does not exist and the gamescope WSI
+                    // layer aborts on the NULL VkQueue (Turnip, Adreno 740).
+                    if !has_video_decode_queue(&queues) {
+                        no_decode.push(adapter);
+                        continue;
+                    }
                     let score = score_physical_device(index, &props, &queues);
                     candidates.push((index, adapter, score));
                 }
@@ -396,6 +442,15 @@ mod implementation {
             unsafe { temp_instance.destroy_instance(None) };
         }
         candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.2));
+        if candidates.is_empty() && !no_decode.is_empty() {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                format!(
+                    "no Vulkan device exposes a video decode queue ({})",
+                    no_decode.join(", ")
+                ),
+            ));
+        }
 
         if cfg!(feature = "hardware-only") && candidates.is_empty() {
             return Err(Error::unavailable(
@@ -1044,6 +1099,19 @@ mod implementation {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn video_decode_requires_a_decode_queue_family() {
+        use ash::vk;
+        let graphics = vk::QueueFamilyProperties::default()
+            .queue_flags(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE);
+        let decode =
+            vk::QueueFamilyProperties::default().queue_flags(vk::QueueFlags::VIDEO_DECODE_KHR);
+        assert!(!super::has_video_decode_queue(&[]));
+        assert!(!super::has_video_decode_queue(&[graphics]));
+        assert!(super::has_video_decode_queue(&[graphics, decode]));
+    }
+
     #[cfg(feature = "vulkan")]
     #[test]
     fn hardware_only_device_policy_accepts_graphics_only_gpus_but_not_cpu_devices() {
