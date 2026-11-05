@@ -104,7 +104,8 @@ endif()
 include(cmake/WindowsRuntime.cmake)
 
 target_compile_definitions(opennow-qt PRIVATE
-    QT_NO_CAST_FROM_ASCII
+    # qmlcachegen AOT output from Qt 6.8.0 passes const char* to QString.
+    $<$<VERSION_GREATER_EQUAL:${Qt6_VERSION},6.9>:QT_NO_CAST_FROM_ASCII>
     QT_NO_CAST_TO_ASCII
     OPENNOW_EMBEDDED_STREAMER
 )
