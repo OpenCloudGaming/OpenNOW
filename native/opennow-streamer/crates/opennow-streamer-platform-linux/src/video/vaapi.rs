@@ -18,9 +18,9 @@ use crate::{
 
 const MAX_DECODE_RETRIES: usize = 16;
 
-// Mesa radeonsi rejects H.264 decode contexts below 64x64 with
-// VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED, which hid VA-API on AMD GPUs.
-const _: () = assert!(INITIAL_CONTEXT_SIZE >= 64);
+// Mesa radeonsi rejects H.264 decode contexts below 64x64 and V4L2-backed
+// drivers (Qualcomm iris) below 96x96; a smaller probe hid working decoders.
+const _: () = assert!(INITIAL_CONTEXT_SIZE >= 96);
 
 fn h264_access_unit_payload(data: &[u8]) -> &[u8] {
     let end = data
@@ -240,7 +240,10 @@ pub(crate) struct VaApiDecoder {
 impl VaApiDecoder {
     pub fn probe() -> std::result::Result<String, String> {
         let (display, decoder) = open_h264_device()?;
-        let probe_frame = VaFrame::new(Resolution::from((16, 16)), Resolution::from((16, 16)));
+        let probe_frame = VaFrame::new(
+            Resolution::from((INITIAL_CONTEXT_SIZE, INITIAL_CONTEXT_SIZE)),
+            Resolution::from((INITIAL_CONTEXT_SIZE, INITIAL_CONTEXT_SIZE)),
+        );
         drop(
             probe_frame
                 .to_native_handle(&display)
