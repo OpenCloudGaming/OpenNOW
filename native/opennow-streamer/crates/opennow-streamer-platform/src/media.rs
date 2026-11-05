@@ -3377,8 +3377,34 @@ fn run_linux_video(shared: Arc<SharedPipeline>, host_commands: Sender<HostComman
     }
 }
 
+/// How long frames may be dropped waiting for a recovery keyframe before it is
+/// requested again; a lost request would otherwise leave the stream frozen.
+#[cfg(target_os = "linux")]
+const LINUX_KEYFRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Tracks a recovery in progress: true when the keyframe request is due again.
+#[cfg(target_os = "linux")]
+fn linux_keyframe_retry_due(
+    waiting_since: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    match *waiting_since {
+        Some(since) if now.duration_since(since) >= LINUX_KEYFRAME_RETRY => {
+            *waiting_since = Some(now);
+            true
+        }
+        Some(_) => false,
+        None => {
+            *waiting_since = Some(now);
+            false
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn run_embedded_linux_video(shared: Arc<SharedPipeline>) {
+    // Set while frames are dropped waiting for a recovery keyframe.
+    let mut keyframe_wait: Option<std::time::Instant> = None;
     while let Some(frame) = shared.video.pop() {
         if shared.paused.load(Ordering::Acquire) {
             continue;
@@ -3419,10 +3445,14 @@ fn run_embedded_linux_video(shared: Arc<SharedPipeline>) {
                 if frame.keyframe {
                     shared.video_desynced.store(false, Ordering::Release);
                     shared.keyframe_requested.store(false, Ordering::Release);
+                    keyframe_wait = None;
                 }
             }
             Ok(opennow_streamer_platform_linux::PushOutcome::DroppedOldest) => {
                 shared.video_desynced.store(true, Ordering::Release);
+                if linux_keyframe_retry_due(&mut keyframe_wait, std::time::Instant::now()) {
+                    shared.keyframe_requested.store(false, Ordering::Release);
+                }
                 request_linux_keyframe(&shared, "embedded Linux decoder queue overflow");
             }
             Ok(opennow_streamer_platform_linux::PushOutcome::Paused) => {}
@@ -4698,6 +4728,26 @@ mod tests {
         }
         assert!(H264Decoder::new().err().unwrap().contains("hardware-only"));
         true
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_keyframe_retry_rearms_after_the_interval() {
+        let start = std::time::Instant::now();
+        let mut waiting = None;
+        assert!(!linux_keyframe_retry_due(&mut waiting, start));
+        assert!(!linux_keyframe_retry_due(
+            &mut waiting,
+            start + LINUX_KEYFRAME_RETRY / 2
+        ));
+        assert!(linux_keyframe_retry_due(
+            &mut waiting,
+            start + LINUX_KEYFRAME_RETRY
+        ));
+        assert!(!linux_keyframe_retry_due(
+            &mut waiting,
+            start + LINUX_KEYFRAME_RETRY + LINUX_KEYFRAME_RETRY / 2
+        ));
     }
 
     #[test]
