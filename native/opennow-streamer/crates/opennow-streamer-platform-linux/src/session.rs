@@ -1000,6 +1000,7 @@ fn run_audio_worker(
         resets: 0,
     };
     let mut rebuild_decoder = false;
+    let mut reopen = AudioReopen::new();
     loop {
         if rebuild_decoder {
             rebuild_decoder = false;
@@ -1060,16 +1061,16 @@ fn run_audio_worker(
             ) {
                 Ok(()) => {}
                 Err(AudioWriteError::Closed) => return,
-                Err(AudioWriteError::Failed { backend, reason }) => {
-                    audio_unavailable(
-                        &packets,
-                        &events,
-                        &unavailable,
-                        backend,
-                        &recovery,
-                        format!("audio output was lost and could not be replaced: {reason}"),
-                    );
-                    return;
+                Err(AudioWriteError::Failed { backend: lost, reason, stalled }) => {
+                    match recover_audio_output(
+                        &config, &packets, &events, &unavailable, &recovery, &mut reopen, lost, reason, stalled,
+                    ) {
+                        Some(reopened) => {
+                            backend = reopened.backend();
+                            sink = reopened;
+                        }
+                        None => return,
+                    }
                 }
             }
         }
@@ -1101,16 +1102,16 @@ fn run_audio_worker(
         match write_audio(&mut sink, &mut backend, &config, &events, pcm, &cancelled) {
             Ok(()) => {}
             Err(AudioWriteError::Closed) => return,
-            Err(AudioWriteError::Failed { backend, reason }) => {
-                audio_unavailable(
-                    &packets,
-                    &events,
-                    &unavailable,
-                    backend,
-                    &recovery,
-                    format!("audio output was lost and could not be replaced: {reason}"),
-                );
-                return;
+            Err(AudioWriteError::Failed { backend: lost, reason, stalled }) => {
+                match recover_audio_output(
+                    &config, &packets, &events, &unavailable, &recovery, &mut reopen, lost, reason, stalled,
+                ) {
+                    Some(reopened) => {
+                        backend = reopened.backend();
+                        sink = reopened;
+                    }
+                    None => return,
+                }
             }
         }
     }
@@ -1137,7 +1138,141 @@ enum AudioWriteError {
     Failed {
         backend: AudioBackend,
         reason: String,
+        /// The output stalled (OutputStalled) rather than failed: reopen it.
+        stalled: bool,
     },
+}
+
+/// Reopening a lost audio output. A lost output (e.g. a PCM that did not take
+/// data within the write timeout right after the session started) used to
+/// silence the rest of the session; now it is reopened with a backoff that
+/// survives "successful" reopens of an output that keeps failing (an ALSA
+/// open through PipeWire succeeds even on a dead sink), and audio is given up
+/// after AUDIO_REOPEN_LIMIT failures in a row.
+struct AudioReopen {
+    failures: u32,
+    last_failure: Option<Instant>,
+}
+
+const AUDIO_REOPEN_LIMIT: u32 = 6; // 0.5 + 1 + 2 + 4 + 4 + 4 s
+/// An output that ran this long without failing counts as healthy again.
+const AUDIO_HEALTHY_AFTER: Duration = Duration::from_secs(10);
+
+enum AudioReopenOutcome {
+    Reopened(Box<dyn AudioSink + Send>),
+    Closed,
+    GaveUp,
+}
+
+impl AudioReopen {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            last_failure: None,
+        }
+    }
+
+    /// Delay before the next attempt, or None once the limit is reached.
+    fn next_delay(&mut self) -> Option<Duration> {
+        let now = Instant::now();
+        if self
+            .last_failure
+            .is_some_and(|last| now.duration_since(last) >= AUDIO_HEALTHY_AFTER)
+        {
+            self.failures = 0;
+        }
+        self.last_failure = Some(now);
+        if self.failures >= AUDIO_REOPEN_LIMIT {
+            return None;
+        }
+        let delay = Duration::from_millis(500 << self.failures.min(3)).min(Duration::from_secs(4));
+        self.failures += 1;
+        Some(delay)
+    }
+}
+
+/// After write_audio could neither restart nor replace the output: a stalled
+/// output is reopened (with AudioReopen's backoff and limit), a failed one
+/// disables audio for the session as before.
+#[allow(clippy::too_many_arguments)]
+fn recover_audio_output(
+    config: &AudioConfig,
+    packets: &BoundedQueue<AudioPacket>,
+    events: &EventQueue,
+    unavailable: &AtomicBool,
+    recovery: &AudioRecovery,
+    reopen: &mut AudioReopen,
+    lost: AudioBackend,
+    reason: String,
+    stalled: bool,
+) -> Option<Box<dyn AudioSink + Send>> {
+    if !stalled {
+        audio_unavailable(
+            packets,
+            events,
+            unavailable,
+            lost,
+            recovery,
+            format!("audio output was lost and could not be replaced: {reason}"),
+        );
+        return None;
+    }
+    match reopen_audio_sink(config, packets, events, lost, reopen) {
+        AudioReopenOutcome::Reopened(sink) => Some(sink),
+        AudioReopenOutcome::Closed => None,
+        AudioReopenOutcome::GaveUp => {
+            audio_unavailable(
+                packets,
+                events,
+                unavailable,
+                lost,
+                recovery,
+                format!("audio output kept stalling and could not be replaced: {reason}"),
+            );
+            None
+        }
+    }
+}
+
+fn reopen_audio_sink(
+    config: &AudioConfig,
+    packets: &BoundedQueue<AudioPacket>,
+    events: &EventQueue,
+    lost: AudioBackend,
+    reopen: &mut AudioReopen,
+) -> AudioReopenOutcome {
+    loop {
+        let Some(delay) = reopen.next_delay() else {
+            return AudioReopenOutcome::GaveUp;
+        };
+        let deadline = Instant::now() + delay;
+        while Instant::now() < deadline {
+            if packets.is_closed() {
+                return AudioReopenOutcome::Closed;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        packets.clear();
+        match open_audio_sink(config) {
+            Ok(sink) => {
+                emit(
+                    events,
+                    BackendEvent::AudioOutputRecovered {
+                        from: lost,
+                        to: sink.backend(),
+                    },
+                );
+                return AudioReopenOutcome::Reopened(sink);
+            }
+            Err(error) => emit(
+                events,
+                BackendEvent::AudioOutputError {
+                    backend: lost,
+                    message: error.to_string(),
+                },
+            ),
+        }
+    }
 }
 
 fn write_audio(
@@ -1152,6 +1287,7 @@ fn write_audio(
         if cancelled() {
             return Err(AudioWriteError::Closed);
         }
+        let stalled = matches!(error, Error::OutputStalled { .. });
         let message = error.to_string();
         emit(
             events,
@@ -1206,6 +1342,7 @@ fn write_audio(
                     return Err(AudioWriteError::Failed {
                         backend: fallback_backend,
                         reason: fallback_error.to_string(),
+                        stalled: matches!(fallback_error, Error::OutputStalled { .. }),
                     });
                 }
                 let lost_backend = *backend;
@@ -1234,6 +1371,7 @@ fn write_audio(
         return Err(AudioWriteError::Failed {
             backend: *backend,
             reason: message,
+            stalled,
         });
     }
     Ok(())
@@ -2007,6 +2145,16 @@ mod tests {
         assert_eq!(session.submit_video(frame).unwrap(), PushOutcome::Queued);
 
         assert!(session.stop().is_ok());
+    }
+
+    #[test]
+    fn audio_reopen_backs_off_and_gives_up_at_the_limit() {
+        let mut reopen = super::AudioReopen::new();
+        let delays: Vec<u64> = std::iter::from_fn(|| reopen.next_delay())
+            .map(|delay| delay.as_millis() as u64)
+            .collect();
+        assert_eq!(delays, [500, 1000, 2000, 4000, 4000, 4000]);
+        assert_eq!(reopen.next_delay(), None);
     }
 
     #[test]
