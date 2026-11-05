@@ -346,6 +346,26 @@ private slots:
         }
     }
 
+    void gamescopeSessionCapturesWithoutItemFocus()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        qputenv("GAMESCOPE_WAYLAND_DISPLAY", "gamescope-0");
+        auto clearSession = qScopeGuard([] { qunsetenv("GAMESCOPE_WAYLAND_DISPLAY"); });
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(1920, 1080));
+        // No forceActiveFocus(): an overlay that closed left the focus elsewhere.
+        item.setInputEnabled(false);
+        item.setInputEnabled(true);
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(item.hasActiveFocus());
+        item.setInputEnabled(false);
+        QVERIFY(!item.captureActive());
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");

@@ -262,6 +262,11 @@ private:
     bool m_cursorConfined = false;
     bool m_nativeWindowMoveLoop = false;
     std::unique_ptr<class WindowsWindowMoveLoop> m_windowsWindowMoveLoop;
+    // Under gamescope (SteamOS game mode, handhelds) this is the only, always
+    // fullscreen client and input comes from a controller or a touchscreen,
+    // so nothing gives Qt focus back to the video after an overlay closes
+    // (see syncCaptureState()).
+    const bool m_gamescopeSession = !qEnvironmentVariableIsEmpty("GAMESCOPE_WAYLAND_DISPLAY");
     bool m_remoteCursorKnown = false;
     bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;
