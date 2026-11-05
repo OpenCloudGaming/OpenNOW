@@ -27,7 +27,7 @@ std::optional<HdrOutput::LuminanceRange> HdrOutput::parseGamescopeLuminance(cons
     const double maximum = parts[1].toDouble(&okMax);
     const double white = parts.size() > 2 ? parts[2].toDouble(&okWhite) : 203.0;
     if (!okMin || !okMax || !okWhite || !std::isfinite(minimum) || !std::isfinite(maximum)
-            || minimum < 0.0 || white < 80.0 || white > 500.0 || minimum >= white
+            || !std::isfinite(white) || minimum < 0.0 || white < 80.0 || white > 500.0 || minimum >= white
             || maximum <= white || maximum > 10000.0)
         return std::nullopt;
     return LuminanceRange{float(minimum), float(maximum), float(white)};

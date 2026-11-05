@@ -102,7 +102,8 @@ private slots:
         QCOMPARE(range->white, 203.0f);
         QCOMPARE(HdrOutput::parseGamescopeLuminance(QStringLiteral("0.01,1000"))->white, 203.0f);
         for (const auto *invalid : {"", "737", "x,737", "-1,737", "0.01,100,203", "300,737,203",
-                                    "0.01,737,50", "0.01,20000"}) {
+                                    "0.01,737,50", "0.01,20000", "nan,737", "0.01,nan",
+                                    "0.01,737,nan", "0.01,737,inf"}) {
             QVERIFY2(!HdrOutput::parseGamescopeLuminance(QString::fromLatin1(invalid)), invalid);
         }
     }
