@@ -94,6 +94,19 @@ public:
     }
 
 private slots:
+    void parsesGamescopeLuminanceRange()
+    {
+        const auto range = HdrOutput::parseGamescopeLuminance(QStringLiteral("0.0005,737,203"));
+        QVERIFY(range.has_value());
+        QCOMPARE(range->maximum, 737.0f);
+        QCOMPARE(range->white, 203.0f);
+        QCOMPARE(HdrOutput::parseGamescopeLuminance(QStringLiteral("0.01,1000"))->white, 203.0f);
+        for (const auto *invalid : {"", "737", "x,737", "-1,737", "0.01,100,203", "300,737,203",
+                                    "0.01,737,50", "0.01,20000"}) {
+            QVERIFY2(!HdrOutput::parseGamescopeLuminance(QString::fromLatin1(invalid)), invalid);
+        }
+    }
+
     void initTestCase()
     {
 #if defined(Q_OS_WIN)
