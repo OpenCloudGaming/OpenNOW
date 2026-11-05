@@ -1423,6 +1423,10 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        // 200 ms at 120 fps: rides out a brief decoder or network stall; a
+        // backlog that does not drain is dropped by the session (STALE_BACKLOG)
+        // rather than kept as latency.
+        config.encoded_queue_depth = 24;
         config.stream_format.pixel_format = stream.color_quality.linux_pixel_format();
         if stream.hdr {
             config.stream_format.color_transfer =

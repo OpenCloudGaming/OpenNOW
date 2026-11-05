@@ -105,6 +105,11 @@ pub(crate) trait VideoDecoder {
     fn poll(&mut self) -> Result<Vec<DecodedVideoFrame>> {
         Ok(Vec::new())
     }
+    /// Drop all decoder state so the next keyframe starts clean, without
+    /// reopening the device. Returns false when only a reopen will do.
+    fn reset_in_place(&mut self) -> bool {
+        false
+    }
     fn flush(&mut self) -> Result<Vec<DecodedVideoFrame>>;
     fn take_format_change(&mut self) -> Option<StreamFormat>;
 }
