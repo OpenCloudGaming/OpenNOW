@@ -316,6 +316,9 @@ FocusScope {
                 rows.push({t:setting.title, d:setting.description, v:value + "%", key:setting.key,
                     values:values, labels:values.map(value => value + "%"), control:"slider", sliderPercent:value / setting.maximum})
             }
+            rows.push(choice(qsTr("Touchscreen"),
+                qsTr("Auto: the finger points directly while the game shows a cursor, and works like a trackpad when the game draws its own. Trackpad: tap clicks, two-finger tap right-clicks, hold then drag drags, two fingers scroll. A three-finger tap switches between them during a stream."),
+                "touchMode", ["auto", "direct", "trackpad"], [qsTr("Auto"), qsTr("Direct"), qsTr("Trackpad")], "segments"))
             rows.push({t:"Mouse sensitivity", d:"Acceleration off · raw input", v:Number(settings.mouseSensitivity || 1).toFixed(1) + "×", key:"mouseSensitivity", values:[0.5,0.75,1,1.25,1.5], labels:["0.5×","0.75×","1.0×","1.25×","1.5×"], control:"slider", sliderPercent:Number(settings.mouseSensitivity || 1) / 1.5})
             rows.push(descriptorChoice(qsTr("Game language"), ShellStore.settingsOwnerState.gameLanguageDescription,
                 "gameLanguage", ShellStore.settingsOwnerState.gameLanguageItems))

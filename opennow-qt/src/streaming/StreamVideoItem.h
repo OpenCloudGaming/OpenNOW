@@ -1,6 +1,7 @@
 #pragma once
 
 #include "streaming/PhysicalKeyMap.h"
+#include "streaming/StreamTouchGestures.h"
 #include "streaming/rendering/StreamVideoRenderCallback.h"
 
 #include <QQuickItem>
@@ -40,6 +41,12 @@ class StreamVideoItem : public QQuickItem
                    NOTIFY relativeMouseChanged)
     Q_PROPERTY(bool macPointerLockEnabled READ macPointerLockEnabled WRITE setMacPointerLockEnabled
                    NOTIFY macPointerLockEnabledChanged)
+    // "auto" (trackpad while the remote cursor is hidden, direct otherwise),
+    // "direct" or "trackpad"; see StreamTouchGestures.
+    Q_PROPERTY(QString touchMode READ touchMode WRITE setTouchMode NOTIFY touchModeChanged)
+    // The mode touch uses right now ("direct" or "trackpad"); a three-finger tap
+    // switches it for the rest of the session.
+    Q_PROPERTY(QString effectiveTouchMode READ effectiveTouchMode NOTIFY effectiveTouchModeChanged)
     Q_PROPERTY(QVariantMap shortcutBindings READ shortcutBindings WRITE setShortcutBindings
                    NOTIFY shortcutBindingsChanged)
     Q_PROPERTY(bool frameGeneration READ frameGeneration WRITE setFrameGeneration
@@ -91,6 +98,9 @@ public:
     void setRelativeMouse(bool relative);
     [[nodiscard]] bool macPointerLockEnabled() const;
     void setMacPointerLockEnabled(bool enabled);
+    [[nodiscard]] QString touchMode() const;
+    void setTouchMode(const QString &mode);
+    [[nodiscard]] QString effectiveTouchMode() const;
     [[nodiscard]] QVariantMap shortcutBindings() const;
     void setShortcutBindings(const QVariantMap &bindings);
     [[nodiscard]] std::shared_ptr<StreamVideoRenderCallback> renderCallback() const;
@@ -157,6 +167,10 @@ signals:
     void inputCaptureErrorChanged();
     void relativeMouseChanged();
     void macPointerLockEnabledChanged();
+    void touchModeChanged();
+    void effectiveTouchModeChanged();
+    // Emitted when a three-finger tap switched the mode, for an on-screen notice.
+    void touchModeSwitched(const QString &mode);
     void shortcutBindingsChanged();
     void frameGenerationChanged();
     void displayRefreshOverrideHzChanged();
@@ -180,6 +194,8 @@ protected:
     void hoverEnterEvent(QHoverEvent *event) override;
     void hoverMoveEvent(QHoverEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void touchEvent(QTouchEvent *event) override;
+    void touchUngrabEvent() override;
     void itemChange(ItemChange change, const ItemChangeData &data) override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -265,6 +281,19 @@ private:
     bool m_remoteCursorKnown = false;
     bool m_serverCursorComposited = true;
     bool m_remoteCursorVisible = false;
+    QString m_touchMode = QStringLiteral("auto");
+    // Set by a three-finger tap until the stream resets: the remote cursor
+    // state cannot tell a launcher that takes absolute positions (REDlauncher
+    // reports cursor id 0 with a server-drawn cursor) from a game that moves
+    // its own cursor from raw input (also id 0).
+    std::optional<StreamTouchGestures::Mode> m_touchModeOverride;
+    StreamTouchGestures m_touch;
+    QTimer m_touchHoldTimer;
+    QPointF m_touchRelativeRemainder;
+    [[nodiscard]] StreamTouchGestures::Mode touchGestureMode() const;
+    void switchTouchMode();
+    void submitTouchRelative(QPointF delta);
+    void submitTouchButton(int button, bool pressed);
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
     std::optional<bool> m_manualRelativeMouse;

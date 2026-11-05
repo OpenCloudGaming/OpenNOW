@@ -6,6 +6,7 @@
 
 #include <QCursor>
 #include <QClipboard>
+#include <QTouchEvent>
 #include <QFocusEvent>
 #include <QGuiApplication>
 #include <QHoverEvent>
@@ -785,6 +786,119 @@ void StreamVideoItem::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
+QString StreamVideoItem::touchMode() const
+{
+    return m_touchMode;
+}
+
+void StreamVideoItem::setTouchMode(const QString &mode)
+{
+    const auto normalized = mode == u"direct" || mode == u"trackpad" ? mode : QStringLiteral("auto");
+    if (m_touchMode == normalized) return;
+    m_touchMode = normalized;
+    emit touchModeChanged();
+    emit effectiveTouchModeChanged();
+}
+
+QString StreamVideoItem::effectiveTouchMode() const
+{
+    return touchGestureMode() == StreamTouchGestures::Mode::Trackpad ? QStringLiteral("trackpad")
+                                                                     : QStringLiteral("direct");
+}
+
+void StreamVideoItem::switchTouchMode()
+{
+    m_touchModeOverride = touchGestureMode() == StreamTouchGestures::Mode::Trackpad
+        ? StreamTouchGestures::Mode::Direct
+        : StreamTouchGestures::Mode::Trackpad;
+    emit effectiveTouchModeChanged();
+    emit touchModeSwitched(effectiveTouchMode());
+}
+
+StreamTouchGestures::Mode StreamVideoItem::touchGestureMode() const
+{
+    if (m_touchModeOverride) return *m_touchModeOverride;
+    if (m_touchMode == u"trackpad") return StreamTouchGestures::Mode::Trackpad;
+    if (m_touchMode == u"direct") return StreamTouchGestures::Mode::Direct;
+    // Auto: the server hides its cursor when the game draws its own from raw
+    // relative input (the same signal that switches the mouse to relative);
+    // only relative motion moves that cursor.
+    return m_relativeMouse || (m_remoteCursorKnown && !m_remoteCursorVisible)
+        ? StreamTouchGestures::Mode::Trackpad
+        : StreamTouchGestures::Mode::Direct;
+}
+
+void StreamVideoItem::submitTouchRelative(QPointF delta)
+{
+    if (!s_nativeRuntime) return;
+    // Item pixels to stream pixels, so a finger stroke moves the cursor by
+    // the same distance on screen; sensitivity is applied by the streamer.
+    const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));
+    if (viewport.width() > 0 && viewport.height() > 0 && m_videoSize.isValid()) {
+        delta.rx() *= qreal(m_videoSize.width()) / viewport.width();
+        delta.ry() *= qreal(m_videoSize.height()) / viewport.height();
+    }
+    m_touchRelativeRemainder += delta;
+    const int x = std::clamp(int(std::trunc(m_touchRelativeRemainder.x())), -32767, 32767);
+    const int y = std::clamp(int(std::trunc(m_touchRelativeRemainder.y())), -32767, 32767);
+    if (x == 0 && y == 0) return;
+    m_touchRelativeRemainder -= QPointF(x, y);
+    s_nativeRuntime->submitMouseRelative(static_cast<qint16>(x), static_cast<qint16>(y));
+}
+
+void StreamVideoItem::submitTouchButton(int button, bool pressed)
+{
+    if (s_nativeRuntime) s_nativeRuntime->submitMouseButton(static_cast<quint8>(button), pressed);
+}
+
+void StreamVideoItem::touchEvent(QTouchEvent *event)
+{
+    // Touchpads can also deliver touch events (macOS, some Linux setups);
+    // those stay a mouse. Only a touchscreen gets direct/trackpad handling.
+    if (event->device() && event->device()->type() != QInputDevice::DeviceType::TouchScreen) {
+        event->ignore();
+        return;
+    }
+    if (event->type() == QEvent::TouchBegin) {
+        forceActiveFocus(Qt::MouseFocusReason);
+        syncCaptureState();
+        m_touchRelativeRemainder = {};
+    }
+    if (!m_captureActive || !s_nativeRuntime) {
+        m_touch.cancel();
+        event->ignore();
+        return;
+    }
+    if (event->type() == QEvent::TouchCancel) {
+        m_touch.cancel();
+        event->accept();
+        return;
+    }
+    const auto now = qint64(event->timestamp());
+    const auto mode = touchGestureMode();
+    for (const auto &point : event->points()) {
+        switch (point.state()) {
+        case QEventPoint::Pressed:
+            m_touch.pressed(point.id(), point.position(), now, mode);
+            break;
+        case QEventPoint::Updated:
+            m_touch.moved(point.id(), point.position(), now);
+            break;
+        case QEventPoint::Released:
+            m_touch.released(point.id(), point.position(), now);
+            break;
+        default:
+            break;
+        }
+    }
+    event->accept();
+}
+
+void StreamVideoItem::touchUngrabEvent()
+{
+    m_touch.cancel();
+}
+
 void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 {
     QQuickItem::itemChange(change, data);
@@ -984,6 +1098,7 @@ void StreamVideoItem::releaseInput()
 {
     m_waylandPointer->release();
     m_macPointer->release();
+    m_touch.cancel();  // releases a button a touch drag still holds
     const auto pendingRelativeMouse = m_pendingRelativeMouse;
     m_pendingRelativeMouse.reset();
     if (s_nativeRuntime) {
@@ -1137,11 +1252,13 @@ void StreamVideoItem::resetRemoteCursor()
 {
     m_remoteCursorKnown = false;
     m_remoteCursorVisible = false;
+    m_touchModeOverride.reset();
     m_serverCursorComposited = s_nativeRuntime ? s_nativeRuntime->serverCursorComposited() : true;
     m_remoteCursor = QCursor();
     setRelativeMouse(m_usesMacPointerCapture ? m_macPointerLockEnabled
         : m_manualRelativeMouse.value_or(s_nativeRuntime && s_nativeRuntime->defaultRelativeMouse()));
     updateLocalCursor();
+    emit effectiveTouchModeChanged();
 }
 
 bool StreamVideoItem::macPointerLockEnabled() const
@@ -1184,6 +1301,7 @@ void StreamVideoItem::applyRemoteCursor(const QByteArray &bytes)
     const auto metadata = remoteCursorMetadata(bytes);
     m_remoteCursorKnown = true;
     m_remoteCursorVisible = !hidden;
+    emit effectiveTouchModeChanged();
     setRelativeMouse(m_usesMacPointerCapture ? m_macPointerLockEnabled
                                            : m_manualRelativeMouse.value_or(hidden));
     updateLocalCursor();
