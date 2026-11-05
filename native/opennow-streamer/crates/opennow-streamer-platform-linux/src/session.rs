@@ -641,6 +641,7 @@ fn run_video_worker(
 
     let mut active_format = config.stream_format;
     let mut active_generation = 0;
+    let mut backlog_since: Option<Instant> = None;
     loop {
         let poll_output = decoder_needs_poll(backend, config.codec);
         let command =
@@ -713,31 +714,38 @@ fn run_video_worker(
                 {
                     decoded.clear();
                     decode_timings.clear();
-                    if backend == DecoderBackend::MediaCodec {
-                        if let Err(error) = close_decoder(&mut decoder) {
-                            report_video_close_error(error, &close_error, &state, &events);
-                            return;
-                        }
-                        drop(decoder);
-                    }
-                    match open_preferred_decoder(&config, active_format) {
-                        Ok((new_backend, new_decoder)) => {
-                            if new_backend != backend {
-                                emit(
-                                    &events,
-                                    BackendEvent::DecoderChanged {
-                                        from: backend,
-                                        to: new_backend,
-                                        reason: "encoded queue discontinuity".to_owned(),
-                                    },
-                                );
+                    // Reopening a hardware decoder takes long enough (V4L2
+                    // stream off/on, buffer allocation) for the encoded queue
+                    // to overflow again, so one overflow turned into seconds of
+                    // back-to-back recoveries. Decoders that can drop their
+                    // state in place (FFmpeg: avcodec_flush_buffers) do that.
+                    if !decoder.reset_in_place() {
+                        if backend == DecoderBackend::MediaCodec {
+                            if let Err(error) = close_decoder(&mut decoder) {
+                                report_video_close_error(error, &close_error, &state, &events);
+                                return;
                             }
-                            backend = new_backend;
-                            decoder = new_decoder;
+                            drop(decoder);
                         }
-                        Err(error) => {
-                            report_worker_error(&state, &events, error);
-                            return;
+                        match open_preferred_decoder(&config, active_format) {
+                            Ok((new_backend, new_decoder)) => {
+                                if new_backend != backend {
+                                    emit(
+                                        &events,
+                                        BackendEvent::DecoderChanged {
+                                            from: backend,
+                                            to: new_backend,
+                                            reason: "encoded queue discontinuity".to_owned(),
+                                        },
+                                    );
+                                }
+                                backend = new_backend;
+                                decoder = new_decoder;
+                            }
+                            Err(error) => {
+                                report_worker_error(&state, &events, error);
+                                return;
+                            }
                         }
                     }
                     need_keyframe = true;
@@ -775,6 +783,24 @@ fn run_video_worker(
                 record_decoded_outputs(&decode_timings, &frames);
                 decode_timings.record_call(call_duration, !frames.is_empty());
                 enqueue_frames(&decoded, &events, frames);
+                // A short stall leaves a backlog that a decoder running just
+                // under the frame interval drains only slowly, keeping the
+                // picture late for seconds. Drop it instead and restart from
+                // a keyframe, as a queue overflow would.
+                if frame.is_some() && commands.len() >= BACKLOG_FRAMES {
+                    let now = Instant::now();
+                    let since = *backlog_since.get_or_insert(now);
+                    if now.duration_since(since) >= STALE_BACKLOG {
+                        backlog_since = None;
+                        commands
+                            .remove_where(|queued| matches!(queued, VideoCommand::Decode { .. }));
+                        need_keyframe = true;
+                        emit(&events, BackendEvent::QueueOverflow { media: "video" });
+                        emit(&events, BackendEvent::NeedKeyframe);
+                    }
+                } else {
+                    backlog_since = None;
+                }
             }
             Err(error @ Error::ReferenceLost { .. }) => {
                 decoded.clear();
@@ -884,6 +910,12 @@ fn decoder_needs_poll(backend: DecoderBackend, codec: VideoCodec) -> bool {
     backend == DecoderBackend::MediaCodec
         || (backend == DecoderBackend::V4l2 && codec == VideoCodec::H264)
 }
+
+/// Encoded frames still queued after a decode. A backlog this deep that does
+/// not drain (the decoder keeps pace but no longer catches up) only adds
+/// latency; past `STALE_BACKLOG` it is dropped and a keyframe requested.
+const BACKLOG_FRAMES: usize = 12;
+const STALE_BACKLOG: Duration = Duration::from_millis(250);
 
 const AUDIO_DECODE_STRIKES_BEFORE_RESET: u32 = 8;
 const AUDIO_DECODER_RESET_LIMIT: u32 = 2;
