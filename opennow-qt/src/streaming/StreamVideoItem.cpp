@@ -84,9 +84,10 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     });
     connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
             Qt::UniqueConnection);
+    connect(this, &QQuickItem::enabledChanged, this, &StreamVideoItem::syncCaptureState);
     if (s_nativeRuntime) {
         m_relativeMouse = m_usesMacPointerCapture ? m_macPointerLockEnabled
-                                                : s_nativeRuntime->defaultRelativeMouse();
+                                                : defaultRelativeMouse();
         m_decodedVideoSize = s_nativeRuntime->decodedDisplaySize();
         refreshVideoSize();
         connect(s_nativeRuntime, &NativeStreamRuntime::decodedDisplaySizeChanged, this,
