@@ -960,6 +960,12 @@ private slots:
             }
             QVERIFY(!callback->needsFrame());
             QCOMPARE(producer.releaseCount, producer.sourceCount + producer.borrowedEmptyCount);
+            const auto idleSources = producer.sourceCount;
+            for (int idle = 0; idle < 3; ++idle) {
+                QVERIFY(present({}));
+                QVERIFY2(!callback->needsFrame(), "A drained pair must not restart render requests while the source is idle");
+                QCOMPARE(producer.sourceCount, idleSources);
+            }
             QCoreApplication::processEvents();
             QCOMPARE(errors.size(), 0);
             QVERIFY2(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
