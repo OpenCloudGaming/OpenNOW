@@ -24,18 +24,12 @@
 namespace {
 QString modelDirectory()
 {
-    const auto usable = [](const QString &dir) {
-        return QFileInfo::exists(dir + QStringLiteral("/graph.json"))
-            && QFileInfo::exists(dir + QStringLiteral("/flyhighfg.json"))
-            && QFileInfo::exists(dir + QStringLiteral("/flyhighfg.bin"));
-    };
-    const QStringList directories = {
-        qEnvironmentVariable("OPENNOW_FLYHIGH_DIR"),
-        QCoreApplication::applicationDirPath() + QStringLiteral("/flyhigh"),
-        QStringLiteral("E:/flyhigh-engine/models")};
-    for (const QString &dir : directories)
-        if (!dir.isEmpty() && usable(dir)) return dir;
-    return {};
+    const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/flyhigh");
+    if (!QFileInfo(dir + QStringLiteral("/graph.json")).isFile()
+        || !QFileInfo(dir + QStringLiteral("/flyhighfg.json")).isFile()
+        || !QFileInfo(dir + QStringLiteral("/flyhighfg.bin")).isFile())
+        return {};
+    return dir;
 }
 
 #if defined(Q_OS_WIN)
@@ -90,17 +84,17 @@ struct Api {
 
     bool load(QString *error)
     {
-        if (library) return true;
-        const QStringList files = {
-            QCoreApplication::applicationDirPath() + QStringLiteral("/flyhigh.dll"),
-            QStringLiteral("E:/flyhigh-engine/target/release/flyhigh.dll")};
-        for (const QString &file : files) {
-            if (!QFileInfo::exists(file)) continue;
-            library = LoadLibraryW(reinterpret_cast<LPCWSTR>(file.utf16()));
-            if (library) break;
+        if (modelDirectory().isEmpty()) {
+            *error = QStringLiteral("FlyHigh model bundle is missing from the application directory");
+            return false;
         }
+        if (library) return true;
+        const QString file = QDir::toNativeSeparators(
+            QCoreApplication::applicationDirPath() + QStringLiteral("/flyhigh.dll"));
+        library = LoadLibraryExW(reinterpret_cast<LPCWSTR>(file.utf16()), nullptr,
+                                 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!library) {
-            *error = QStringLiteral("FlyHigh engine DLL was not found");
+            *error = QStringLiteral("FlyHigh engine DLL is missing or could not be loaded from the application directory");
             return false;
         }
         const auto sym = [&](const char *name) { return GetProcAddress(library, name); };
@@ -123,10 +117,13 @@ struct Api {
         report = reinterpret_cast<decltype(report)>(sym("fh_session_report_json"));
         copyOutput = reinterpret_cast<decltype(copyOutput)>(sym("fh_copy_output_d3d11"));
         releaseTarget = reinterpret_cast<decltype(releaseTarget)>(sym("fh_release_d3d11_target"));
-        if (!lastError || !engineOptionsDefault || !engineCreate || !modelLoad || !sessionOptionsDefault
+        if (!lastError || !engineOptionsDefault || !engineCreate || !engineDestroy
+            || !modelLoad || !modelDestroy || !sessionOptionsDefault
             || !sessionCreate || !sessionDestroy || !importD3d11 || !addOutput || !pair || !mid
             || !copyOutput || !releaseTarget) {
             *error = QStringLiteral("FlyHigh engine DLL is missing entry points");
+            FreeLibrary(library);
+            *this = Api{};
             return false;
         }
         return true;
@@ -341,13 +338,17 @@ FlyHighNetwork::~FlyHighNetwork() = default;
 
 bool FlyHighNetwork::enabled()
 {
+#if defined(Q_OS_WIN)
     const QString flag = qEnvironmentVariable("OPENNOW_FLYHIGH");
     if (flag == QLatin1String("0")
         || qEnvironmentVariable("OPENNOW_FRAME_GENERATION_ENGINE") == QLatin1String("motion"))
         return false;
     const bool app = QFileInfo(QCoreApplication::applicationFilePath()).completeBaseName()
         .compare(QLatin1String("OpenNOW"), Qt::CaseInsensitive) == 0;
-    return (app || flag == QLatin1String("1")) && !weightsPath().isEmpty();
+    return app || flag == QLatin1String("1");
+#else
+    return false;
+#endif
 }
 
 QString FlyHighNetwork::weightsPath()

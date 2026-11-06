@@ -830,7 +830,7 @@ QtObject {
         }
     }
     function frameGenerationEngineNotice() {
-        return qsTr("Experimental. FlyHigh interpolates between source frames; a fast flick keeps the nearer frame instead of blending it.")
+        return qsTr("Experimental. Windows frame generation requires a bundled FlyHigh engine and models. Run the capability test to check availability.")
     }
     // Description of the mode control: what will run for the selected mode.
     function frameGenerationDescription() {

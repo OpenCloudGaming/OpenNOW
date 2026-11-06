@@ -485,30 +485,43 @@ on direct launch.
 
 ### Local frame generation (experimental)
 
-The desktop Streaming settings and console Video settings offer **Off** (default) or **2×**.
-This is local video interpolation, not a higher GeForce NOW tier or a change to the negotiated
-stream FPS. A 60 FPS stream targets 120 displayed FPS only with a sufficiently fast local GPU
-and a display running at approximately 120 Hz or higher. Input and game simulation remain at
-the source rate. Interpolation adds presentation latency and can artifact around fast motion,
-thin geometry, transparency, repeated textures, and the game's HUD.
-Generation is limited to a nominal 120 FPS target: source cadences faster than 60 FPS (with a
-small arrival-jitter margin) bypass interpolation and report `source-rate-limit`. In particular,
-a 120 FPS source is never doubled to 240, even on a 240 Hz or faster display. Normal source
-presentation is not capped or renegotiated by this guard.
+On Windows, frame generation requires `flyhigh.dll` beside `OpenNOW.exe` and a `flyhigh`
+subdirectory containing `graph.json`, `flyhighfg.json`, and `flyhighfg.bin`. The loader searches
+only the application directory for the engine and models. DLL dependencies are restricted to
+the engine directory and Windows System32. Missing or invalid bundles make frame generation
+unavailable rather than silently selecting the motion engine. Normal streaming remains active.
+The capability test must pass before frame generation can be selected.
 
-The Qt render-thread helper samples native GPU textures into two retained histories, estimates
-bidirectional motion through three reduced-resolution pyramids, and synthesizes one midpoint.
+The Windows release workflows and install rules do not currently acquire, pin, or package
+FlyHigh or its models. A release bundle requires an owner-approved engine and model version,
+artifact checksums, redistribution rights, and dependency/license packaging rules. CMake does
+not copy a developer checkout, and `OPENNOW_FLYHIGH_ENGINE` and `OPENNOW_FLYHIGH_DIR` are no
+longer supported. No engine binaries or weights are supplied by these build rules.
+The engine artifact also needs matching, reviewable bridge source for the required
+`fh_copy_output_d3d11` and `fh_release_d3d11_target` exports. An upstream engine revision alone
+does not establish compatibility or safe GPU completion and resource lifetime behavior.
+Tests default to the motion engine. Windows developer tests can explicitly select FlyHigh
+with `OPENNOW_FLYHIGH=1` after staging a verified bundle beside the test executable.
+`OPENNOW_FLYHIGH=0` or `OPENNOW_FRAME_GENERATION_ENGINE=motion` explicitly selects motion.
+Non-Windows builds use the motion engine.
+
+Frame generation is local video interpolation. It does not change the negotiated stream FPS,
+input rate, or game simulation. See [Native frame generation](../docs/fg-legacy.md#levels-target-fps-display-refresh-and-the-capability-test)
+for the current modes, multipliers, display constraints, and capability-test requirements.
+
+The motion engine's Qt render-thread helper samples native GPU textures into two retained
+histories, estimates bidirectional motion through three reduced-resolution pyramids, and synthesizes generated frames.
 The pyramids filter the source footprint before downsampling. Motion refinement considers distinct
 neighboring coarse vectors rather than blending vectors across object boundaries, and avoids
 counting overlapping search candidates twice. The motion search samples explicit mip level zero,
 matching its non-mipmapped textures. This avoids implicit texture derivatives in divergent search
-loops, which can make the Windows shader compiler unroll the search and stall. Midpoint synthesis
+loops, which can make the Windows shader compiler unroll the search and stall. Synthesis
 checks each direction against the full-resolution source pair, so a reliable direction can supply
 a region when the other fails.
 Unreliable regions and detected scene cuts use the actual current image. OpenNOW's overlays
 are composed afterward on the existing video surface. There is no CPU image readback, separate
-presenter, neural model, or additional runtime dependency. The Off path allocates no interpolation
-resources. Source frame identifiers, protocol feedback, audio, and source-stream recording are
+presenter, neural model, or additional runtime dependency in the motion engine. The Off path
+allocates no interpolation resources. Source frame identifiers, protocol feedback, audio, and source-stream recording are
 unchanged.
 
 The helper accepts single-sample RGBA8 and RGB10A2 textures with renderable RGBA16F flow targets,

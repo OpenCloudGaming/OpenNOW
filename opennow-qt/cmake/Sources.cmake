@@ -102,19 +102,3 @@ qt_add_executable(opennow-qt
     ${OPENNOW_STREAM_PRESENTATION_SOURCES}
 )
 target_link_libraries(opennow-qt PRIVATE opennow-generic-hid)
-if(WIN32)
-    set(OPENNOW_FLYHIGH_ENGINE "E:/flyhigh-engine" CACHE PATH "FlyHigh engine checkout used to bundle flyhigh.dll")
-    if(EXISTS "${OPENNOW_FLYHIGH_ENGINE}/target/release/flyhigh.dll")
-    add_custom_command(TARGET opennow-qt POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${OPENNOW_FLYHIGH_ENGINE}/target/release/flyhigh.dll"
-            "$<TARGET_FILE_DIR:opennow-qt>/flyhigh.dll"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:opennow-qt>/flyhigh"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${OPENNOW_FLYHIGH_ENGINE}/models/flyhighfg.bin"
-            "${OPENNOW_FLYHIGH_ENGINE}/models/flyhighfg.json"
-            "${OPENNOW_FLYHIGH_ENGINE}/models/graph.json"
-            "$<TARGET_FILE_DIR:opennow-qt>/flyhigh/"
-        VERBATIM)
-    endif()
-endif()
