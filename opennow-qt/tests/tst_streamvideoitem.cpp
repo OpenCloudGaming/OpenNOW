@@ -405,6 +405,28 @@ private slots:
         QCOMPARE(item.mapFromGlobal(QCursor::pos()).toPoint(), QPoint(140, 120));
     }
 
+    void geometryChangeCancelsActiveTouch()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("trackpad"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(100, 100));
+        item.setPosition(QPointF(50, 0));
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(300, 100));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(300, 100));
+        QVERIFY(CursorSession::motions.isEmpty());
+        QVERIFY(CursorSession::buttons.isEmpty());
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");

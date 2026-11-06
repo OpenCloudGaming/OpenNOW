@@ -39,6 +39,24 @@ private slots:
         QCOMPARE(m_log, QStringList({"to 100,200", "to 101,201", "button 1 down", "button 1 up"}));
     }
 
+    void trackpadReleaseMovementIsAMoveNotATap()
+    {
+        auto touch = gestures();
+        touch.pressed(1, {100, 100}, 0, Mode::Trackpad);
+        touch.released(1, {250, 100}, 60);
+        QCOMPARE(m_log, QStringList({"by 150,0"}));
+    }
+
+    void directDragKeepsItsLastSegmentOnRelease()
+    {
+        auto touch = gestures();
+        touch.pressed(1, {100, 200}, 0, Mode::Direct);
+        touch.moved(1, {150, 200}, 10);
+        touch.released(1, {180, 220}, 20);
+        QCOMPARE(m_log, QStringList({"to 100,200", "button 1 down", "to 150,200", "to 180,220",
+                                     "button 1 up"}));
+    }
+
     void directHoldRightClicks()
     {
         auto touch = gestures();

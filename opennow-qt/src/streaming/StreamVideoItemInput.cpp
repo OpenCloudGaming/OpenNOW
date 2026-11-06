@@ -931,6 +931,9 @@ void StreamVideoItem::itemChange(ItemChange change, const ItemChangeData &data)
 void StreamVideoItem::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
+    // Active contacts hold positions in the old item coordinates; carrying them
+    // over would send the difference as movement.
+    m_touch.cancel();
     resynchronizeInput();
 }
 

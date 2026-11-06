@@ -71,9 +71,11 @@ void StreamTouchGestures::moved(int id, QPointF position, qint64 timeMs)
 
 void StreamTouchGestures::released(int id, QPointF position, qint64 timeMs)
 {
+    // A release can carry movement of its own: apply it first, so a fast swipe
+    // does not end as a tap and a drag does not lose its last segment.
     auto it = m_points.find(id);
     if (it == m_points.end()) return;
-    it->last = position;
+    if (it->last != position) moved(id, position, timeMs);
     m_points.erase(it);
     if (!m_points.isEmpty()) {
         m_lastCentroid = centroid();
