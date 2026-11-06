@@ -408,7 +408,8 @@ if(BUILD_TESTING)
     opennow_add_fsr_shaders(opennow-fsrupscaler-tests)
     qt_add_executable(opennow-frameinterpolator-tests
         tests/tst_frameinterpolator.cpp
-        src/streaming/rendering/StreamFrameInterpolator.cpp)
+        src/streaming/rendering/StreamFrameInterpolator.cpp
+        src/streaming/rendering/FlyHighNetwork.cpp)
     target_include_directories(opennow-frameinterpolator-tests PRIVATE src)
     target_link_libraries(opennow-frameinterpolator-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
@@ -450,7 +451,8 @@ if(BUILD_TESTING)
     qt_add_executable(opennow-framegenerationbenchmark-tests
         tests/tst_framegenerationbenchmark.cpp
         src/streaming/rendering/FrameGenerationBenchmark.cpp
-        src/streaming/rendering/StreamFrameInterpolator.cpp)
+        src/streaming/rendering/StreamFrameInterpolator.cpp
+        src/streaming/rendering/FlyHighNetwork.cpp)
     target_include_directories(opennow-framegenerationbenchmark-tests PRIVATE src)
     target_link_libraries(opennow-framegenerationbenchmark-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
@@ -1196,6 +1198,7 @@ if(BUILD_TESTING)
             src/streaming/rendering/NativeStreamRenderCallback.cpp
             src/streaming/rendering/HdrOutput.cpp
             src/streaming/rendering/StreamFrameInterpolator.cpp
+            src/streaming/rendering/FlyHighNetwork.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
         opennow_add_fsr_shaders(opennow-nativeframegeneration-tests)

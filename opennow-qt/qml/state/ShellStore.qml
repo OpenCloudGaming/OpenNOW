@@ -868,6 +868,9 @@ QtObject {
     property int shortcutActionGeneration: 0
     property var runtimeStreamProfile: ({})
     property bool antiAfkEnabled: false
+    // Ctrl+Shift+F12 while frame generation is on: the source frame slot repeats the
+    // latest generated frame instead of the decoded one.
+    property bool generatedFramesOnly: false
     property var lastSessionReport: null
     property bool desiredStreamInputPaused: false
     property bool currentStreamInputPaused: false
@@ -2973,6 +2976,7 @@ QtObject {
             "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
             "toggle-frame-generation": [String(settings.shortcutToggleFrameGeneration ?? "Ctrl+Shift+G")],
+            "toggle-generated-only": ["Ctrl+Shift+F12"],
             "toggle-microphone": microphoneToggleAvailable
                 ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
@@ -3031,6 +3035,16 @@ QtObject {
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
+            accessibilityMessage = streamControlMessage
+        } else if (action === "toggle-generated-only") {
+            if (settingsOwner.frameGenerationFactor() < 2) {
+                streamControlMessage = qsTr("Frame generation is off")
+            } else {
+                generatedFramesOnly = !generatedFramesOnly
+                streamControlMessage = generatedFramesOnly
+                    ? qsTr("Generated frames only")
+                    : qsTr("Source frames shown")
+            }
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-frame-generation") {
             if (!settingsOwner.frameGenerationUnlocked()) {

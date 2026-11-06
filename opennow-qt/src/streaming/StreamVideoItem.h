@@ -48,6 +48,8 @@ class StreamVideoItem : public QQuickItem
     // a boolean for existing bindings (true selects 2x).
     Q_PROPERTY(int frameGenerationFactor READ frameGenerationFactor WRITE setFrameGenerationFactor
                    NOTIFY frameGenerationChanged)
+    Q_PROPERTY(bool generatedFramesOnly READ generatedFramesOnly WRITE setGeneratedFramesOnly
+                   NOTIFY generatedFramesOnlyChanged)
     // Manual display refresh in Hz for frame-generation pacing; 0 uses the window's screen.
     Q_PROPERTY(int displayRefreshOverrideHz READ displayRefreshOverrideHz WRITE setDisplayRefreshOverrideHz
                    NOTIFY displayRefreshOverrideHzChanged)
@@ -99,6 +101,8 @@ public:
     void setFrameGeneration(bool enabled);
     int frameGenerationFactor() const;
     void setFrameGenerationFactor(int factor);
+    bool generatedFramesOnly() const;
+    void setGeneratedFramesOnly(bool enabled);
     int displayRefreshOverrideHz() const;
     void setDisplayRefreshOverrideHz(int hz);
     bool metalFxUpscaling() const;
@@ -159,6 +163,7 @@ signals:
     void macPointerLockEnabledChanged();
     void shortcutBindingsChanged();
     void frameGenerationChanged();
+    void generatedFramesOnlyChanged();
     void displayRefreshOverrideHzChanged();
     void metalFxUpscalingChanged();
     void fsrUpscalingChanged();
@@ -236,6 +241,7 @@ private:
     QString m_keyboardLayout = QStringLiteral("en-US");
     const PhysicalKeyMap::Layout *m_keyboardMap = PhysicalKeyMap::layoutFor("en-US");
     int m_frameGenerationFactor = 0;
+    bool m_generatedFramesOnly = false;
     int m_displayRefreshOverrideHz = 0;
     bool m_metalFxUpscaling = false;
     bool m_fsrUpscaling = false;

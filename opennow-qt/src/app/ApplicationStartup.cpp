@@ -143,6 +143,9 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     return EXIT_FAILURE;
 #endif
 #endif
+    const int flyHighSelfTest = application.arguments().indexOf(u"--flyhigh-selftest"_s);
+    if (flyHighSelfTest >= 0 && flyHighSelfTest + 1 < application.arguments().size())
+        return FrameGenerationBenchmark::flyHighSelfTest(application.arguments().at(flyHighSelfTest + 1));
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
     QIcon applicationIcon;
     for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})

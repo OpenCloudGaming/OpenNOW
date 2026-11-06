@@ -630,6 +630,9 @@ QtObject {
     function ensureFrameGenerationGpu() {
         if (frameGenerationGpu === "") frameGenerationGpu = String(FrameGenerationBenchmark.gpuName() || "")
     }
+    // The saved profile is keyed by the GPU name. Until that name is known the
+    // profile is invisible and a saved 4× comes up as off.
+    Component.onCompleted: ensureFrameGenerationGpu()
     // The measured cost depends on the engine, the GPU and the stream resolution only;
     // whether a level fits is decided live from the selected frame rate and the display.
     function frameGenerationProfileKey() {
@@ -827,7 +830,7 @@ QtObject {
         }
     }
     function frameGenerationEngineNotice() {
-        return qsTr("Experimental block-matching interpolation can produce artifacts on thin edges and fast motion.")
+        return qsTr("Experimental. FlyHigh interpolates between source frames; a fast flick keeps the nearer frame instead of blending it.")
     }
     // Description of the mode control: what will run for the selected mode.
     function frameGenerationDescription() {

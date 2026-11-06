@@ -1,9 +1,13 @@
 #include "streaming/rendering/FrameGenerationBenchmark.h"
+#include "streaming/rendering/FlyHighNetwork.h"
 #include "streaming/rendering/StreamFrameInterpolator.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QScreen>
 #include <QThread>
 #include <QVariantList>
@@ -95,7 +99,8 @@ PrivateRhi createPrivateRhi(quint64 adapterLuid)
     QRhiD3D11NativeHandles requested;
     requested.adapterLuidLow = quint32(adapterLuid);
     requested.adapterLuidHigh = std::bit_cast<qint32>(quint32(adapterLuid >> 32));
-    out.rhi.reset(QRhi::create(QRhi::D3D11, &params, {}, adapterLuid ? &requested : nullptr));
+    out.rhi.reset(QRhi::create(QRhi::D3D11, &params, QRhi::EnableTimestamps,
+                               adapterLuid ? &requested : nullptr));
     if (out.rhi && adapterLuid) {
         const auto *actual = static_cast<const QRhiD3D11NativeHandles *>(out.rhi->nativeHandles());
         const quint64 actualLuid = actual
@@ -108,7 +113,7 @@ PrivateRhi createPrivateRhi(quint64 adapterLuid)
 #elif QT_CONFIG(metal)
     Q_UNUSED(adapterLuid);
     QRhiMetalInitParams params;
-    out.rhi.reset(QRhi::create(QRhi::Metal, &params));
+    out.rhi.reset(QRhi::create(QRhi::Metal, &params, QRhi::EnableTimestamps));
 #elif QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     Q_UNUSED(adapterLuid);
     out.instance = std::make_unique<QVulkanInstance>();
@@ -120,7 +125,7 @@ PrivateRhi createPrivateRhi(quint64 adapterLuid)
     }
     QRhiVulkanInitParams params;
     params.inst = out.instance.get();
-    out.rhi.reset(QRhi::create(QRhi::Vulkan, &params));
+    out.rhi.reset(QRhi::create(QRhi::Vulkan, &params, QRhi::EnableTimestamps));
 #endif
     if (!out.rhi && out.error.isEmpty())
         out.error = QStringLiteral("No GPU backend available for the capability test");
@@ -239,9 +244,9 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
         rhi->endOffscreenFrame();
     }
 
-    // GPU timestamps are preferred, but some backends report nothing for offscreen frames
-    // (D3D11 returns 0); endOffscreenFrame() blocks until the GPU is done, so the wall
-    // time around it is a conservative per-frame cost on those.
+    // GPU timestamps are preferred. The private QRhi is created with EnableTimestamps: without
+    // it D3D11 neither reports GPU time nor waits in endOffscreenFrame(), and the wall time
+    // would only be the CPU recording cost.
     const bool timestamps = rhi->isFeatureSupported(QRhi::Timestamps);
     // Every level is timed on its own: one source frame costs the shared flow plus one
     // synthesis pass per generated frame, so 3x and 4x are measured, not extrapolated.
@@ -263,12 +268,21 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
                 return failure(QStringLiteral("Could not begin an offscreen GPU frame"));
             QElapsedTimer frame;
             frame.start();
-            const bool ingested = engine.ingest(cb, sources[frames % kSourceFrames].get(), factor);
+            bool ingested = engine.ingest(cb, sources[frames % kSourceFrames].get(), factor);
             rhi->endOffscreenFrame();
+            if (ingested && rhi->beginOffscreenFrame(&cb) == QRhi::FrameOpSuccess) {
+                ingested = engine.computePending(cb);
+                for (int index = 2; ingested && index < factor; ++index)
+                    ingested = engine.prepare(cb, index);
+                rhi->endOffscreenFrame();
+            } else {
+                ingested = false;
+            }
             const double wallMs = double(frame.nsecsElapsed()) / 1e6;
             if (!ingested) return failure(QStringLiteral("The frame-generation engine rejected the test frames"));
-            double ms = timestamps ? cb->lastCompletedGpuTime() * 1000.0 : 0.0;
-            const bool fromGpu = ms > 0.0;
+            const double engineMs = engine.lastGpuMs();
+            double ms = engineMs > 0.0 ? engineMs : (timestamps ? cb->lastCompletedGpuTime() * 1000.0 : 0.0);
+            const bool fromGpu = engineMs > 0.0 || ms > 0.0 && timestamps;
             if (!fromGpu) ms = wallMs;
             if (frames >= kWarmupFrames && ms > 0.0) {
                 current.push_back(ms);
@@ -308,6 +322,76 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
     result.insert(QStringLiteral("testedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
     result.insert(QStringLiteral("version"), 1);
     return result;
+}
+
+int FrameGenerationBenchmark::flyHighSelfTest(const QString &directory)
+{
+    const auto fail = [](const QString &message) {
+        fprintf(stderr, "flyhigh selftest: %s\n", qUtf8Printable(message));
+        return EXIT_FAILURE;
+    };
+    const QImage first = QImage(directory + QStringLiteral("/a.png")).convertToFormat(QImage::Format_RGBA8888);
+    const QImage second = QImage(directory + QStringLiteral("/b.png")).convertToFormat(QImage::Format_RGBA8888);
+    if (first.isNull() || second.isNull() || first.size() != second.size())
+        return fail(QStringLiteral("needs a.png and b.png of one size in %1").arg(directory));
+    auto device = createPrivateRhi(0);
+    if (!device.rhi) return fail(device.error);
+    QRhi *rhi = device.rhi.get();
+    std::array<std::unique_ptr<QRhiTexture>, 2> frames;
+    QRhiCommandBuffer *cb = nullptr;
+    if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) return fail(QStringLiteral("no offscreen frame"));
+    auto *uploads = rhi->nextResourceUpdateBatch();
+    for (int index = 0; index < 2; ++index) {
+        frames[size_t(index)].reset(rhi->newTexture(QRhiTexture::RGBA8, first.size()));
+        if (!frames[size_t(index)]->create()) return fail(QStringLiteral("could not allocate the input frames"));
+        uploads->uploadTexture(frames[size_t(index)].get(), index == 0 ? first : second);
+    }
+    cb->resourceUpdate(uploads);
+    rhi->endOffscreenFrame();
+
+    FlyHighNetwork network;
+    if (!network.initialize(rhi)) return fail(network.error());
+    QJsonObject report{{QStringLiteral("weights"), FlyHighNetwork::weightsPath()},
+                       {QStringLiteral("gpu"), QString::fromUtf8(rhi->driverInfo().deviceName)},
+                       {QStringLiteral("source"), QStringLiteral("%1x%2").arg(first.width()).arg(first.height())}};
+    for (int count = 1; count <= FlyHighNetwork::MaximumFrames; ++count) {
+        std::array<QRhiReadbackResult, FlyHighNetwork::MaximumFrames> readbacks;
+        if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) return fail(QStringLiteral("no offscreen frame"));
+        if (!network.pair(cb, frames[0].get(), frames[1].get(), count)) return fail(network.error());
+        auto *reads = rhi->nextResourceUpdateBatch();
+        for (int index = 1; index <= count; ++index) {
+            if (!network.frame(cb, index)) return fail(network.error());
+            reads->readBackTexture(QRhiReadbackDescription(network.output(index)), &readbacks[size_t(index - 1)]);
+        }
+        cb->resourceUpdate(reads);
+        rhi->endOffscreenFrame();
+        for (int index = 1; index <= count; ++index) {
+            const auto &read = readbacks[size_t(index - 1)];
+            QImage(reinterpret_cast<const uchar *>(read.data.constData()), read.pixelSize.width(),
+                   read.pixelSize.height(), QImage::Format_RGBA8888)
+                .copy().save(directory + QStringLiteral("/flyhigh_%1_%2.png").arg(count).arg(index));
+        }
+        std::vector<double> gpu, pairOnly;
+        for (int run = 0; run < 90; ++run) {
+            if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess) return fail(QStringLiteral("no offscreen frame"));
+            const bool alone = run % 2 == 1;
+            bool ok = network.pair(cb, frames[size_t(run % 2)].get(), frames[size_t(1 - run % 2)].get(), count);
+            for (int index = 2; ok && !alone && index <= count; ++index) ok = network.frame(cb, index);
+            rhi->endOffscreenFrame();
+            if (!ok) return fail(network.error());
+            if (run >= 10) (alone ? pairOnly : gpu).push_back(network.lastGpuMs());
+        }
+        report.insert(QStringLiteral("gpuMs%1").arg(count), percentile(gpu, 0.5));
+        report.insert(QStringLiteral("gpuP95Ms%1").arg(count), percentile(gpu, 0.95));
+        report.insert(QStringLiteral("pairAndFirstMs%1").arg(count), percentile(pairOnly, 0.5));
+    }
+    const QSize grid = network.networkSize();
+    report.insert(QStringLiteral("network"), QStringLiteral("%1x%2").arg(grid.width()).arg(grid.height()));
+    const QByteArray json = QJsonDocument(report).toJson();
+    QFile out(directory + QStringLiteral("/flyhigh.json"));
+    if (out.open(QIODevice::WriteOnly)) out.write(json);
+    fprintf(stdout, "%s\n", json.constData());
+    return EXIT_SUCCESS;
 }
 
 QVariantMap FrameGenerationBenchmark::evaluate(const QVariantMap &measurement, int fps, double refreshHz)

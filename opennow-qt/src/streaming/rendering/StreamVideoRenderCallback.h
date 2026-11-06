@@ -23,6 +23,7 @@ public:
     virtual void setClip(bool, int) {}
     // factor: 0 = off, 2..4 = generated frames per source interval + 1; refresh rate in Hz.
     virtual void setFrameGeneration(int, double) {}
+    virtual void setGeneratedFramesOnly(bool) {}
     virtual void setUpscalingTarget(const QSize &) {}
     virtual void setFsrUpscaling(bool) {}
     virtual void setUpscalingEnhancement(int, int) {}

@@ -1,5 +1,7 @@
 #include "streaming/rendering/StreamFrameInterpolator.h"
+#include "streaming/rendering/FlyHighNetwork.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QSize>
 #include <rhi/qrhi.h>
@@ -124,6 +126,8 @@ struct StreamFrameInterpolator::State {
     int current = 0;
     int frames = 0;
     int generatedCount = 0;
+    bool computePending = false;
+    bool generatedValid = false;
 
     bool allocate(QRhiTexture *source)
     {
@@ -218,6 +222,15 @@ bool StreamFrameInterpolator::initialize(QRhi *rhi)
         return false;
     m_state = std::make_unique<State>();
     m_state->rhi = rhi;
+    if (FlyHighNetwork::enabled()) {
+        m_flyHigh = std::make_unique<FlyHighNetwork>();
+        if (!m_flyHigh->initialize(rhi)) {
+            qWarning("FlyHigh frame generation is unavailable: %s",
+                     qUtf8Printable(m_flyHigh->error()));
+            m_flyHigh.reset();
+            return false;
+        }
+    }
     return true;
 }
 
@@ -258,6 +271,15 @@ bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source,
         return false;
     }
     s.copy[next].draw(rhi, cb, s.history[next]);
+    if (m_flyHigh) {
+        s.current = next;
+        s.frames = std::min(2, s.frames + 1);
+        if (s.frames == 2) {
+            s.generatedCount = factor - 1;
+            s.computePending = true;
+        }
+        return true;
+    }
     for (int level = 0; level < 3; ++level)
         s.reduce[next][level].draw(rhi, cb, s.pyramid[next][level]);
     if (s.frames > 0) {
@@ -276,12 +298,36 @@ bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source,
     }
     s.current = next;
     s.frames = std::min(2, s.frames + 1);
+    s.generatedValid = s.frames == 2;
+    return true;
+}
+
+bool StreamFrameInterpolator::computePending(QRhiCommandBuffer *cb)
+{
+    if (!m_flyHigh || !m_state || !m_state->computePending) return true;
+    auto &s = *m_state;
+    s.computePending = false;
+    auto *previous = s.history[1 - s.current].texture.get();
+    auto *current = s.history[s.current].texture.get();
+    if (!m_flyHigh->pair(cb, previous, current, s.generatedCount)) {
+        qWarning("FlyHigh frame generation stopped: %s",
+                 qUtf8Printable(m_flyHigh->error()));
+        m_flyHigh.reset();
+        s.generatedValid = false;
+        return false;
+    }
+    s.generatedValid = true;
     return true;
 }
 
 QRhiTexture *StreamFrameInterpolator::currentTexture() const
 {
     return m_state && m_state->frames > 0 ? m_state->history[m_state->current].texture.get() : nullptr;
+}
+
+QRhiTexture *StreamFrameInterpolator::anchorTexture() const
+{
+    return currentTexture();
 }
 
 // The generated frame nearest t = 0.5: the midpoint itself for even factors, the frame at
@@ -299,21 +345,43 @@ int StreamFrameInterpolator::generatedCount() const
 
 QRhiTexture *StreamFrameInterpolator::generatedTexture(int index) const
 {
-    return index >= 1 && index <= generatedCount() ? m_state->generated[index - 1].texture.get() : nullptr;
+    if (index < 1 || index > generatedCount()) return nullptr;
+    return m_flyHigh ? m_flyHigh->output(index) : m_state->generated[index - 1].texture.get();
+}
+
+bool StreamFrameInterpolator::prepare(QRhiCommandBuffer *cb, int index)
+{
+    return !m_flyHigh || !hasPair() || m_flyHigh->frame(cb, index);
+}
+
+QString StreamFrameInterpolator::engine() const
+{
+    if (!m_flyHigh) return QStringLiteral("motion");
+    const QSize grid = m_flyHigh->networkSize();
+    return QStringLiteral("flyhigh %1x%2").arg(grid.width()).arg(grid.height());
+}
+
+double StreamFrameInterpolator::lastGpuMs() const
+{
+    return m_flyHigh ? m_flyHigh->lastGpuMs() : 0.0;
 }
 
 bool StreamFrameInterpolator::hasPair() const
 {
-    return m_state && m_state->frames == 2;
+    return m_state && m_state->frames == 2 && m_state->generatedValid;
 }
 
 void StreamFrameInterpolator::reset()
 {
-    if (m_state) m_state->frames = 0;
+    if (!m_state) return;
+    m_state->frames = 0;
+    m_state->computePending = false;
+    m_state->generatedValid = false;
 }
 
 void StreamFrameInterpolator::release()
 {
+    m_flyHigh.reset();
     m_state.reset();
 }
 

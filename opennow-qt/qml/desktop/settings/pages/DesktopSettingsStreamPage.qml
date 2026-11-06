@@ -179,9 +179,9 @@ Column {
                 objectName: "framegenGitHubLink"
                 implicitWidth: DesktopTokens.px(30); implicitHeight: DesktopTokens.px(30)
                 hoverEnabled: true
-                Accessible.name: qsTr("Framegen on GitHub")
+                Accessible.name: qsTr("FlyHigh engine on GitHub")
                 ToolTip.visible: hovered
-                ToolTip.text: qsTr("Framegen on GitHub")
+                ToolTip.text: qsTr("FlyHigh engine on GitHub")
                 background: Rectangle {
                     radius: DesktopTokens.px(9)
                     color: framegenLink.down || framegenLink.hovered ? DesktopTokens.raisedStrong : "transparent"
@@ -195,7 +195,7 @@ Column {
                         anchors.centerIn: parent
                     }
                 }
-                onClicked: AppController.openExternalUrl("https://github.com/MONZikWasTaken/Framegen")
+                onClicked: AppController.openExternalUrl("https://github.com/getflyhigh/flyhigh-engine")
             }
         }
         DesktopSettingsRow {

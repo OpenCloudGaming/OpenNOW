@@ -52,6 +52,10 @@ public:
     static QVariantMap measure(const QVariantMap &request, const std::atomic_bool *cancelled,
                                const std::function<void(double)> &progress, quint64 adapterLuid = 0);
 
+    // `--flyhigh-selftest <dir>`: interpolates dir/a.png -> dir/b.png with FlyHigh on a
+    // private QRhi, writes flyhigh_<count>_<k>.png and flyhigh.json (timings) into dir.
+    static int flyHighSelfTest(const QString &directory);
+
 signals:
     void runningChanged();
     void progressChanged();
