@@ -176,6 +176,7 @@ pub enum BackendEvent {
     NeedKeyframe,
     QueueOverflow {
         media: &'static str,
+        count: usize,
     },
     DeviceLost {
         subsystem: Subsystem,
@@ -546,7 +547,13 @@ fn queue_video_command(
     }) {
         QueuePush::Added => Ok(PushOutcome::Queued),
         QueuePush::Full => {
-            emit(events, BackendEvent::QueueOverflow { media: "video" });
+            emit(
+                events,
+                BackendEvent::QueueOverflow {
+                    media: "video",
+                    count: 1,
+                },
+            );
             needs_keyframe.store(true, Ordering::Release);
 
             // A keyframe that happens to arrive at the overflow boundary can
@@ -647,6 +654,11 @@ fn run_video_worker(
     let mut active_generation = 0;
     let mut backlog_since: Option<Instant> = None;
     loop {
+        // Every recovery ends in a wait for a keyframe; a backlog is measured
+        // from that keyframe, not from before the recovery.
+        if need_keyframe {
+            backlog_since = None;
+        }
         let poll_output = decoder_needs_poll(backend, config.codec);
         let command =
             match commands.wait_pop(Duration::from_millis(if poll_output { 5 } else { 100 })) {
@@ -800,10 +812,16 @@ fn run_video_worker(
                     let since = *backlog_since.get_or_insert(now);
                     if now.duration_since(since) >= STALE_BACKLOG {
                         backlog_since = None;
-                        commands
+                        let dropped = commands
                             .remove_where(|queued| matches!(queued, VideoCommand::Decode { .. }));
                         need_keyframe = true;
-                        emit(&events, BackendEvent::QueueOverflow { media: "video" });
+                        emit(
+                            &events,
+                            BackendEvent::QueueOverflow {
+                                media: "video",
+                                count: dropped,
+                            },
+                        );
                         emit(&events, BackendEvent::NeedKeyframe);
                     }
                 } else {
@@ -996,7 +1014,13 @@ fn submit_audio_packet(
     match queue.push_latest(packet) {
         QueuePush::Added => Ok(PushOutcome::Queued),
         QueuePush::DroppedOldest => {
-            emit(events, BackendEvent::QueueOverflow { media: "audio" });
+            emit(
+                events,
+                BackendEvent::QueueOverflow {
+                    media: "audio",
+                    count: 1,
+                },
+            );
             Ok(PushOutcome::DroppedOldest)
         }
         QueuePush::Full => unreachable!(),
@@ -1544,6 +1568,7 @@ fn enqueue_frames(
                 events,
                 BackendEvent::QueueOverflow {
                     media: "decoded-video",
+                    count: 1,
                 },
             );
         }
