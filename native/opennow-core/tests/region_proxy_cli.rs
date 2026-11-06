@@ -354,7 +354,6 @@ fn failed_authenticated_proxy_is_bounded_and_does_not_fall_back_or_log_credentia
     let fallback = Server::start(Response::Proxy(origin.address));
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
-    drop(listener);
     let mut core = Core::start(
         json!({"sessionProxyEnabled":true,"sessionProxyUrl":format!("http://private-user:private-secret@localhost:{port}")}),
         &[("HTTP_PROXY", &fallback.proxy_url())],
@@ -368,6 +367,7 @@ fn failed_authenticated_proxy_is_bounded_and_does_not_fall_back_or_log_credentia
     );
     assert_eq!(response["result"]["results"][0]["pingMs"], Value::Null);
     core.stop();
+    drop(listener);
     let output = core.output.lock().unwrap();
     assert!(!output.contains("private-secret"));
     assert!(!output.contains("private-user"));

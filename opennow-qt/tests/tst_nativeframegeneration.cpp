@@ -960,6 +960,12 @@ private slots:
             }
             QVERIFY(!callback->needsFrame());
             QCOMPARE(producer.releaseCount, producer.sourceCount + producer.borrowedEmptyCount);
+            const auto idleSources = producer.sourceCount;
+            for (int idle = 0; idle < 3; ++idle) {
+                QVERIFY(present({}));
+                QVERIFY2(!callback->needsFrame(), "A drained pair must not restart render requests while the source is idle");
+                QCOMPARE(producer.sourceCount, idleSources);
+            }
             QCoreApplication::processEvents();
             QCOMPARE(errors.size(), 0);
             QVERIFY2(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
@@ -1149,12 +1155,15 @@ private slots:
             QCOMPARE(snapshot.value(QStringLiteral("refreshRateHz")).toDouble(), 165.0);
             const int sourceCount = producer.sourceCount;
             const int empty = producer.emptyCount;
+            const auto originalDue = std::chrono::steady_clock::now()
+                + std::chrono::duration<double, std::milli>(
+                    snapshot.value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0);
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
             QVERIFY(present(false));
             QVERIFY(callback->needsFrame());
             if (moving) QCOMPARE(presented, midpoint);
             callback->frameSwapped();
-            std::this_thread::sleep_for(std::chrono::milliseconds(7));
+            std::this_thread::sleep_until(originalDue);
             QVERIFY(present());
             QVERIFY(!callback->needsFrame());
             if (moving) QCOMPARE(presented, sources[sequence]);
@@ -1186,7 +1195,8 @@ private slots:
                                                      16, 2'000'000'000};
             QVERIFY(present());
             if (callback->needsFrame()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(
+                    callback->frameGenerationStats().value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0));
                 QVERIFY(present());
                 QVERIFY(!callback->needsFrame());
             }
