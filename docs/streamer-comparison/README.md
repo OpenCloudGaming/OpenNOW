@@ -59,7 +59,7 @@ Official GFN local files used:
 - `C:\Users\Zortos\AppData\Local\NVIDIA Corporation\GeForceNOW\sharedstorage.json`
 - `C:\Users\Zortos\AppData\Local\NVIDIA Corporation\GeForceNOW\Mall\shared\assets\config\config.json`
 
-No official binary was disassembled. Official behavior is what those logs and JSON files print.
+No official binary was disassembled for this Windows log set. Official behavior here is what those logs and JSON files print. For a **disassembled Linux Flatpak** audit (symbols, r2, NVB API), see [gfn-official-binary-audit](../gfn-official-binary-audit/README.md).
 
 ## Limits
 
