@@ -3623,10 +3623,10 @@ fn run_embedded_linux_monitor(
                 opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
                     request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
                 }
-                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media, count } => {
                     let _ = shared
                         .feedback
-                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                        .send(MediaFeedback::QueueDropped { media, count });
                 }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {
@@ -3756,10 +3756,10 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
                 opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
                     request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
                 }
-                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media, count } => {
                     let _ = shared
                         .feedback
-                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                        .send(MediaFeedback::QueueDropped { media, count });
                 }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {
