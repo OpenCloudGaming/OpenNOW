@@ -227,7 +227,7 @@ bool StreamFrameInterpolator::initialize(QRhi *rhi)
         if (!m_flyHigh->initialize(rhi)) {
             qWarning("FlyHigh frame generation is unavailable: %s",
                      qUtf8Printable(m_flyHigh->error()));
-            m_flyHigh.reset();
+            release();
             return false;
         }
     }

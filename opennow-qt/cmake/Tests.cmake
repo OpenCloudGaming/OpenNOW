@@ -406,6 +406,16 @@ if(BUILD_TESTING)
         PREFIX "/opennow/shaders" BASE "shaders"
         FILES shaders/framegen.vert shaders/streamvideo.vert shaders/streamvideo.frag)
     opennow_add_fsr_shaders(opennow-fsrupscaler-tests)
+    qt_add_executable(opennow-flyhighpolicy-tests
+        tests/tst_flyhighpolicy.cpp src/streaming/rendering/FlyHighNetwork.cpp
+        src/streaming/rendering/StreamFrameInterpolator.cpp)
+    target_include_directories(opennow-flyhighpolicy-tests PRIVATE src)
+    target_link_libraries(opennow-flyhighpolicy-tests PRIVATE Qt6::Test Qt6::GuiPrivate)
+    target_compile_definitions(opennow-flyhighpolicy-tests PRIVATE
+        OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME opennow-flyhighpolicy-tests COMMAND opennow-flyhighpolicy-tests -o -,txt)
+    set_tests_properties(opennow-flyhighpolicy-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-frameinterpolator-tests
         tests/tst_frameinterpolator.cpp
         src/streaming/rendering/StreamFrameInterpolator.cpp
@@ -1520,6 +1530,7 @@ if(BUILD_TESTING)
         opennow-streampresentation-tests
         opennow-streampresentationfeedback-tests
         opennow-senderpacing-tests
+        opennow-flyhighpolicy-tests
         opennow-frameinterpolator-tests
         opennow-framegenerationbenchmark-tests
         opennow-fsrupscaler-tests
@@ -1570,6 +1581,7 @@ if(BUILD_TESTING)
             opennow-controllericons-tests
             opennow-streamtoasts-tests
             opennow-waylandhdroutput-tests
+            opennow-flyhighpolicy-tests
             opennow-frameinterpolator-tests
             opennow-framegenerationbenchmark-tests
             opennow-fsrupscaler-tests
@@ -1639,6 +1651,7 @@ if(BUILD_TESTING)
                 opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
+                opennow-flyhighpolicy-tests
                 opennow-framegenerationbenchmark-tests
                 opennow-fsrupscaler-tests
                 opennow-localization-tests
