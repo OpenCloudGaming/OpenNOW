@@ -1024,7 +1024,7 @@ private:
         // generated-only hold looks smoother. Each step keeps its full slot.
         const auto next = m_pacer.takeNext(clockNs(), 0);
         if (next.kind == StreamFramePacer::Next::Kind::None) {
-            m_needsFrame.store(true);
+            m_needsFrame.store(m_pacer.pending());
             return;
         }
         if (next.kind == StreamFramePacer::Next::Kind::Generated) {
