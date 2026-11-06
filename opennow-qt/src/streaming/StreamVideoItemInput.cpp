@@ -1073,7 +1073,7 @@ void StreamVideoItem::syncCaptureState()
         && window() && window()->isActive() && s_nativeRuntime && s_nativeRuntime->running()
         && s_nativeRuntime->inputAllowed();
     if (m_captureActive && (!desired || (WaylandPointerCapture::isWayland()
-            && m_relativeMouse && !m_waylandPointer->locked())
+            && m_relativeMouse && !m_waylandPointer->relativeInputReady())
             || (m_usesMacPointerCapture && m_relativeMouse && !m_macPointer->locked())))
         releaseInput();
     if (WaylandPointerCapture::isWayland()) {
@@ -1081,7 +1081,7 @@ void StreamVideoItem::syncCaptureState()
         auto region = mapRectToScene(QRectF(viewport)).toAlignedRect();
         if (window()) region.translate(window()->frameMargins().left(), window()->frameMargins().top());
         m_waylandPointer->setCapture(window(), desired && m_relativeMouse, region);
-        if (m_relativeMouse) desired = desired && m_waylandPointer->locked();
+        if (m_relativeMouse) desired = desired && m_waylandPointer->relativeInputReady();
     }
     if (m_usesMacPointerCapture) {
         const auto viewport = aspectFitRect(m_videoSize, QSize(qRound(width()), qRound(height())));

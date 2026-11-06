@@ -188,6 +188,19 @@ bool WaylandPointerCapture::isWayland()
 }
 
 bool WaylandPointerCapture::locked() const { return d->locked; }
+
+bool WaylandPointerCapture::relativeInputReady() const
+{
+    if (d->locked) return true;
+#ifdef OPENNOW_WAYLAND_INPUT
+    if (isWayland()) {
+        const auto *native = Private::native();
+        return native && !native->pointer();
+    }
+#endif
+    return false;
+}
+
 QString WaylandPointerCapture::error() const { return d->error; }
 
 QPoint WaylandPointerCapture::boundedDelta(QPointF &remainder, const QPointF &delta)
@@ -221,6 +234,12 @@ void WaylandPointerCapture::setCapture(QWindow *window, bool enabled, const QRec
     if (!d->refresh.isActive()) d->refresh.start();
 #ifdef OPENNOW_WAYLAND_INPUT
     if (!d->ready) return;
+    if (relativeInputReady() && !d->locked) {
+        // The refresh timer keeps running, so a mouse plugged in later gets a lock.
+        d->clearLock();
+        d->setError({});
+        return;
+    }
     if (!d->relativeManager || !d->constraints) {
         d->clearLock();
         d->refresh.stop();
