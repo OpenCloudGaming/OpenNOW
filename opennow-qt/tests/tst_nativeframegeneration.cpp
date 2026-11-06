@@ -1155,12 +1155,15 @@ private slots:
             QCOMPARE(snapshot.value(QStringLiteral("refreshRateHz")).toDouble(), 165.0);
             const int sourceCount = producer.sourceCount;
             const int empty = producer.emptyCount;
+            const auto originalDue = std::chrono::steady_clock::now()
+                + std::chrono::duration<double, std::milli>(
+                    snapshot.value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0);
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
             QVERIFY(present(false));
             QVERIFY(callback->needsFrame());
             if (moving) QCOMPARE(presented, midpoint);
             callback->frameSwapped();
-            std::this_thread::sleep_for(std::chrono::milliseconds(7));
+            std::this_thread::sleep_until(originalDue);
             QVERIFY(present());
             QVERIFY(!callback->needsFrame());
             if (moving) QCOMPARE(presented, sources[sequence]);
@@ -1192,7 +1195,8 @@ private slots:
                                                      16, 2'000'000'000};
             QVERIFY(present());
             if (callback->needsFrame()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(
+                    callback->frameGenerationStats().value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0));
                 QVERIFY(present());
                 QVERIFY(!callback->needsFrame());
             }
