@@ -5,8 +5,8 @@ The `qt-ci` and `qt-release-candidate` workflows use upstream cache actions.
 its old `useblacksmith/cache` and language-specific cache forks are archived.
 
 `qt-ci` checks Linux x64, Windows x64, and macOS ARM64. Manual package builds
-also cover Linux ARM64 and Windows ARM64. The release-candidate workflow still
-builds macOS ARM64.
+also cover Linux ARM64, Windows ARM64, and Intel macOS x64. The release-candidate workflow
+builds all three platforms on x64 and ARM64.
 
 ## Cached build inputs
 

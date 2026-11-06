@@ -2,6 +2,7 @@
 #include "media/MediaPaths.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QCoreApplication>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -9,6 +10,10 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QFutureWatcher>
+#include <QPromise>
+#include <QThreadPool>
+#include <QUuid>
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QPixmap>
@@ -29,6 +34,40 @@ AppController::AppController(QObject *parent)
     : QObject(parent)
     , m_route(u"home"_s)
 {
+}
+
+int AppController::screenDpi(QWindow *window) const
+{
+    const QScreen *screen = window ? window->screen() : nullptr;
+    if (!screen) {
+        if (const QWindow *focus = QGuiApplication::focusWindow())
+            screen = focus->screen();
+    }
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return 96;
+
+    // Universal: native pixels / panel mm.
+    // size() is logical points; × devicePixelRatio → framebuffer pixels.
+    // Fixes Mac Retina where physicalDotsPerInch() alone under-reports (~128 vs ~255).
+    // Win/Linux: same formula when EDID physicalSize is present.
+    const qreal dpr = std::max<qreal>(1.0, screen->devicePixelRatio());
+    const QSizeF logical = screen->size();
+    const QSizeF mm = screen->physicalSize();
+    if (logical.width() > 0.0 && logical.height() > 0.0
+            && mm.width() > 0.0 && mm.height() > 0.0) {
+        const qreal dpiX = (logical.width() * dpr) * 25.4 / mm.width();
+        const qreal dpiY = (logical.height() * dpr) * 25.4 / mm.height();
+        const qreal dpi = 0.5 * (dpiX + dpiY);
+        if (std::isfinite(dpi) && dpi >= 72.0 && dpi <= 480.0)
+            return qRound(dpi);
+    }
+
+    const qreal dpi = screen->physicalDotsPerInch();
+    if (qIsFinite(dpi) && dpi >= 72.0 && dpi <= 480.0)
+        return qRound(dpi);
+    return qRound(96.0 * dpr);
 }
 
 void AppController::setConsoleLaunchInputBlocked(bool blocked)
@@ -335,36 +374,61 @@ bool AppController::openThemeDirectory() const
     return QDesktopServices::openUrl(QUrl::fromLocalFile(directory.filePath(u"themes"_s)));
 }
 
-QString AppController::captureScreenRegion(int x, int y, int width, int height,
-                                           const QString &gameTitle) const
+void AppController::setScreenshotCapture(std::function<bool()> capture)
 {
-    if (width < 64 || height < 64 || width > 16384 || height > 16384) return {};
-    const QRect requested(x, y, width, height);
-    const QPoint center = requested.center();
-    auto *screen = QGuiApplication::screenAt(center);
-    if (!screen) screen = QGuiApplication::primaryScreen();
-    if (!screen) return {};
-    const auto captured = requested.intersected(screen->geometry());
-    if (captured.width() < 64 || captured.height() < 64) return {};
-    const auto local = captured.translated(-screen->geometry().topLeft());
-    const auto image = screen->grabWindow(0, local.x(), local.y(), local.width(), local.height());
-    if (image.isNull()) return {};
+    m_screenshotCapture = std::move(capture);
+}
 
-    const auto screenshotsPath = mediaScreenshotsDirectory();
-    if (screenshotsPath.isEmpty() || !QDir().mkpath(screenshotsPath)) return {};
-    QDir directory(screenshotsPath);
-    auto safeTitle = gameTitle.trimmed();
+bool AppController::captureStreamScreenshot(const QString &gameTitle)
+{
+    if (m_screenshotPending || !m_screenshotCapture) return false;
+    m_screenshotPending = true;
+    m_screenshotTitle = gameTitle.left(256);
+    if (m_screenshotCapture()) return true;
+    m_screenshotPending = false;
+    m_screenshotTitle.clear();
+    return false;
+}
+
+void AppController::saveStreamScreenshot(const QImage &image)
+{
+    if (!m_screenshotPending) return;
+    if (image.isNull() || image.width() > 3840 || image.height() > 2160) {
+        m_screenshotPending = false;
+        m_screenshotTitle.clear();
+        emit streamScreenshotSaved({});
+        return;
+    }
+    auto safeTitle = std::exchange(m_screenshotTitle, {}).trimmed();
     safeTitle.replace(QRegularExpression(uR"([^A-Za-z0-9._-]+)"_s), u"-"_s);
     safeTitle = safeTitle.left(72).trimmed();
     if (safeTitle.isEmpty()) safeTitle = u"OpenNOW"_s;
     const auto stamp = QDateTime::currentDateTimeUtc().toString(u"yyyyMMdd-HHmmss-zzz"_s);
-    const auto path = directory.filePath(safeTitle + u"-"_s + stamp + u".png"_s);
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || !image.save(&file, "PNG") || !file.commit()) {
-        file.cancelWriting();
-        return {};
-    }
-    return path;
+    const auto directory = mediaScreenshotsDirectory();
+    const auto filename = safeTitle + u"-"_s + stamp + u"-"_s
+        + QUuid::createUuid().toString(QUuid::WithoutBraces) + u".png"_s;
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        m_screenshotPending = false;
+        const auto path = watcher->result();
+        watcher->deleteLater();
+        emit streamScreenshotSaved(path);
+    });
+    QPromise<QString> promise;
+    watcher->setFuture(promise.future());
+    QThreadPool::globalInstance()->start([promise = std::move(promise), image,
+                                         directory, filename]() mutable {
+        promise.start();
+        QString saved;
+        if (!directory.isEmpty() && QDir().mkpath(directory)) {
+            const auto path = QDir(directory).filePath(filename);
+            QSaveFile file(path);
+            if (file.open(QIODevice::WriteOnly) && image.save(&file, "PNG") && file.commit())
+                saved = path;
+        }
+        promise.addResult(saved);
+        promise.finish();
+    });
 }
 
 bool AppController::captureScreenRegionTo(int x, int y, int width, int height,

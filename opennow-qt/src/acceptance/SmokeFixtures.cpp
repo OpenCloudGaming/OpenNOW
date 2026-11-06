@@ -184,7 +184,7 @@ int AcceptanceSession::prepareWindow()
             store->setProperty("streamInputPauseRequestId", u"microphone-visual-fixture"_s);
             store->setProperty("nativeRuntimeReady", true);
             store->setProperty("nativeRuntimeCapabilities", QVariantMap{
-                {u"protocolVersion"_s, 7}, {u"supportsMicrophone"_s, true}});
+                {u"protocolVersion"_s, 8}, {u"supportsMicrophone"_s, true}});
             store->setProperty("settings", QVariantMap{
                 {u"microphoneMode"_s, muted ? u"voice-activity"_s : u"disabled"_s}});
             if (muted) {
@@ -329,9 +329,29 @@ int AcceptanceSession::prepareWindow()
             if (m_arguments.contains(u"--smoke-resolution-open"_s)) picker->setProperty("expanded", true);
             if (m_arguments.contains(u"--smoke-resolution-fits-monitor"_s)) picker->setProperty("fitsMonitor", true);
         }
+        const auto streamEndIndex = m_arguments.indexOf(u"--smoke-stream-end-notice"_s);
+        if (streamEndIndex >= 0) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store || streamEndIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            const auto codeIndex = m_arguments.indexOf(u"--smoke-stream-end-code"_s);
+            const auto codeText = codeIndex >= 0 && codeIndex + 1 < m_arguments.size()
+                ? m_arguments.at(codeIndex + 1) : QString();
+            bool parsed = false;
+            const auto code = codeText.toUInt(&parsed, 0);
+            store->setProperty("selectedGame", m_engine.rootContext()->contextProperty(u"SmokeTestGame"_s));
+            store->setProperty("streamEndNotice", QVariantMap{{u"kind"_s, m_arguments.at(streamEndIndex + 1)},
+                {u"code"_s, parsed ? QVariant(code) : QVariant()}, {u"codeText"_s, codeText}});
+        }
         if (m_arguments.contains(u"--smoke-light-theme"_s)) {
             auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
             if (store) store->setProperty("settings", QVariantMap{{u"appTheme"_s, u"light"_s}});
+        }
+        const auto themePackIndex = m_arguments.indexOf(u"--smoke-theme-pack"_s);
+        if (themePackIndex >= 0) {
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store || themePackIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
+            store->setProperty("settings", QVariantMap{{u"themePack"_s, m_arguments.at(themePackIndex + 1)},
+                {u"appTheme"_s, m_arguments.contains(u"--smoke-light-theme"_s) ? u"light"_s : u"dark"_s}});
         }
         if (m_arguments.contains(u"--smoke-settings-advanced"_s)) {
             auto *settings = window ? window->findChild<QObject *>(u"desktopSettingsScreen"_s) : nullptr;
@@ -393,6 +413,34 @@ int AcceptanceSession::prepareWindow()
                     stream->setProperty("statisticsOpen", true);
                 if (auto *stats = window->findChild<QObject *>(u"desktopStatsSettings"_s))
                     stats->setProperty("metricsOpen", true);
+            });
+        }
+        if (m_arguments.contains(u"--smoke-frame-generation-dialog"_s)) {
+            // Seed a measurement under the key the shell computes, so the capability dialog
+            // shows a decided table (2 ms per generated frame on a 240 Hz display), then open it.
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            QMetaObject::invokeMethod(store, "ensureFrameGenerationGpu");
+            QVariant key, resolution;
+            QMetaObject::invokeMethod(store, "frameGenerationProfileKey", Q_RETURN_ARG(QVariant, key));
+            auto *state = store->property("settingsOwnerState").value<QObject *>();
+            if (state) QMetaObject::invokeMethod(state, "frameGenerationResolution", Q_RETURN_ARG(QVariant, resolution));
+            const auto size = resolution.toMap();
+            const QVariantMap profile{{u"engine"_s, u"motion"_s},
+                {u"gpu"_s, state ? state->property("frameGenerationGpu").toString() : QString()},
+                {u"width"_s, size.value(u"width"_s, 1920)}, {u"height"_s, size.value(u"height"_s, 1080)},
+                {u"fps"_s, 60}, {u"refreshHz"_s, 240.0}, {u"p50Ms"_s, 1.6}, {u"p95Ms"_s, 2.0},
+                {u"p95Ms3"_s, 2.6}, {u"p95Ms4"_s, 3.2}, {u"maxMs"_s, 3.1},
+                {u"frames"_s, 180}, {u"gpuTimed"_s, false}, {u"engineMaxFactor"_s, 4},
+                {u"allowed"_s, QVariantList{2}}, {u"testedAt"_s, u"smoke"_s}, {u"version"_s, 1}};
+            const QVariantMap values{{u"frameGenerationProfiles"_s, QVariantMap{{key.toString(), profile}}},
+                {u"frameGenerationDisplayHz"_s, 240}};
+            for (auto it = values.cbegin(); it != values.cend(); ++it)
+                if (!QMetaObject::invokeMethod(store, "applySetting", Q_ARG(QVariant, QVariant(it.key())),
+                        Q_ARG(QVariant, it.value()))) return EXIT_FAILURE;
+            QTimer::singleShot(200, this, [window] {
+                auto *stream = window ? window->findChild<QObject *>(u"desktopStreamSettings"_s) : nullptr;
+                if (stream) QMetaObject::invokeMethod(stream, "openFrameGenerationDialog");
             });
         }
         const auto settingsScrollIndex = m_arguments.indexOf(u"--smoke-settings-scroll"_s);

@@ -258,6 +258,7 @@ Item {
         anchors.right: parent.right
         width: parent.width * 0.7
         source: artworkSource.resolvedUrl
+        onStatusChanged: artworkSource.reportImageStatus(status, source)
         fillMode: Image.PreserveAspectCrop
         sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
         asynchronous: true
@@ -302,6 +303,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 1
                 source: iconSource.resolvedUrl
+                onStatusChanged: iconSource.reportImageStatus(status, source)
                 fillMode: Image.PreserveAspectCrop
                 sourceSize: Qt.size(88, 88)
                 asynchronous: true

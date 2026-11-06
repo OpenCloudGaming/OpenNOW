@@ -2,10 +2,11 @@
 
 #include "input/platform/WaylandPointerCapture.h"
 #include "input/platform/MacPointerCapture.h"
+#include "input/platform/WindowsWindowMoveLoop.h"
 #include "streaming/NativeStreamRuntime.h"
 #include "streaming/rendering/NativeStreamRenderCallback.h"
+#include "streaming/rendering/StreamSenderPacer.h"
 
-#include <QCoreApplication>
 #include <QCursor>
 #include <QMetaObject>
 #include <QQmlEngine>
@@ -13,6 +14,7 @@
 #include <QThread>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -46,23 +48,45 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         if (m_captureActive && m_inputEnabled && m_relativeMouse && s_nativeRuntime)
             s_nativeRuntime->submitMouseRelative(x, y);
     });
-#if defined(Q_OS_WIN)
-    QCoreApplication::instance()->installNativeEventFilter(&m_nativeWindowMoveLoopFilter);
-#endif
+    m_windowsWindowMoveLoop = std::make_unique<WindowsWindowMoveLoop>(
+        [this] { return isVisible() && s_nativeRuntime && s_nativeRuntime->running(); },
+        [this](bool active) { setNativeWindowMoveLoop(active); });
     setFlag(ItemHasContents, true);
     setActiveFocusOnTab(true);
     setAcceptedMouseButtons(Qt::AllButtons);
     setKeepMouseGrab(true);
     setAcceptHoverEvents(true);
+    m_relativeMouse = m_usesMacPointerCapture && m_macPointerLockEnabled;
     m_frameStatsTimer.setInterval(1000);
     connect(&m_frameStatsTimer, &QTimer::timeout,
             this, &StreamVideoItem::frameGenerationStatsChanged);
     m_swapStatsTimer.setInterval(1000);
     connect(&m_swapStatsTimer, &QTimer::timeout, this, &StreamVideoItem::swapStatsChanged);
+    m_guiStallProbe.setTimerType(Qt::PreciseTimer);
+    m_guiStallProbe.setInterval(10);
+    connect(&m_guiStallProbe, &QTimer::timeout, this, [this] {
+        const qint64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const qint64 gap = m_guiStallLastNs ? now - m_guiStallLastNs : 0;
+        m_guiStallLastNs = now;
+        // Two frames of a 60 FPS stream or more, at most two lines a second.
+        if (gap < 35'000'000 || !isVisible() || !s_nativeRuntime
+            || now - m_guiStallLoggedNs < 500'000'000) return;
+        m_guiStallLoggedNs = now;
+        s_nativeRuntime->logRenderDiagnostic(QStringLiteral("gui-stall ms=%1 frame-generation=%2x")
+            .arg(double(gap - 10'000'000) / 1e6, 0, 'f', 1).arg(m_frameGenerationFactor));
+    });
+    m_guiStallProbe.start();
+    m_senderFrameTimer.setSingleShot(true);
+    m_senderFrameTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_senderFrameTimer, &QChronoTimer::timeout, this, [this] {
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) update();
+    });
     connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
             Qt::UniqueConnection);
     if (s_nativeRuntime) {
-        m_relativeMouse = s_nativeRuntime->defaultRelativeMouse();
+        m_relativeMouse = m_usesMacPointerCapture ? m_macPointerLockEnabled
+                                                : s_nativeRuntime->defaultRelativeMouse();
         m_decodedVideoSize = s_nativeRuntime->decodedDisplaySize();
         refreshVideoSize();
         connect(s_nativeRuntime, &NativeStreamRuntime::decodedDisplaySizeChanged, this,
@@ -104,6 +128,7 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
         if (m_inputWindow) m_inputWindow->removeEventFilter(this);
         m_inputWindow = currentWindow;
         if (m_inputWindow) m_inputWindow->installEventFilter(this);
+        m_windowsWindowMoveLoop->setWindow(currentWindow);
         connectFrameSwaps();
         if (currentWindow) {
             connect(currentWindow, &QWindow::activeChanged,
@@ -130,9 +155,12 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
 
 StreamVideoItem::~StreamVideoItem()
 {
+    m_windowsWindowMoveLoop.reset();
     disconnect(this, nullptr, this, nullptr);
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
     releaseInput();
     if (s_nativeRuntime && s_nativeRuntime->running()) {
         bool rawInput = false;
@@ -256,14 +284,52 @@ void StreamVideoItem::setRenderCallback(std::shared_ptr<StreamVideoRenderCallbac
 
 bool StreamVideoItem::frameGeneration() const
 {
-    return m_frameGeneration;
+    return m_frameGenerationFactor >= 2;
 }
 
 void StreamVideoItem::setFrameGeneration(bool enabled)
 {
-    if (m_frameGeneration == enabled) return;
-    m_frameGeneration = enabled;
-    if (enabled) m_frameStatsTimer.start();
+    setFrameGenerationFactor(enabled ? 2 : 0);
+}
+
+int StreamVideoItem::frameGenerationFactor() const
+{
+    return m_frameGenerationFactor;
+}
+
+int StreamVideoItem::displayRefreshOverrideHz() const
+{
+    return m_displayRefreshOverrideHz;
+}
+
+void StreamVideoItem::setDisplayRefreshOverrideHz(int hz)
+{
+    hz = std::clamp(hz, 0, 1000);
+    if (m_displayRefreshOverrideHz == hz) return;
+    m_displayRefreshOverrideHz = hz;
+    emit displayRefreshOverrideHzChanged();
+    update();
+}
+
+bool StreamVideoItem::generatedFramesOnly() const
+{
+    return m_generatedFramesOnly;
+}
+
+void StreamVideoItem::setGeneratedFramesOnly(bool enabled)
+{
+    if (m_generatedFramesOnly == enabled) return;
+    m_generatedFramesOnly = enabled;
+    emit generatedFramesOnlyChanged();
+    update();
+}
+
+void StreamVideoItem::setFrameGenerationFactor(int factor)
+{
+    factor = factor >= 2 ? std::min(factor, 4) : 0;
+    if (m_frameGenerationFactor == factor) return;
+    m_frameGenerationFactor = factor;
+    if (factor) m_frameStatsTimer.start();
     else m_frameStatsTimer.stop();
     emit frameGenerationChanged();
     emit frameGenerationStatsChanged();
@@ -309,6 +375,7 @@ void StreamVideoItem::updateSwapGate()
     const auto source = currentSwapGateSource();
     if (source == m_swapGateSource) return;
     m_swapGateSource = source;
+    if (!source.isEmpty()) m_senderFrameTimer.stop();
     pushSwapGate();
 }
 
@@ -377,15 +444,35 @@ void StreamVideoItem::setFsrUpscaling(bool enabled)
 
 void StreamVideoItem::connectFrameSwaps()
 {
+    m_senderFrameTimer.stop();
     disconnect(m_frameSwapConnection);
     disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
     if (!window() || !m_renderCallback) return;
     const std::weak_ptr<StreamVideoRenderCallback> callback = m_renderCallback;
+    m_frameBeginConnection = connect(window(), &QQuickWindow::beforeFrameBegin, this,
+                                     [callback, target = window()] {
+        if (auto renderer = callback.lock()) renderer->beforeFrameBegin(target);
+    }, Qt::DirectConnection);
+    m_afterRenderingConnection = connect(window(), &QQuickWindow::afterRendering, this, [callback] {
+        if (auto renderer = callback.lock()) renderer->afterRendering();
+    }, Qt::DirectConnection);
     m_frameSwapConnection = connect(window(), &QQuickWindow::frameSwapped, this, [callback] {
         if (auto renderer = callback.lock()) renderer->frameSwapped();
     }, Qt::DirectConnection);
     m_frameUpdateConnection = connect(window(), &QQuickWindow::frameSwapped, this, [this] {
-        if (m_frameGeneration && isVisible() && m_renderCallback && m_renderCallback->needsFrame())
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) {
+            const auto deadline = m_renderCallback->nextFrameDeadlineNs();
+            if (deadline != 0) {
+                const auto now = StreamSenderPacer::clockNs();
+                m_senderFrameTimer.setInterval(std::chrono::nanoseconds(deadline > now ? deadline - now : 0));
+                m_senderFrameTimer.start();
+                return;
+            }
+        }
+        m_senderFrameTimer.stop();
+        if ((m_frameGenerationFactor >= 2) && isVisible() && m_renderCallback && m_renderCallback->needsFrame())
             update();
     }, Qt::QueuedConnection);
 }

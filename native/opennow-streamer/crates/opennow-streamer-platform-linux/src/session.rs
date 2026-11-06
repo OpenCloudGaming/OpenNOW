@@ -111,6 +111,14 @@ impl SessionConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        if cfg!(feature = "hardware-only")
+            && self.decoder_preference == DecoderPreference::SoftwareOnly
+        {
+            return Err(Error::unavailable(
+                Subsystem::Session,
+                "hardware-only build forbids software video decoding",
+            ));
+        }
         self.stream_format.validate()?;
         if self.encoded_queue_depth == 0 || self.encoded_queue_depth > 64 {
             return Err(Error::InvalidFormat(
@@ -1279,6 +1287,19 @@ fn open_fallback_decoder(
 }
 
 fn decoder_order(preference: DecoderPreference) -> &'static [DecoderBackend] {
+    if cfg!(feature = "hardware-only") {
+        match preference {
+            DecoderPreference::Automatic => return decoder_order(DecoderPreference::HardwareOnly),
+            DecoderPreference::VaApiThenV4l2 => {
+                return &[DecoderBackend::VaApi, DecoderBackend::V4l2];
+            }
+            DecoderPreference::V4l2ThenVaApi => {
+                return &[DecoderBackend::V4l2, DecoderBackend::VaApi];
+            }
+            DecoderPreference::SoftwareOnly => return &[],
+            _ => {}
+        }
+    }
     match preference {
         DecoderPreference::MediaCodecOnly => &[DecoderBackend::MediaCodec],
         DecoderPreference::Automatic => &[
@@ -1317,6 +1338,12 @@ fn open_decoder(
     format: StreamFormat,
     backend: DecoderBackend,
 ) -> Result<Box<dyn VideoDecoder>> {
+    if cfg!(feature = "hardware-only") && backend == DecoderBackend::Ffmpeg {
+        return Err(Error::unavailable(
+            Subsystem::Ffmpeg,
+            "hardware-only build forbids software video decoding",
+        ));
+    }
     if config.embedded_presentation && config.vulkan_device.is_none() {
         validate_decoder_presentation(backend)?;
     }
@@ -1344,31 +1371,7 @@ fn open_decoder(
         DecoderBackend::Vulkan => open_ffmpeg_decoder(config.codec, format, backend),
         DecoderBackend::Cuda => open_ffmpeg_decoder(config.codec, format, backend),
         DecoderBackend::Ffmpeg => open_ffmpeg_decoder(config.codec, format, backend),
-        DecoderBackend::V4l2 if config.codec == VideoCodec::H264 => {
-            open_v4l2(format, config.v4l2_device.clone())
-        }
-        #[cfg(feature = "ffmpeg")]
-        DecoderBackend::V4l2 if config.codec == VideoCodec::H265 => {
-            if !config.embedded_presentation || config.v4l2_device.is_some() {
-                return Err(Error::unavailable(
-                    Subsystem::V4l2,
-                    "HEVC request decode requires embedded Vulkan presentation and automatic media-device selection",
-                ));
-            }
-            crate::video::FfmpegDecoder::open(
-                config.codec,
-                format,
-                crate::video::FfmpegMode::V4l2Request,
-            )
-            .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
-        }
-        DecoderBackend::V4l2 => Err(Error::unavailable(
-            Subsystem::V4l2,
-            format!(
-                "{} decode is not implemented by the V4L2 backend",
-                config.codec.label()
-            ),
-        )),
+        DecoderBackend::V4l2 => open_v4l2_decoder(config, format),
         DecoderBackend::VaApi => {
             #[cfg(feature = "ffmpeg")]
             if config.codec != VideoCodec::H264
@@ -1403,6 +1406,55 @@ fn open_decoder(
                 ))
             }
         }
+    }
+}
+
+fn open_v4l2_decoder(
+    config: &SessionConfig,
+    format: StreamFormat,
+) -> Result<Box<dyn VideoDecoder>> {
+    if config.codec != VideoCodec::H264 {
+        return open_v4l2_request_decoder(config, format);
+    }
+    let stateful = match open_v4l2(format, config.v4l2_device.clone()) {
+        Ok(decoder) => return Ok(decoder),
+        Err(error) if config.v4l2_device.is_some() => return Err(error),
+        Err(error) => error,
+    };
+    open_v4l2_request_decoder(config, format).map_err(|request| {
+        Error::unavailable(
+            Subsystem::V4l2,
+            format!("stateful: {stateful}; request: {request}"),
+        )
+    })
+}
+
+fn open_v4l2_request_decoder(
+    config: &SessionConfig,
+    format: StreamFormat,
+) -> Result<Box<dyn VideoDecoder>> {
+    if !config.embedded_presentation || config.v4l2_device.is_some() {
+        return Err(Error::unavailable(
+            Subsystem::V4l2,
+            "V4L2 request decode requires embedded Vulkan presentation and automatic media-device selection",
+        ));
+    }
+    #[cfg(feature = "ffmpeg")]
+    {
+        crate::video::FfmpegDecoder::open(
+            config.codec,
+            format,
+            crate::video::FfmpegMode::V4l2Request,
+        )
+        .map(|decoder| Box::new(decoder) as Box<dyn VideoDecoder>)
+    }
+    #[cfg(not(feature = "ffmpeg"))]
+    {
+        let _ = format;
+        Err(Error::unavailable(
+            Subsystem::V4l2,
+            "crate was built without the ffmpeg feature",
+        ))
     }
 }
 
@@ -1563,6 +1615,38 @@ fn emit(events: &EventQueue, event: BackendEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hardware_only_policy_controls_every_software_fallback_order() {
+        use super::{DecoderBackend, DecoderPreference, SessionConfig, StreamFormat};
+        for preference in [
+            DecoderPreference::Automatic,
+            DecoderPreference::VaApiThenV4l2,
+            DecoderPreference::V4l2ThenVaApi,
+            DecoderPreference::SoftwareOnly,
+        ] {
+            assert_eq!(
+                super::decoder_order(preference).contains(&DecoderBackend::Ffmpeg),
+                !cfg!(feature = "hardware-only"),
+                "{preference:?}"
+            );
+        }
+        let format = StreamFormat::video_default(64, 64).unwrap();
+        let mut config = SessionConfig::new(format);
+        config.decoder_preference = DecoderPreference::SoftwareOnly;
+        assert_eq!(config.validate().is_err(), cfg!(feature = "hardware-only"));
+        if cfg!(feature = "hardware-only") {
+            let error = super::LinuxSession::start(config)
+                .err()
+                .expect("software must be rejected before starting workers");
+            assert!(error.to_string().contains("hardware-only"));
+            let error =
+                super::open_decoder(&SessionConfig::new(format), format, DecoderBackend::Ffmpeg)
+                    .err()
+                    .expect("direct software backend must also be rejected");
+            assert!(error.to_string().contains("hardware-only"));
+        }
+    }
+
     #[test]
     fn mediacodec_queued_keyframe_after_reconfigure_reuses_the_fresh_decoder() {
         use std::io::{Read, Write};
@@ -1829,6 +1913,13 @@ mod tests {
         let format = StreamFormat::video_default(2, 2).unwrap();
         let mut config = SessionConfig::new(format);
         config.embedded_presentation = true;
+        if cfg!(feature = "hardware-only") {
+            if let Ok((backend, _)) = open_preferred_decoder(&config, format) {
+                assert_ne!(backend, DecoderBackend::Ffmpeg);
+                assert_ne!(backend, DecoderBackend::Vulkan);
+            }
+            return;
+        }
         let (backend, _) = open_preferred_decoder(&config, format).unwrap();
         assert_ne!(backend, DecoderBackend::Vulkan);
     }
@@ -1900,6 +1991,14 @@ mod tests {
         let mut config = SessionConfig::new(format);
         config.decoder_preference = DecoderPreference::SoftwareOnly;
         config.audio = None;
+
+        if cfg!(feature = "hardware-only") {
+            let error = LinuxSession::start(config)
+                .err()
+                .expect("software sessions are forbidden");
+            assert!(error.to_string().contains("hardware-only"));
+            return;
+        }
 
         let mut session = LinuxSession::start(config).unwrap();
         assert_eq!(session.state(), LifecycleState::Running);

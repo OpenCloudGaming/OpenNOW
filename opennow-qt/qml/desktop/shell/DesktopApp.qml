@@ -111,6 +111,10 @@ FocusScope {
             desktopStream.resynchronizeStreamInput()
     }
     function restoreShellFocus() {
+        if (streamEndNotice.opened) {
+            streamEndNotice.restoreFocus()
+            return
+        }
         if (bugReportNotice.opened) {
             bugReportNotice.restoreFocus()
             return
@@ -169,7 +173,7 @@ FocusScope {
         onConsoleModeRequested: root.toggleConsoleMode()
         onCommandPaletteRequested: root.commandOpen = true
         accountSwitcherAllowed: root.shellVisible && !root.commandOpen && AppController.overlay === ""
-            && !bugReportNotice.opened && root.route !== "game-detail"
+            && !bugReportNotice.opened && !streamEndNotice.opened && root.route !== "game-detail"
         onAccountSwitcherClosed: Qt.callLater(root.restoreShellFocus)
 
         Loader {
@@ -223,6 +227,7 @@ FocusScope {
     }
 
     DesktopGameModal {
+        id: gameModal
         anchors.fill: parent
         game: SmokeTestMode ? SmokeTestGame : ShellStore.selectedGame
         opened: root.shellVisible && root.route === "game-detail"
@@ -257,11 +262,23 @@ FocusScope {
         anchors.fill: parent
         opened: root.shellVisible && root.bugReportNoticeAllowed && ShellStore.bugReports.noticePending
             && AppController.overlay === "" && root.route !== "game-detail"
-            && !ShellStore.queueSelector.opened
+            && !ShellStore.queueSelector.opened && !streamEndNotice.opened
         z: 130
         onOpenedChanged: {
             if (opened) root.commandOpen = false
             else Qt.callLater(root.restoreShellFocus)
+        }
+    }
+    DesktopStreamEndNotice {
+        id: streamEndNotice
+        anchors.fill: parent
+        notice: ShellStore.streamEndNotice
+        opened: root.shellVisible && ShellStore.streamEndNotice !== null
+        inputSuspended: AppController.overlay !== ""
+        z: 140
+        onOpenedChanged: {
+            if (opened) root.commandOpen = false
+            else Qt.callLater(() => gameModal.opened ? gameModal.forceActiveFocus() : root.restoreShellFocus())
         }
     }
     DesktopBugReportToast {

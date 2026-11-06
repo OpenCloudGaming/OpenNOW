@@ -23,6 +23,8 @@ const SND_PCM_FORMAT_FLOAT_LE: c_int = 14;
 const SND_PCM_NONBLOCK: c_int = 1;
 const AUDIO_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const PIPEWIRE_RESTART_INTERVAL: Duration = Duration::from_secs(5);
+const PIPEWIRE_LEAD_MS: usize = 40;
+const PIPEWIRE_NODE_LATENCY: &str = "10ms";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioBackend {
@@ -652,6 +654,8 @@ unsafe fn alsa_error(strerror: SndStrError, code: c_int) -> String {
 struct PipeWireSink {
     muted: Arc<std::sync::atomic::AtomicBool>,
     silence: Vec<u8>,
+    lead: Vec<f32>,
+    channels: usize,
     command: Command,
     process: Option<PipeWireProcess>,
     last_restart: Option<Instant>,
@@ -705,6 +709,8 @@ impl PipeWireSink {
                 &config.sample_rate.to_string(),
                 "--channels",
                 &config.channels.to_string(),
+                "--latency",
+                PIPEWIRE_NODE_LATENCY,
                 "-",
             ])
             .stdin(Stdio::piped())
@@ -722,6 +728,12 @@ impl PipeWireSink {
                     / 1000
                     * mem::size_of::<f32>()
             ],
+            lead: vec![
+                0.0;
+                config.sample_rate as usize * config.channels as usize * PIPEWIRE_LEAD_MS
+                    / 1000
+            ],
+            channels: config.channels as usize,
         })
     }
 }
@@ -781,6 +793,27 @@ impl AudioSink for PipeWireSink {
                 subsystem: Subsystem::PipeWire,
                 reason: format!("pw-cat exited with {status}"),
             });
+        }
+        let mut queued: c_int = 0;
+        if unsafe {
+            libc::ioctl(
+                std::os::fd::AsRawFd::as_raw_fd(&process.stdin),
+                libc::FIONREAD,
+                &mut queued,
+            )
+        } < 0
+        {
+            return Err(Error::io(Subsystem::PipeWire, io::Error::last_os_error()));
+        }
+        let queued_samples = queued as usize / mem::size_of::<f32>();
+        if queued_samples < self.lead.len() / 4 {
+            write_pipewire_pcm(
+                &mut process.stdin,
+                &self.lead[..(self.lead.len() - queued_samples).next_multiple_of(self.channels)],
+                &self.silence,
+                &self.muted,
+                cancelled,
+            )?;
         }
         write_pipewire_pcm(
             &mut process.stdin,
@@ -917,6 +950,8 @@ mod tests {
             last_restart: None,
             muted: AudioConfig::default().muted,
             silence: vec![0; 46_080],
+            lead: Vec::new(),
+            channels: 2,
         }
     }
 
@@ -1459,6 +1494,26 @@ mod tests {
             matches!(result, Err(Error::DeviceLost { .. })),
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn pipewire_output_keeps_a_lead_ahead_of_the_reader() {
+        let mut sink = pipewire_test_sink("sleep 5");
+        sink.lead = vec![0.0; 16];
+        let queued = |sink: &PipeWireSink| {
+            let mut bytes: c_int = 0;
+            let descriptor = std::os::fd::AsRawFd::as_raw_fd(&sink.process.as_ref().unwrap().stdin);
+            assert_eq!(
+                unsafe { libc::ioctl(descriptor, libc::FIONREAD, &mut bytes) },
+                0
+            );
+            bytes as usize / mem::size_of::<f32>()
+        };
+        sink.write(&[0.25; 4], &|| false).expect("first PCM");
+        assert_eq!(queued(&sink), 20);
+        sink.write(&[0.25; 4], &|| false)
+            .expect("PCM with lead in place");
+        assert_eq!(queued(&sink), 24);
     }
 
     #[test]

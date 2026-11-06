@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 constexpr Sint16 axisPressThreshold = 18000;
@@ -18,6 +19,8 @@ constexpr qint64 repeatDelayMs = 280;
 constexpr qint64 repeatIntervalMs = 85;
 constexpr qint64 gamepadKeepaliveMs = 100;
 constexpr quint32 guideLocalAction = 1;
+constexpr quint16 sessionChordButtons = 0x0030;
+constexpr qint64 sessionChordWindowMs = 80;
 constexpr quint32 testRumbleDurationMs = 280;
 constexpr int maximumSerialChars = 120;
 
@@ -126,11 +129,18 @@ void ControllerInput::setForwardFlightControls(bool enabled)
 void ControllerInput::setGenericHidAdmission(quint8 slot, quint64 incarnation, GenericHidAdmission admission)
 {
     const auto claims = genericHidClaims();
-    if (!incarnation || std::none_of(claims.cbegin(), claims.cend(), [&](const auto &claim) {
-            return claim.slot == slot && claim.incarnation == incarnation;
-        })) return;
+    const auto claim = std::find_if(claims.cbegin(), claims.cend(), [&](const auto &entry) {
+        return entry.slot == slot && entry.incarnation == incarnation;
+    });
+    if (!incarnation || claim == claims.cend()) return;
     if (m_genericHidAdmissions.value(incarnation, GenericHidAdmission::Pending) == admission) return;
     m_genericHidAdmissions.insert(incarnation, admission);
+    if (admission != GenericHidAdmission::Pending) {
+        emit inputDiagnostic(QStringLiteral("generic-hid %1 slot=%2 %3 by server")
+            .arg(GenericHidInput::deviceMetadata(claim->vendor, claim->product).value(QStringLiteral("vidPid")).toString())
+            .arg(slot)
+            .arg(admission == GenericHidAdmission::Admitted ? QStringLiteral("admitted") : QStringLiteral("declined")));
+    }
     refreshFlightDevices();
 }
 
@@ -152,6 +162,9 @@ void ControllerInput::refreshFlightDevices()
     }
     QVariantList result;
     QSet<SDL_JoystickID> matched;
+    QSet<SDL_JoystickID> noHidPath;
+    QHash<SDL_JoystickID, quint64> firstSeenScan;
+    m_hidPathCheckPending = false;
     int count = 0;
     auto *ids = m_sdlReady ? SDL_GetJoysticks(&count) : nullptr;
     QHash<SDL_JoystickID, QByteArray> physicalKeys;
@@ -167,6 +180,7 @@ void ControllerInput::refreshFlightDevices()
         metadata.insert(QStringLiteral("deviceId"), device.deviceId);
         QString status = m_forwardFlightControls ? QStringLiteral("ready") : QStringLiteral("ignored");
         int player = 0;
+        if (m_forwardFlightControls && device.noAccess) status = QStringLiteral("no-access");
         if (m_forwardFlightControls && device.incarnation) {
             switch (m_genericHidAdmissions.value(device.incarnation, GenericHidAdmission::Pending)) {
             case GenericHidAdmission::Pending: break;
@@ -212,12 +226,33 @@ void ControllerInput::refreshFlightDevices()
         metadata.remove(QStringLiteral("uncertainty"));
         metadata.insert(QStringLiteral("deviceId"), QStringLiteral("sdl:%1").arg(id));
         const auto open = !m_forwardFlightControls && m_gamepadSlots.contains(id);
-        metadata.insert(QStringLiteral("status"), m_forwardFlightControls ? QStringLiteral("ready")
+        const auto vendor = SDL_GetJoystickVendorForID(id);
+        const auto product = SDL_GetJoystickProductForID(id);
+        const auto seenAt = m_flightFirstSeenScan.value(id, m_hidScanGeneration);
+        firstSeenScan.insert(id, seenAt);
+        const auto noHidSource = m_forwardFlightControls && m_genericHid
+            && std::none_of(devices.cbegin(), devices.cend(), [&](const auto &device) {
+                return device.vendor == vendor && device.product == product;
+            });
+        const auto hidSourceMissing = noHidSource && m_hidScanGeneration >= seenAt + 2;
+        if (noHidSource && !hidSourceMissing) m_hidPathCheckPending = true;
+        if (hidSourceMissing) noHidPath.insert(id);
+        metadata.insert(QStringLiteral("status"), hidSourceMissing ? QStringLiteral("no-hid-path")
+            : m_forwardFlightControls ? QStringLiteral("ready")
             : open ? QStringLiteral("controller") : QStringLiteral("ignored"));
         metadata.insert(QStringLiteral("player"), open ? m_gamepadSlots.value(id) + 1 : 0);
         result.append(metadata);
     }
     SDL_free(ids);
+    for (const auto id : std::as_const(noHidPath)) {
+        if (m_noHidPathDevices.contains(id)) continue;
+        const auto *path = SDL_GetJoystickPathForID(id);
+        emit inputDiagnostic(QStringLiteral("generic-hid %1 has no hidraw node (SDL path %2); not forwarded and kept out of the gamepad path")
+            .arg(GenericHidInput::deviceMetadata(SDL_GetJoystickVendorForID(id), SDL_GetJoystickProductForID(id)).value(QStringLiteral("vidPid")).toString(),
+                path ? QString::fromLocal8Bit(path) : QStringLiteral("unknown")));
+    }
+    m_noHidPathDevices = std::move(noHidPath);
+    m_flightFirstSeenScan = std::move(firstSeenScan);
     std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
         return a.toMap().value(QStringLiteral("deviceId")).toString() < b.toMap().value(QStringLiteral("deviceId")).toString();
     });
@@ -530,6 +565,7 @@ void ControllerInput::updateShellInputDrain()
 void ControllerInput::setInputSuspended(bool suspended)
 {
     if (m_inputSuspended == suspended) return;
+    cancelChordReplays();
     if (suspended) {
         stopRumble();
         publishConnectedInputs(true);
@@ -539,8 +575,7 @@ void ControllerInput::setInputSuspended(bool suspended)
     m_inputSuspended = suspended;
     resetDirections();
     if (!suspended && !m_shellCaptureEnabled) {
-        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
-            updateSlotSnapshot(slot);
+        resumeStreamInput();
         publishConnectedInputs();
     }
     updatePollInterval();
@@ -550,6 +585,7 @@ void ControllerInput::setInputSuspended(bool suspended)
 void ControllerInput::setShellCaptureEnabled(bool enabled)
 {
     if (m_shellCaptureEnabled == enabled) return;
+    cancelChordReplays();
     if (enabled) {
         stopRumble();
         publishConnectedInputs(true);
@@ -559,8 +595,7 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
     }
     m_shellCaptureEnabled = enabled;
     if (!enabled) {
-        for (int slot = 0; slot < static_cast<int>(m_slots.size()); ++slot)
-            updateSlotSnapshot(slot);
+        resumeStreamInput();
         publishConnectedInputs();
         m_lastGamepadSnapshotAt = m_clock.elapsed();
     } else {
@@ -570,10 +605,37 @@ void ControllerInput::setShellCaptureEnabled(bool enabled)
     emit shellCaptureEnabledChanged();
 }
 
+void ControllerInput::cancelChordReplays()
+{
+    for (auto &slot : m_slots) {
+        slot.chordDeadline = 0;
+        slot.chordStartedNs = 0;
+        slot.tappedButtons = 0;
+        slot.tapReleaseAt = 0;
+    }
+}
+
+void ControllerInput::resumeStreamInput()
+{
+    if (m_sdlReady) SDL_UpdateGamepads();
+    m_streamInputStartedNs = SDL_GetTicksNS();
+    for (int index = 0; index < static_cast<int>(m_slots.size()); ++index) {
+        updateSlotSnapshot(index);
+        auto &slot = m_slots[static_cast<std::size_t>(index)];
+        if (!slot.gamepad) continue;
+        slot.withheldButtons = slot.buttons & sessionChordButtons;
+        slot.guideLatched = SDL_GetGamepadButton(slot.gamepad, SDL_GAMEPAD_BUTTON_GUIDE);
+        slot.touchpadClick = SDL_GetGamepadButton(slot.gamepad, SDL_GAMEPAD_BUTTON_TOUCHPAD);
+    }
+}
+
 void ControllerInput::poll()
 {
     if (m_genericHid) {
         auto batch = m_genericHid->drain();
+        const auto scanAdvanced = std::exchange(m_hidScanGeneration, batch.scanGeneration) != batch.scanGeneration;
+        if (scanAdvanced && m_hidPathCheckPending && !batch.inventoryChanged) refreshFlightDevices();
+        for (const auto &message : std::as_const(batch.diagnostics)) emit inputDiagnostic(message);
         if (batch.inventoryChanged) {
             updatePollInterval();
             emit genericDeviceClaimsChanged();
@@ -614,6 +676,20 @@ void ControllerInput::poll()
 
     const auto now = m_clock.elapsed();
     dispatchRepeats(now);
+    for (int index = 0; index < static_cast<int>(m_slots.size()); ++index) {
+        auto &slot = m_slots[static_cast<std::size_t>(index)];
+        bool changed = false;
+        if (slot.chordDeadline != 0 && now >= slot.chordDeadline) {
+            slot.chordDeadline = 0;
+            slot.withheldButtons &= static_cast<quint16>(~sessionChordButtons);
+            changed = true;
+        }
+        if (slot.tappedButtons != 0 && now >= slot.tapReleaseAt) {
+            slot.tappedButtons = 0;
+            changed = true;
+        }
+        if (changed && slot.gamepad && !m_shellCaptureEnabled) publishSlotSnapshot(index);
+    }
     if (!m_shellCaptureEnabled && now - m_lastGamepadSnapshotAt >= gamepadKeepaliveMs) {
         publishConnectedInputs();
         m_lastGamepadSnapshotAt = now;
@@ -699,6 +775,7 @@ void ControllerInput::closeController(SDL_JoystickID id)
 
 void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pressed)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
@@ -715,8 +792,38 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
         slot.touchpadClick = pressed;
         if (isSonySlot(slotIndex)) publishSonySnapshot(slotIndex);
     } else if (const auto mask = buttonMask(event.button); mask != 0) {
-        if (pressed) slot.buttons |= mask;
-        else slot.buttons &= static_cast<quint16>(~mask);
+        const auto now = m_clock.elapsed();
+        const bool chordButton = (mask & sessionChordButtons) != 0;
+        if (pressed) {
+            if (chordButton && slot.tappedButtons != 0) {
+                slot.tappedButtons = 0;
+                if (!m_shellCaptureEnabled) publishSlotSnapshot(slotIndex);
+            }
+            slot.buttons |= mask;
+            if (chordButton && slot.chordDeadline != 0
+                    && event.timestamp - slot.chordStartedNs
+                        <= static_cast<quint64>(sessionChordWindowMs) * 1'000'000
+                    && (slot.buttons & sessionChordButtons) == sessionChordButtons) {
+                slot.chordDeadline = 0;
+                slot.withheldButtons |= sessionChordButtons;
+                if (!m_shellCaptureEnabled && !m_inputSuspended)
+                    emit localActionRequested(guideLocalAction);
+            } else if (chordButton && (slot.buttons & sessionChordButtons) == mask) {
+                slot.withheldButtons |= mask;
+                slot.chordDeadline = now + sessionChordWindowMs;
+                slot.chordStartedNs = event.timestamp;
+            }
+        } else {
+            slot.buttons &= static_cast<quint16>(~mask);
+            if (slot.chordDeadline != 0 && (slot.withheldButtons & mask) != 0) {
+                slot.chordDeadline = 0;
+                if (!m_shellCaptureEnabled && !m_inputSuspended) {
+                    slot.tappedButtons = mask;
+                    slot.tapReleaseAt = now + sessionChordWindowMs;
+                }
+            }
+            slot.withheldButtons &= static_cast<quint16>(~mask);
+        }
         if (!m_shellCaptureEnabled) publishSlotSnapshot(slotIndex);
     }
 
@@ -735,6 +842,7 @@ void ControllerInput::handleButton(const SDL_GamepadButtonEvent &event, bool pre
 
 void ControllerInput::handleAxis(const SDL_GamepadAxisEvent &event)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     auto &slot = m_slots[static_cast<std::size_t>(slotIndex)];
@@ -809,7 +917,7 @@ void ControllerInput::publishGamepad(int slotIndex, bool neutral)
     const auto right = neutral ? QPair<qint16, qint16>{}
         : radialDeadzone(slot.rawRightX, slot.rawRightY, slot.rightDeadzone);
     emit gamepadSnapshot(static_cast<quint8>(effectiveSlot(slotIndex)), gamepadBitmap(),
-                         neutral ? 0 : slot.buttons,
+                         neutral ? 0 : slot.forwardedButtons(),
                          neutral ? 0 : slot.leftTrigger, neutral ? 0 : slot.rightTrigger,
                          left.first, static_cast<qint16>(-left.second),
                          right.first, static_cast<qint16>(-right.second));
@@ -873,7 +981,7 @@ void ControllerInput::publishSonySnapshot(int slotIndex, bool neutral)
     SonySnapshot snapshot;
     snapshot.slot = static_cast<quint8>(effectiveSlot(slotIndex));
     snapshot.incarnation = slot.incarnation;
-    snapshot.buttons = cleared ? 0 : slot.buttons;
+    snapshot.buttons = cleared ? 0 : slot.forwardedButtons();
     snapshot.leftTrigger = cleared ? 0 : slot.leftTrigger;
     snapshot.rightTrigger = cleared ? 0 : slot.rightTrigger;
     snapshot.leftStickX = left.first;
@@ -915,6 +1023,7 @@ void ControllerInput::releaseSonyContacts(int slotIndex)
 
 void ControllerInput::handleTouchpad(const SDL_GamepadTouchpadEvent &event)
 {
+    if (!m_shellCaptureEnabled && event.timestamp < m_streamInputStartedNs) return;
     const auto slotIndex = m_gamepadSlots.value(event.which, -1);
     if (slotIndex < 0 || !acceptsController(event.which)) return;
     if (event.touchpad != 0) return;

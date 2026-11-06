@@ -71,7 +71,7 @@ pub(crate) enum HostCommand {
         control: MediaRuntimeControl,
         reply: Sender<Result<(), String>>,
     },
-    Cursor(Vec<u8>),
+    Cursor(CursorUpdate),
     #[cfg(target_os = "macos")]
     ConfigureMacH264 {
         parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
@@ -93,6 +93,12 @@ pub(crate) enum HostCommand {
     },
     Stop,
     Shutdown,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CursorUpdate {
+    pub start_id: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -215,6 +221,14 @@ impl MediaRuntime {
     }
 
     pub fn validate_backend(&self, requested: &str) -> Result<(), String> {
+        if crate::HARDWARE_ONLY
+            && matches!(
+                requested.trim().to_ascii_lowercase().as_str(),
+                "software" | "ffmpeg"
+            )
+        {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         if !self.is_embedded() {
             return Ok(());
         }
@@ -844,9 +858,9 @@ impl MainThreadHost {
                     }
                     let _ = reply.send(result);
                 }
-                Ok(HostCommand::Cursor(bytes)) => {
+                Ok(HostCommand::Cursor(update)) => {
                     if let Some(output) = active.as_mut() {
-                        output.update_cursor(&bytes);
+                        output.update_cursor(&update.bytes);
                     }
                 }
                 #[cfg(target_os = "linux")]
@@ -1133,6 +1147,20 @@ pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
     #[cfg(target_os = "linux")]
     let linux_selection = crate::linux_backend::select_video_path();
     #[cfg(target_os = "linux")]
+    if crate::HARDWARE_ONLY
+        && (matches!(linux_selection.path, LinuxVideoPath::Software)
+            || !linux_selection.use_vulkan_output)
+    {
+        return Err(format!(
+            "{}: {}",
+            crate::HARDWARE_ONLY_ERROR,
+            linux_selection
+                .fallback_reason
+                .as_deref()
+                .unwrap_or("hardware Vulkan presentation is unavailable")
+        ));
+    }
+    #[cfg(target_os = "linux")]
     let linux_software_fallback = Arc::new(AtomicBool::new(matches!(
         linux_selection.path,
         LinuxVideoPath::Software
@@ -1179,7 +1207,7 @@ pub fn create_embedded_runtime(frames: GraphicsFramePublisher) -> MediaRuntime {
 pub fn create_embedded_runtime_with_input(
     frames: GraphicsFramePublisher,
     captured_input: Arc<crate::CapturedInputQueue>,
-    cursor_update: Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>,
+    cursor_update: Option<Arc<dyn Fn(CursorUpdate) + Send + Sync>>,
 ) -> MediaRuntime {
     create_embedded_runtime_with_config(
         frames,
@@ -1192,7 +1220,7 @@ pub fn create_embedded_runtime_with_input(
 pub fn create_embedded_runtime_with_config(
     frames: GraphicsFramePublisher,
     captured_input: Arc<crate::CapturedInputQueue>,
-    cursor_update: Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>,
+    cursor_update: Option<Arc<dyn Fn(CursorUpdate) + Send + Sync>>,
     config: EmbeddedRuntimeConfig,
 ) -> MediaRuntime {
     let (commands, receiver) = mpsc::channel();
@@ -1235,9 +1263,9 @@ pub fn create_embedded_runtime_with_config(
                                 microphone = None;
                             }
                         }
-                        HostCommand::Cursor(bytes) => {
+                        HostCommand::Cursor(cursor) => {
                             if let Some(update) = &cursor_update {
-                                update(bytes);
+                                update(cursor);
                             }
                         }
                         HostCommand::AudioDevices(request) => {
@@ -1546,6 +1574,58 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hardware_only_runtime_rejects_explicit_software_settings_before_startup() {
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let runtime = super::create_embedded_runtime(frames);
+        if crate::HARDWARE_ONLY {
+            for requested in ["software", "ffmpeg", " SOFTWARE "] {
+                assert!(
+                    runtime
+                        .validate_backend(requested)
+                        .unwrap_err()
+                        .contains("hardware-only")
+                );
+            }
+        }
+        assert!(runtime.validate_backend("auto").is_ok());
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn embedded_host_preserves_cursor_session_identity() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
+        let (sender, receiver) = mpsc::channel();
+        let runtime = super::create_embedded_runtime_with_input(
+            frames,
+            Arc::new(crate::CapturedInputQueue::default()),
+            Some(Arc::new(move |update| sender.send(update).unwrap())),
+        );
+        for start_id in ["old", "replacement", "old"] {
+            runtime
+                .commands
+                .send(super::HostCommand::Cursor(super::CursorUpdate {
+                    start_id: start_id.to_owned(),
+                    bytes: vec![0, 0],
+                }))
+                .unwrap();
+        }
+        for start_id in ["old", "replacement", "old"] {
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+                super::CursorUpdate {
+                    start_id: start_id.to_owned(),
+                    bytes: vec![0, 0]
+                }
+            );
+        }
+        runtime.shutdown();
+    }
+
     #[test]
     fn embedded_runtime_snapshots_windows_adapter_selection() {
         let (_graphics, frames) = crate::RenderThreadGraphics::new(|| {});
@@ -1698,12 +1778,21 @@ mod tests {
         next_microphone(&terminal_receiver);
 
         runtime.commands.send(HostCommand::Stop).unwrap();
-        runtime.commands.send(HostCommand::Cursor(vec![1])).unwrap();
+        runtime
+            .commands
+            .send(HostCommand::Cursor(super::CursorUpdate {
+                start_id: "audio-session".to_owned(),
+                bytes: vec![1],
+            }))
+            .unwrap();
         assert_eq!(
             cursor_received
                 .recv_timeout(Duration::from_secs(2))
                 .unwrap(),
-            vec![1]
+            super::CursorUpdate {
+                start_id: "audio-session".to_owned(),
+                bytes: vec![1]
+            }
         );
         assert!(!restarted_receiver.status().enabled);
         assert!(!restarted_receiver.capture_device_open());

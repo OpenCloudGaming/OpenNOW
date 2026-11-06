@@ -90,6 +90,10 @@ FocusScope {
             ShellStore.applyStreamShortcutAction("toggle-anti-afk")
             return
         }
+        if (action === "frameGeneration") {
+            ShellStore.toggleFrameGeneration()
+            return
+        }
         if (action === "fullscreen") {
             fullscreenRequested()
             return
@@ -129,11 +133,12 @@ FocusScope {
     }
 
     readonly property var mainItems: [backButton, microphoneTile, antiAfkTile, statsTile, fullscreenTile,
-        controllersRow, inviteRow, consoleRow, endRow]
-    // Index tables for the 2×2 quick-toggle grid: [up, down, left, right]; -1 keeps focus.
+        frameGenerationTile, controllersRow, inviteRow, consoleRow, pointerLockRow, endRow]
+    // Index tables for the quick-toggle grid (2 columns, the fifth tile alone in its row):
+    // [up, down, left, right]; -1 keeps focus.
     readonly property var gridMoves: [
         [-1, 1, -1, -1], [0, 3, -1, 2], [0, 4, 1, -1], [1, 5, -1, 4], [2, 5, 3, -1],
-        [3, 6, -1, -1], [5, 7, -1, -1], [6, 8, -1, -1], [7, -1, -1, -1]
+        [3, 6, -1, -1], [5, 7, -1, -1], [6, 8, -1, -1], [7, 9, -1, -1], [8, 10, -1, -1], [9, -1, -1, -1]
     ]
     function usable(item) { return item && item.visible && item.enabled }
     function focusMain(index) {
@@ -405,9 +410,11 @@ FocusScope {
                             fallbackColor: "#1A2030"
                         }
                         Text {
+                            objectName: "streamMenuGameTitle"
                             x: 62; y: 2
                             width: parent.width - x - closeChip.width - 12
                             text: String(root.game.title || qsTr("GeForce NOW"))
+                            textFormat: Text.PlainText
                             color: DesktopTokens.text
                             font.family: DesktopTokens.displayFont
                             font.pixelSize: 20
@@ -638,6 +645,19 @@ FocusScope {
                             shortcutText: root.shortcut("shortcutToggleFullscreen", "F11")
                             onActivated: root.runAction("fullscreen")
                         }
+                        QuickTile {
+                            id: frameGenerationTile
+                            objectName: "streamFrameGenerationControl"
+                            visible: ShellStore.frameGenerationQuickVisible()
+                            checked: ShellStore.frameGenerationMode() !== "off"
+                            shortcutText: root.shortcut("shortcutToggleFrameGeneration", "Ctrl+Shift+G")
+                            glyph: "desktop-dlss.svg"
+                            title: qsTr("Frame generation")
+                            text: ShellStore.frameGenerationMode() !== "off" ? qsTr("Turn frame generation off") : qsTr("Turn frame generation on")
+                            stateText: ShellStore.frameGenerationQuickText()
+                            description: qsTr("Applies to the running stream at once. Levels, target rate and the capability test live in Settings › Stream.")
+                            onActivated: root.runAction("frameGeneration")
+                        }
                     }
 
                     MenuRow {
@@ -674,6 +694,18 @@ FocusScope {
                         title: root.modeOn ? qsTr("Switch to desktop mode") : qsTr("Switch to console mode")
                         detail: root.modePending ? qsTr("SWITCHING…") : root.modeOn ? qsTr("DESKTOP READY") : qsTr("GAMEPAD READY")
                         onClicked: root.runAction("console")
+                    }
+                    MenuRow {
+                        id: pointerLockRow
+                        objectName: "streamPointerLockRow"
+                        visible: Qt.platform.os === "osx"
+                        glyph: "desktop-lock.svg"
+                        title: qsTr("Pointer lock")
+                        detail: ShellStore.settings.macPointerLockEnabled !== false ? qsTr("ON") : qsTr("OFF")
+                        shortcutText: root.shortcut("shortcutTogglePointerLock", "F8")
+                        Accessible.checkable: true
+                        Accessible.checked: ShellStore.settings.macPointerLockEnabled !== false
+                        onClicked: ShellStore.pointerLockToggleRequested()
                     }
                     Item { width: 1; height: 4 }
                     MenuRow {

@@ -1,0 +1,73 @@
+OpenNOW: define V4L2 UAPI symbols missing from older kernel headers.
+
+The extended HEVC SPS RPS controls (Linux 7.0) and the Raspberry Pi COL128
+capture formats are absent from SDK and distribution UAPI headers. Without
+these definitions the RK3588 HEVC path and the Raspberry Pi HEVC path compile
+out of the V4L2 request hwaccel.
+
+diff --git a/libavcodec/v4l2_request_hevc.c b/libavcodec/v4l2_request_hevc.c
+index 56694cc..459c8c2 100644
+--- a/libavcodec/v4l2_request_hevc.c
++++ b/libavcodec/v4l2_request_hevc.c
+@@ -25,6 +25,37 @@
+ #include "internal.h"
+ #include "v4l2_request.h"
+ 
++/*
++ * Linux 7.0 added the extended SPS RPS controls required by Rockchip
++ * VDPU381/VDPU383. Older UAPI headers lack them; the definitions below match
++ * include/uapi/linux/v4l2-controls.h, and their use is gated at runtime on
++ * the decoder exposing both controls.
++ */
++#ifndef V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS
++#define V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS (V4L2_CID_CODEC_STATELESS_BASE + 408)
++#define V4L2_CID_STATELESS_HEVC_EXT_SPS_LT_RPS (V4L2_CID_CODEC_STATELESS_BASE + 409)
++#define V4L2_HEVC_EXT_SPS_ST_RPS_FLAG_INTER_REF_PIC_SET_PRED 0x1
++#define V4L2_HEVC_EXT_SPS_LT_RPS_FLAG_USED_LT 0x1
++
++struct v4l2_ctrl_hevc_ext_sps_st_rps {
++    __u8  delta_idx_minus1;
++    __u8  delta_rps_sign;
++    __u8  num_negative_pics;
++    __u8  num_positive_pics;
++    __u32 used_by_curr_pic;
++    __u32 use_delta_flag;
++    __u16 abs_delta_rps_minus1;
++    __u16 delta_poc_s0_minus1[16];
++    __u16 delta_poc_s1_minus1[16];
++    __u16 flags;
++};
++
++struct v4l2_ctrl_hevc_ext_sps_lt_rps {
++    __u16 lt_ref_pic_poc_lsb_sps;
++    __u16 flags;
++};
++#endif
++
+ #define V4L2_HEVC_CONTROLS_MAX 8
+ #define MAX_EXT_SPS_ST_RPS 64
+ #define MAX_EXT_SPS_LT_RPS 32
+diff --git a/libavutil/hwcontext_v4l2request.c b/libavutil/hwcontext_v4l2request.c
+index b6633d9..8dd47f2 100644
+--- a/libavutil/hwcontext_v4l2request.c
++++ b/libavutil/hwcontext_v4l2request.c
+@@ -34,6 +34,19 @@
+ #include "hwcontext_v4l2request_internal.h"
+ #include "mem.h"
+ 
++/*
++ * Raspberry Pi HEVC decoder column formats. Raspberry Pi kernels define these
++ * fourccs, but distribution and SDK UAPI headers do not.
++ */
++#ifndef V4L2_PIX_FMT_NV12_COL128
++#define V4L2_PIX_FMT_NV12_COL128 v4l2_fourcc('N', 'C', '1', '2')
++#define V4L2_PIX_FMT_NV12_10_COL128 v4l2_fourcc('N', 'C', '3', '0')
++#endif
++#ifndef V4L2_PIX_FMT_NV12MT_COL128
++#define V4L2_PIX_FMT_NV12MT_COL128 v4l2_fourcc('N', 'c', '1', '2')
++#define V4L2_PIX_FMT_NV12MT_10_COL128 v4l2_fourcc('N', 'c', '3', '0')
++#endif
++
+ typedef struct V4L2RequestVideoDecoder {
+     dev_t media_dev;
+     dev_t video_dev;

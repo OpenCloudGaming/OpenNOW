@@ -7,10 +7,9 @@ use crate::RtcError;
 use crate::channel::ChannelId;
 use crate::crypto::Fingerprint;
 use crate::crypto::dtls::ProtocolVersion;
-use crate::format::{Codec, CodecConfig, FormatParams};
 use crate::media::{Media, MediaKind};
 use crate::rtp_::MidRid;
-use crate::rtp_::{Frequency, Mid, Pt, Rid, Ssrc};
+use crate::rtp_::{Mid, Rid, Ssrc};
 use crate::sctp::{ChannelConfig, SctpInitData};
 use crate::streams::{DEFAULT_RTX_CACHE_DURATION, DEFAULT_RTX_RATIO_CAP, StreamRx, StreamTx};
 
@@ -46,30 +45,6 @@ impl<'a> DirectApi<'a> {
     /// and the `Rtc` instance provides low-level access to the underlying WebRTC functionality.
     pub fn new(rtc: &'a mut Rtc) -> Self {
         DirectApi { rtc }
-    }
-
-    /// Registers a negotiated RTP payload type before declaring its streams.
-    pub fn register_payload_type(
-        &mut self,
-        pt: Pt,
-        codec: Codec,
-        clock_rate: Frequency,
-        channels: Option<u8>,
-        format: FormatParams,
-    ) {
-        let params = self
-            .rtc
-            .session
-            .codec_config
-            .iter()
-            .filter(|params| params.pt() != pt && params.resend() != Some(pt))
-            .copied()
-            .collect();
-        self.rtc.session.codec_config = CodecConfig::new_from_payload_params(params);
-        self.rtc
-            .session
-            .codec_config
-            .add_config(pt, None, codec, clock_rate, channels, format);
     }
 
     /// Sets the ICE controlling flag for this peer connection.

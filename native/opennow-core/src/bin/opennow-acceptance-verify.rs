@@ -670,11 +670,7 @@ fn validate_packages(
         let has = |suffix: &str| lower.iter().any(|name| name.ends_with(suffix));
         match matrix.os {
             MatrixOs::Windows => {
-                require(
-                    has(".msi") || has(".exe"),
-                    "Windows installer package is missing",
-                    failures,
-                );
+                require(has("-setup.exe"), "Windows setup.exe is missing", failures);
                 require(has(".zip"), "Windows portable ZIP is missing", failures);
             }
             MatrixOs::Macos => {

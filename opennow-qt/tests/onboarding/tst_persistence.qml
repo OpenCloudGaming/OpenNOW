@@ -22,7 +22,7 @@ TestCase {
 
     OnboardingState {
         id: state
-        coreClient: core
+        persistSetting: (key, value) => core.request("settings.set", {key:key, value:value})
         persistedSettings: ({})
         ready: true
         signedIn: true

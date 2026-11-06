@@ -29,6 +29,7 @@ Item {
             height: parent.height * (root.signIn ? 1.18 : 1)
             y: root.signIn ? -parent.height * 0.12 : 0
             source: artworkSource.resolvedUrl
+            onStatusChanged: artworkSource.reportImageStatus(status, source)
             asynchronous: true
             cache: true
             fillMode: Image.PreserveAspectCrop

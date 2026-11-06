@@ -8,6 +8,7 @@ layout(push_constant) uniform Conversion {
     vec2 coded_scale;
     uint color_matrix;
     uint full_range;
+    vec2 chroma_offset;
 } conversion;
 
 layout(location = 0) in vec2 texture_coordinates;
@@ -27,7 +28,7 @@ void main() {
     source *= conversion.coded_scale;
 
     float y = texture(luma_texture, source).r;
-    vec2 uv = texture(chroma_texture, source).rg;
+    vec2 uv = texture(chroma_texture, source + conversion.chroma_offset).rg;
     float u;
     float v;
     if (conversion.full_range != 0) {

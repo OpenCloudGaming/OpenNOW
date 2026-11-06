@@ -161,7 +161,7 @@ Column {
             BoostRow {
                 width: parent.width; glyph: "bolt"
                 title: qsTr("Frame generation"); badge: qsTr("EXPERIMENTAL"); badgeInk: Theme.accentColor("amber")
-                description: qsTr("Generates in-between frames. Needs a fast GPU and a high-refresh display; may add latency and visual artifacts.")
+                description: qsTr("Generates in-between frames once the capability test in Settings → Stream passes on this PC. Needs a fast GPU and a high-refresh display; may add latency and visual artifacts.")
                 Segments {
                     objectName: "onboardingFrameGeneration"
                     options: [{label:qsTr("Off"),value:"off"},{label:qsTr("2×"),value:"2x"}]

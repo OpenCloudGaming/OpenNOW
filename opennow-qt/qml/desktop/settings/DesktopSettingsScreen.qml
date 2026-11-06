@@ -377,13 +377,14 @@ FocusScope {
     }
 
     function runStoreAction(account) {
+        const scope = ShellStore.captureAccountScope()
         const action = ShellStore.gameAccountAction(account)
         if (action === "sync")
-            ShellStore.syncGameAccount(account.provider)
+            ShellStore.syncGameAccount(account.provider, scope)
         else if (action === "unlink")
-            ShellStore.unlinkGameAccount(account.provider)
+            ShellStore.unlinkGameAccount(account.provider, scope)
         else if (action === "link")
-            ShellStore.startAccountLink(account.provider)
+            ShellStore.startAccountLink(account.provider, scope)
     }
 
     function projectLinks() {

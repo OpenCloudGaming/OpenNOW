@@ -135,6 +135,7 @@ signals:
     void deviceClaimsChanged();
     void genericDeviceClaimsChanged();
     void genericHidReport(const GenericHidReport &report);
+    void inputDiagnostic(const QString &message);
     void sonySnapshot(const ControllerInput::SonySnapshot &snapshot);
     void localActionRequested(quint32 action);
 
@@ -176,6 +177,15 @@ private:
         int vibration = 100;
         bool touchpadClick = false;
         bool guideLatched = false;
+        quint16 withheldButtons = 0;
+        quint16 tappedButtons = 0;
+        qint64 chordDeadline = 0;
+        quint64 chordStartedNs = 0;
+        qint64 tapReleaseAt = 0;
+        [[nodiscard]] quint16 forwardedButtons() const
+        {
+            return static_cast<quint16>((buttons | tappedButtons) & ~withheldButtons);
+        }
         std::array<SonyContact, 2> contacts{};
         QHash<int, ShellKeyPress> shellKeys;
         std::array<RepeatingDirection, 4> directions{{
@@ -194,6 +204,8 @@ private:
     void publishConnectedInputs(bool neutral = false);
     void publishSlotSnapshot(int slotIndex, bool neutral = false);
     void releaseSonyContacts(int slotIndex);
+    void cancelChordReplays();
+    void resumeStreamInput();
     [[nodiscard]] int effectiveSlot(int slotIndex) const;
     bool updateDirection(RepeatingDirection &direction, bool active);
     void reportActivity(int slot, const QString &control, int value);
@@ -224,6 +236,10 @@ private:
     QVariantList m_controllerMetadata;
     QVariantList m_availableControllerMetadata;
     QVariantList m_flightDevices;
+    QSet<SDL_JoystickID> m_noHidPathDevices;
+    QHash<SDL_JoystickID, quint64> m_flightFirstSeenScan;
+    quint64 m_hidScanGeneration = 0;
+    bool m_hidPathCheckPending = false;
     QHash<quint64, GenericHidAdmission> m_genericHidAdmissions;
     bool m_forwardFlightControls = true;
     SDL_JoystickID m_inputControllerId = 0;
@@ -242,6 +258,7 @@ private:
     bool m_leftStickNavigationEnabled = true;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
+    quint64 m_streamInputStartedNs = 0;
     quint64 m_nextIncarnation = 1;
 };
 

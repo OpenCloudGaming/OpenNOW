@@ -433,6 +433,35 @@ impl Decoder {
         Ok(OutputPoll::Produced)
     }
 
+    /// Discards every queued input, pending output, and reference picture while
+    /// keeping the transform, its D3D11 decoder, and its surface pool alive.
+    pub(super) fn flush(&mut self) -> Result<(), String> {
+        unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)
+                .map_err(|error| format!("flush decoder: {error}"))?;
+        }
+        let Some(events) = self.events.as_ref() else {
+            self.input_credits = 1;
+            return Ok(());
+        };
+        // An async MFT sends no NeedInput after a flush until START_OF_STREAM,
+        // so every event still queued describes discarded work.
+        self.input_credits = 0;
+        loop {
+            match unsafe { events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
+                Ok(_) => {}
+                Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => break,
+                Err(error) => return Err(format!("drain flushed decoder events: {error}")),
+            }
+        }
+        unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                .map_err(|error| format!("restart flushed decoder: {error}"))
+        }
+    }
+
     pub(super) fn stop(&mut self) {
         if self.stopped {
             return;

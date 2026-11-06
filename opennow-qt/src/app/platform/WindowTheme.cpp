@@ -35,6 +35,26 @@ void applyNativeTheme(QWindow *window, bool darkMode)
     Q_UNUSED(darkMode);
 #endif
 }
+
+bool usesApplicationDecorations(QWindow *window)
+{
+#ifdef Q_OS_LINUX
+    return QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))
+        && window->surfaceType() == QSurface::VulkanSurface;
+#else
+    Q_UNUSED(window);
+    return false;
+#endif
+}
+}
+
+bool WindowTheme::prepareWindow(QWindow *window)
+{
+    if (!window) return false;
+    if (!usesApplicationDecorations(window)) return true;
+    if (window->handle()) return window->flags().testFlag(Qt::FramelessWindowHint);
+    window->setFlag(Qt::FramelessWindowHint);
+    return true;
 }
 
 WindowTheme::WindowTheme(QObject *parent)
@@ -82,5 +102,11 @@ bool WindowTheme::eventFilter(QObject *watched, QEvent *event)
 
 void WindowTheme::apply()
 {
-    if (m_window && m_window->handle()) m_applyTheme(m_window, m_darkMode);
+    if (!m_window || !m_window->handle()) return;
+    m_applyTheme(m_window, m_darkMode);
+    const bool clientDecorations = usesApplicationDecorations(m_window)
+        && m_window->flags().testFlag(Qt::FramelessWindowHint);
+    if (m_clientDecorations == clientDecorations) return;
+    m_clientDecorations = clientDecorations;
+    emit clientDecorationsChanged();
 }

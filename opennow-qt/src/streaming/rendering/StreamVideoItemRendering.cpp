@@ -21,9 +21,12 @@ public:
             m_callback = callback;
         }
         m_bounds = item->boundingRect();
-        if (m_callback)
-            m_callback->setFrameGeneration(item->frameGeneration() && item->isVisible(),
-                m_window->screen() ? m_window->screen()->refreshRate() : 0.0);
+        if (m_callback) {
+            const double detected = m_window->screen() ? m_window->screen()->refreshRate() : 0.0;
+            m_callback->setFrameGeneration(item->isVisible() ? item->frameGenerationFactor() : 0,
+                item->displayRefreshOverrideHz() > 0 ? double(item->displayRefreshOverrideHz()) : detected);
+            m_callback->setGeneratedFramesOnly(item->isVisible() && item->generatedFramesOnly());
+        }
         m_viewport = StreamVideoItem::aspectFitRect(item->videoSize(), m_bounds.size().toSize());
         m_metalFxUpscaling = item->metalFxUpscaling() && item->isVisible();
         m_fsrUpscaling = item->fsrUpscaling() && item->isVisible();
@@ -44,6 +47,10 @@ public:
         m_callback->setUpscalingTarget(m_metalFxUpscaling || m_fsrUpscaling
             ? (QSizeF(m_viewport.size()) * m_window->effectiveDevicePixelRatio()).toSize() : QSize());
         m_callback->prepareFrame(commandBuffer());
+        // The next generated frame has to be a frame of its own. Waiting for frameSwapped
+        // loses the race to the next stream frame, and the window then paints at 60.
+        if (m_callback->needsFrame())
+            QMetaObject::invokeMethod(m_window, &QQuickWindow::update, Qt::QueuedConnection);
     }
 
     void render(const RenderState *state) override

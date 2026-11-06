@@ -8,11 +8,13 @@ use std::path::{Path, PathBuf};
 
 const NATIVE_TRANSPORT: &str = "nvst";
 const CONSOLE_POLICY_VERSION: &str = "qtConsoleModePolicyVersion";
+const STEAM_DECK_IDENTITY_POLICY: &str = "steamDeckIdentityDefaultApplied";
+const DMI_DIRECTORY: &str = "/sys/devices/virtual/dmi/id";
 const WINDOWS_GPU_DEVICE_ID: &str = "windowsGpuDeviceId";
 const MAXIMUM_WINDOWS_GPU_DEVICE_ID_BYTES: usize = 1024;
 const MAXIMUM_BOOTSTRAP_SETTINGS_BYTES: u64 = 1024 * 1024;
 const MAXIMUM_SHORTCUT_BYTES: usize = 80;
-const SHORTCUT_KEYS: [&str; 9] = [
+const SHORTCUT_KEYS: [&str; 10] = [
     "shortcutToggleStats",
     "shortcutTogglePointerLock",
     "shortcutToggleFullscreen",
@@ -22,6 +24,7 @@ const SHORTCUT_KEYS: [&str; 9] = [
     "shortcutScreenshot",
     "shortcutToggleRecording",
     "shortcutSaveClip",
+    "shortcutToggleFrameGeneration",
 ];
 const RESERVED_SHORTCUTS: [&str; 2] = ["Ctrl+G", "Shift+F3"];
 const HDR_NOTICE_SHOWN: &str = "hdrNoticeShownGameIds";
@@ -67,6 +70,9 @@ impl SettingsStore {
         let path = data_dir
             .unwrap_or_else(default_data_dir)
             .join("settings.json");
+        if policy == LoadPolicy::ReadWrite {
+            tighten_settings_files(&path)?;
+        }
         let defaults = defaults();
         let mut values = defaults.clone();
         let mut passthrough = Map::new();
@@ -164,6 +170,8 @@ impl SettingsStore {
                 .passthrough
                 .insert(CONSOLE_POLICY_VERSION.to_owned(), json!(1));
         }
+        let steam_deck_identity_applied = policy == LoadPolicy::ReadWrite
+            && store.apply_steam_deck_identity_default(on_steam_deck());
         let codec_before_normalize = store.values["codec"].clone();
         let fallback_before_normalize = store.values["fallbackCodec"].clone();
         store.normalize();
@@ -175,7 +183,10 @@ impl SettingsStore {
                 || store.values["fallbackCodec"] != fallback_before_normalize);
         if policy == LoadPolicy::ReadWrite
             && (recovered_backup
-                || ((migrate_console_policy || migrate_onboarding || codec_color_healed)
+                || ((migrate_console_policy
+                    || migrate_onboarding
+                    || codec_color_healed
+                    || steam_deck_identity_applied)
                     && store.path.exists()))
         {
             store.save()?;
@@ -505,7 +516,31 @@ impl SettingsStore {
                 self.values.insert(key.to_owned(), json!("auto"));
             }
         }
-        normalize_choice(&mut self.values, "frameGeneration", &["off", "2x"], "off");
+        normalize_choice(
+            &mut self.values,
+            "frameGeneration",
+            &["off", "2x", "3x", "4x"],
+            "off",
+        );
+        normalize_frame_generation_profiles(&mut self.values);
+        // How the output rate is chosen. Profiles saved before the mode existed carry only
+        // the level, so a saved level means multiplier mode.
+        normalize_choice(
+            &mut self.values,
+            "frameGenerationMode",
+            &["off", "multiplier", "target", "display"],
+            "off",
+        );
+        if self.values["frameGenerationMode"] == json!("off")
+            && self.values["frameGeneration"] != json!("off")
+        {
+            self.values
+                .insert("frameGenerationMode".to_owned(), json!("multiplier"));
+        }
+        // 0 = follow the level; otherwise the requested displayed frame rate.
+        clamp_integer(&mut self.values, "frameGenerationTargetFps", 0, 1000, 0);
+        // 0 = detect from the display OpenNOW is on; otherwise a manual refresh override.
+        clamp_integer(&mut self.values, "frameGenerationDisplayHz", 0, 1000, 0);
         let dlss_overrides = crate::dlss::normalize(&self.values[crate::dlss::SETTING]);
         self.values
             .insert(crate::dlss::SETTING.to_owned(), dlss_overrides);
@@ -655,48 +690,150 @@ impl SettingsStore {
         }
     }
 
+    fn apply_steam_deck_identity_default(&mut self, on_steam_deck: bool) -> bool {
+        if !on_steam_deck || self.passthrough.contains_key(STEAM_DECK_IDENTITY_POLICY) {
+            return false;
+        }
+        self.values
+            .insert("identifyAsSteamDeck".to_owned(), json!(true));
+        self.passthrough
+            .insert(STEAM_DECK_IDENTITY_POLICY.to_owned(), json!(true));
+        true
+    }
+
     fn save(&self) -> io::Result<()> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
+        tighten_settings_files(&self.path)?;
         let temporary = self.path.with_extension("json.tmp");
         let backup = self.path.with_extension("json.bak");
         let mut persisted = self.passthrough.clone();
         persisted.extend(self.values.clone());
         let data = serde_json::to_vec_pretty(&persisted).map_err(io::Error::other)?;
-        let mut file = fs::File::create(&temporary)?;
-        file.write_all(&data)?;
-        file.sync_all()?;
-        drop(file);
-        if read_persisted_settings(&self.path, LoadPolicy::ReadWrite).is_some() {
-            fs::copy(&self.path, &backup)?;
-            fs::OpenOptions::new()
-                .write(true)
-                .open(&backup)?
-                .sync_all()?;
+        write_private_settings(&temporary, &data)?;
+        if let Ok(previous) = read_settings_data(&self.path, LoadPolicy::ReadWrite)
+            && serde_json::from_slice::<Map<String, Value>>(&previous).is_ok()
+        {
+            write_private_settings(&backup, &previous)?;
         }
         fs::rename(&temporary, &self.path)?;
         Ok(())
     }
 }
 
-fn read_persisted_settings(path: &Path, policy: LoadPolicy) -> Option<Map<String, Value>> {
-    match policy {
-        LoadPolicy::ReadWrite => fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok()),
-        LoadPolicy::ReadOnly => {
-            let mut data = Vec::new();
-            fs::File::open(path)
-                .ok()?
-                .take(MAXIMUM_BOOTSTRAP_SETTINGS_BYTES + 1)
-                .read_to_end(&mut data)
-                .ok()?;
-            if data.len() as u64 > MAXIMUM_BOOTSTRAP_SETTINGS_BYTES {
-                return None;
-            }
-            serde_json::from_slice(&data).ok()
+fn open_settings_file(path: &Path, write: bool) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(write).create(write);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Settings path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Settings file has other hard links",
+            ));
         }
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Settings path is a reparse point",
+            ));
+        }
+    }
+    Ok(file)
+}
+
+fn tighten_settings_permissions(file: &fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
+}
+
+fn tighten_settings_files(path: &Path) -> io::Result<()> {
+    for extension in ["json", "json.tmp", "json.bak", "json.corrupt"] {
+        let destination = path.with_extension(extension);
+        if fs::symlink_metadata(&destination).is_ok_and(|metadata| metadata.is_dir()) {
+            continue;
+        }
+        match open_settings_file(&destination, false) {
+            Ok(file) => tighten_settings_permissions(&file)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn write_private_settings(path: &Path, data: &[u8]) -> io::Result<()> {
+    let mut file = open_settings_file(path, true)?;
+    tighten_settings_permissions(&file)?;
+    file.set_len(0)?;
+    file.write_all(data)?;
+    file.sync_all()
+}
+
+pub(crate) fn on_steam_deck() -> bool {
+    is_steam_deck(Path::new(DMI_DIRECTORY))
+}
+
+fn is_steam_deck(dmi_directory: &Path) -> bool {
+    let read = |name: &str| fs::read_to_string(dmi_directory.join(name)).unwrap_or_default();
+    read("board_vendor").trim() == "Valve"
+        && matches!(read("product_name").trim(), "Jupiter" | "Galileo")
+}
+
+fn read_persisted_settings(path: &Path, policy: LoadPolicy) -> Option<Map<String, Value>> {
+    serde_json::from_slice(&read_settings_data(path, policy).ok()?).ok()
+}
+
+fn read_settings_data(path: &Path, policy: LoadPolicy) -> io::Result<Vec<u8>> {
+    let limit = match policy {
+        LoadPolicy::ReadOnly => MAXIMUM_BOOTSTRAP_SETTINGS_BYTES,
+        LoadPolicy::ReadWrite => u64::MAX,
+    };
+    let mut data = Vec::new();
+    open_settings_file(path, false)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Settings file exceeds the read limit",
+        ));
+    }
+    Ok(data)
 }
 
 fn validate_bounded_string(value: &Value, key: &str, maximum_bytes: usize) -> Result<(), String> {
@@ -1072,6 +1209,108 @@ fn normalize_controller_profiles(value: &Value) -> Map<String, Value> {
         .collect()
 }
 
+/// Measured frame-generation capability per preset. Keys are opaque strings composed by
+/// the shell (engine, GPU, resolution and frame rate); values record the measurement and
+/// the factors that fit. Entries are bounded in count, key length and field ranges, and
+/// anything that is not a well-formed profile is dropped.
+pub const FRAME_GENERATION_PROFILES: &str = "frameGenerationProfiles";
+const MAXIMUM_FRAME_GENERATION_PROFILES: usize = 64;
+const MAXIMUM_FRAME_GENERATION_PROFILE_KEY_BYTES: usize = 192;
+const MAXIMUM_FRAME_GENERATION_TEXT_BYTES: usize = 128;
+
+fn normalize_frame_generation_profiles(values: &mut Map<String, Value>) {
+    let mut normalized = Map::new();
+    if let Some(profiles) = values[FRAME_GENERATION_PROFILES].as_object() {
+        let mut keys: Vec<&String> = profiles.keys().collect();
+        keys.sort();
+        for key in keys {
+            if normalized.len() >= MAXIMUM_FRAME_GENERATION_PROFILES {
+                break;
+            }
+            if key.is_empty()
+                || key.len() > MAXIMUM_FRAME_GENERATION_PROFILE_KEY_BYTES
+                || key.contains('\0')
+            {
+                continue;
+            }
+            let Some(profile) = profiles[key].as_object() else {
+                continue;
+            };
+            let text = |field: &str| -> String {
+                profile
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        value.len() <= MAXIMUM_FRAME_GENERATION_TEXT_BYTES && !value.contains('\0')
+                    })
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let number = |field: &str, minimum: f64, maximum: f64| -> f64 {
+                profile
+                    .get(field)
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite())
+                    .map(|value| value.clamp(minimum, maximum))
+                    .unwrap_or(0.0)
+            };
+            let mut allowed: Vec<i64> = profile
+                .get("allowed")
+                .and_then(Value::as_array)
+                .map(|factors| {
+                    factors
+                        .iter()
+                        .filter_map(Value::as_i64)
+                        .filter(|factor| (2..=4).contains(factor))
+                        .collect()
+                })
+                .unwrap_or_default();
+            allowed.sort_unstable();
+            allowed.dedup();
+            let (Some(width), Some(height)) = (
+                profile.get("width").and_then(Value::as_i64),
+                profile.get("height").and_then(Value::as_i64),
+            ) else {
+                continue;
+            };
+            if !(16..=16_384).contains(&width) || !(16..=16_384).contains(&height) {
+                continue;
+            }
+            let fps = profile
+                .get("fps")
+                .and_then(Value::as_i64)
+                .map(|fps| fps.clamp(0, 360))
+                .unwrap_or(0);
+            normalized.insert(
+                key.clone(),
+                json!({
+                    "engine": text("engine"),
+                    "gpu": text("gpu"),
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "refreshHz": number("refreshHz", 0.0, 1_000.0),
+                    "p50Ms": number("p50Ms", 0.0, 10_000.0),
+                    "p95Ms": number("p95Ms", 0.0, 10_000.0),
+                    "p95Ms3": number("p95Ms3", 0.0, 10_000.0),
+                    "p95Ms4": number("p95Ms4", 0.0, 10_000.0),
+                    "maxMs": number("maxMs", 0.0, 10_000.0),
+                    "frames": number("frames", 0.0, 1_000_000.0) as i64,
+                    "gpuTimed": profile.get("gpuTimed").and_then(Value::as_bool).unwrap_or(false),
+                    "engineMaxFactor": profile.get("engineMaxFactor").and_then(Value::as_i64).map(|factor| factor.clamp(2, 4)).unwrap_or(2),
+                    "allowed": allowed,
+                    "testedAt": text("testedAt"),
+                    "version": profile.get("version").and_then(Value::as_i64).unwrap_or(1).clamp(1, 1_000),
+                }),
+            );
+        }
+    }
+    values.insert(
+        FRAME_GENERATION_PROFILES.to_owned(),
+        Value::Object(normalized),
+    );
+}
+
 fn normalize_nested_settings(values: &mut Map<String, Value>) {
     let mut interpolation = values["frameInterpolation"]
         .as_object()
@@ -1173,7 +1412,7 @@ fn defaults() -> Map<String, Value> {
     json!({
         "onboardingCompleted":false,
         "resolution":"1920x1080", "aspectRatio":"16:9", "posterSizeScale":1.05,
-        "fps":60, "frameGeneration":"off", "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
+        "fps":60, "frameGeneration":"off", "frameGenerationMode":"off", "frameGenerationTargetFps":0, "frameGenerationDisplayHz":0, "frameGenerationProfiles":{}, "upscaling":"off", "upscalingSharpness":10, "upscalingDenoise":0,
         "maxBitrateMbps":75, "saveBandwidth":false, "recordingBitrateMbps":null,
         "recordingResolution":"720p", "recordingFps":30, "streamClientMode":"native",
         "replayBufferEnabled":false, "replayBufferSeconds":30, "replayBufferMemoryMiB":256,
@@ -1187,12 +1426,12 @@ fn defaults() -> Map<String, Value> {
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false, "networkTest":false,
         "suppressAwdlWhileStreaming":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
-        "nativeCursorOverlay":true, "mouseSensitivity":1, "mouseAcceleration":1,
+        "nativeCursorOverlay":true, "macPointerLockEnabled":true, "mouseSensitivity":1, "mouseAcceleration":1,
         "shortcutToggleStats":"Ctrl+N", "shortcutTogglePointerLock":"F8",
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",
         "shortcutScreenshot":"Ctrl+F11", "shortcutToggleRecording":"F12",
-        "shortcutSaveClip":"Ctrl+F12",
+        "shortcutSaveClip":"Ctrl+F12", "shortcutToggleFrameGeneration":"Ctrl+Shift+G",
         "microphoneMode":"disabled", "microphoneDeviceId":"", "hideStreamButtons":false,
         "muteWhenOutOfFocus":false, "backgroundStreamReminder":false,
         "showAntiAfkIndicator":true, "antiAfkReminderEveryMinutes":15,
@@ -1244,6 +1483,238 @@ fn defaults() -> Map<String, Value> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    fn settings_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_files_are_private_under_umask_022() {
+        const CHILD: &str = "OPENNOW_SETTINGS_PERMISSIONS_TEST_CHILD";
+        if env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "settings::tests::settings_files_are_private_under_umask_022",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        unsafe { libc::umask(0o022) };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store
+            .set(
+                "sessionProxyUrl",
+                json!("http://fixture:synthetic@localhost:8080"),
+            )
+            .unwrap();
+        assert_eq!(settings_mode(&path), 0o600);
+        for width in [1600, 1800, 1920] {
+            let previous = fs::read(&path).unwrap();
+            store.set("windowWidth", json!(width)).unwrap();
+            assert_eq!(settings_mode(&path), 0o600);
+            assert_eq!(settings_mode(&backup), 0o600);
+            assert_eq!(fs::read(&backup).unwrap(), previous);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_writable_load_tightens_all_existing_copies_but_read_only_does_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store
+            .set("windowsGpuDeviceId", json!("fixture-gpu"))
+            .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let copies = [
+            path.clone(),
+            path.with_extension("json.bak"),
+            path.with_extension("json.tmp"),
+            path.with_extension("json.corrupt"),
+        ];
+        for copy in &copies {
+            fs::write(copy, &bytes).unwrap();
+            fs::set_permissions(copy, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let modified: Vec<_> = copies
+            .iter()
+            .map(|copy| fs::metadata(copy).unwrap().modified().unwrap())
+            .collect();
+        assert_eq!(
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                .unwrap(),
+            "fixture-gpu"
+        );
+        for (copy, modified) in copies.iter().zip(&modified) {
+            assert_eq!(settings_mode(copy), 0o644);
+            assert_eq!(fs::read(copy).unwrap(), bytes);
+            assert_eq!(fs::metadata(copy).unwrap().modified().unwrap(), *modified);
+        }
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        for copy in &copies {
+            assert_eq!(settings_mode(copy), 0o600);
+            assert_eq!(fs::read(copy).unwrap(), bytes);
+        }
+        fs::set_permissions(
+            path.with_extension("json.tmp"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        fs::set_permissions(
+            path.with_extension("json.bak"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        assert_eq!(settings_mode(&path), 0o600);
+        assert_eq!(settings_mode(&path.with_extension("json.bak")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_backup_recovery_tightens_insecure_files() {
+        use std::os::unix::fs::PermissionsExt;
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let backup = path.with_extension("json.bak");
+            let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            fs::rename(&path, &backup).unwrap();
+            fs::set_permissions(&backup, fs::Permissions::from_mode(0o644)).unwrap();
+            if corrupt {
+                fs::write(&path, b"{").unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            SettingsStore::windows_gpu_device_id_read_only(Some(directory.path().to_owned()))
+                .unwrap();
+            assert_eq!(settings_mode(&backup), 0o644);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+            if corrupt {
+                assert_eq!(settings_mode(&path), 0o644);
+                assert_eq!(fs::read(&path).unwrap(), b"{");
+            } else {
+                assert!(!path.exists());
+            }
+            assert_eq!(
+                SettingsStore::load(Some(directory.path().to_owned()))
+                    .unwrap()
+                    .all()["windowWidth"],
+                json!(1600)
+            );
+            assert_eq!(settings_mode(&path), 0o600);
+            assert_eq!(settings_mode(&backup), 0o600);
+            assert_eq!(fs::read(&backup).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reject_symlink_and_hard_link_destinations_without_touching_targets() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        for extension in ["json", "json.tmp", "json.bak", "json.corrupt"] {
+            for hard_link in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("settings.json");
+                let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+                store.set("windowWidth", json!(1600)).unwrap();
+                let target = directory.path().join("unrelated");
+                fs::write(&target, b"unrelated data").unwrap();
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+                let destination = path.with_extension(extension);
+                if destination.exists() {
+                    fs::remove_file(&destination).unwrap();
+                }
+                if hard_link {
+                    fs::hard_link(&target, &destination).unwrap();
+                } else {
+                    symlink(&target, &destination).unwrap();
+                }
+                let before = store.all();
+                assert!(
+                    store.set("windowWidth", json!(1800)).is_err(),
+                    "save accepted {extension}"
+                );
+                assert_eq!(store.all(), before);
+                assert!(
+                    SettingsStore::load(Some(directory.path().to_owned())).is_err(),
+                    "load accepted {extension}"
+                );
+                assert_eq!(fs::read(&target).unwrap(), b"unrelated data");
+                assert_eq!(settings_mode(&target), 0o644);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_permission_migration_errors_do_not_replace_the_primary() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let backup = path.with_extension("json.bak");
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        store.set("windowWidth", json!(1600)).unwrap();
+        let before = store.all();
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&backup, &bytes).unwrap();
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.path().to_owned()))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(store.set("windowWidth", json!(1800)).is_err());
+        assert_eq!(store.all(), before);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_reject_dangling_symlink_destinations() {
+        use std::os::unix::fs::symlink;
+        for extension in ["json", "json.tmp", "json.bak"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+            store.set("windowWidth", json!(1600)).unwrap();
+            let target = directory.path().join("must-not-be-created");
+            let destination = path.with_extension(extension);
+            if destination.exists() {
+                fs::remove_file(&destination).unwrap();
+            }
+            symlink(&target, destination).unwrap();
+            assert!(store.set("windowWidth", json!(1800)).is_err());
+            assert!(SettingsStore::load(Some(directory.path().to_owned())).is_err());
+            assert!(!target.exists());
+        }
+    }
 
     #[test]
     fn hdr_notice_history_keeps_the_newest_two_hundred_distinct_ids() {
@@ -1305,6 +1776,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn mac_pointer_lock_defaults_on_and_persists_an_explicit_choice() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(store.all()["macPointerLockEnabled"], json!(true));
+        store.set("macPointerLockEnabled", json!(false)).unwrap();
+        let mut reloaded = SettingsStore::load(Some(directory.path().to_owned())).unwrap();
+        assert_eq!(reloaded.all()["macPointerLockEnabled"], json!(false));
+        reloaded.set("macPointerLockEnabled", json!(true)).unwrap();
+        assert_eq!(
+            SettingsStore::load(Some(directory.path().to_owned()))
+                .unwrap()
+                .all()["macPointerLockEnabled"],
+            json!(true)
+        );
     }
 
     #[test]
@@ -2809,6 +3297,52 @@ mod tests {
     }
 
     #[test]
+    fn steam_deck_hardware_is_recognised_from_dmi() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dmi = env::temp_dir().join(format!("opennow-core-dmi-{unique}"));
+        fs::create_dir_all(&dmi).unwrap();
+        assert!(!is_steam_deck(&dmi));
+        for (vendor, product, deck) in [
+            ("Valve\n", "Jupiter\n", true),
+            ("Valve\n", "Galileo\n", true),
+            ("Valve\n", "Index\n", false),
+            ("LENOVO\n", "Jupiter\n", false),
+        ] {
+            fs::write(dmi.join("board_vendor"), vendor).unwrap();
+            fs::write(dmi.join("product_name"), product).unwrap();
+            assert_eq!(is_steam_deck(&dmi), deck, "{vendor:?} {product:?}");
+        }
+        let _ = fs::remove_dir_all(dmi);
+    }
+
+    #[test]
+    fn steam_deck_identity_turns_on_once_and_respects_opting_out() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-core-deck-identity-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        store.passthrough.remove(STEAM_DECK_IDENTITY_POLICY);
+        store.set("identifyAsSteamDeck", json!(false)).unwrap();
+        assert!(!store.apply_steam_deck_identity_default(false));
+        assert_eq!(store.all()["identifyAsSteamDeck"], json!(false));
+        assert!(store.apply_steam_deck_identity_default(true));
+        assert_eq!(store.all()["identifyAsSteamDeck"], json!(true));
+        store.save().unwrap();
+        let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(reloaded.all()["identifyAsSteamDeck"], json!(true));
+        reloaded.set("identifyAsSteamDeck", json!(false)).unwrap();
+        let mut reloaded = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert!(!reloaded.apply_steam_deck_identity_default(true));
+        assert_eq!(reloaded.all()["identifyAsSteamDeck"], json!(false));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn persists_and_normalizes_settings() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2978,7 +3512,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_generation_is_limited_to_off_or_2x() {
+    fn frame_generation_accepts_known_factors_only() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2987,18 +3521,60 @@ mod tests {
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
 
         assert_eq!(store.all()["frameGeneration"], json!("off"));
+        for factor in ["2x", "3x", "4x"] {
+            assert_eq!(
+                store.set("frameGeneration", json!(factor)).unwrap(),
+                json!(factor)
+            );
+        }
         assert_eq!(
-            store.set("frameGeneration", json!("2x")).unwrap(),
-            json!("2x")
-        );
-        assert_eq!(
-            store.set("frameGeneration", json!("3x")).unwrap(),
+            store.set("frameGeneration", json!("5x")).unwrap(),
             json!("off")
         );
         assert_eq!(
             store.set("frameGeneration", json!(true)).unwrap(),
             json!("off")
         );
+        assert_eq!(store.all()["frameGenerationTargetFps"], json!(0));
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(240)).unwrap(),
+            json!(240)
+        );
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(-5)).unwrap(),
+            json!(0)
+        );
+        assert_eq!(
+            store.set("frameGenerationTargetFps", json!(5000)).unwrap(),
+            json!(1000)
+        );
+        assert_eq!(store.all()["frameGenerationDisplayHz"], json!(0));
+        assert_eq!(
+            store.set("frameGenerationDisplayHz", json!(239)).unwrap(),
+            json!(239)
+        );
+        assert_eq!(
+            store
+                .set("frameGenerationDisplayHz", json!("fast"))
+                .unwrap(),
+            json!(0)
+        );
+        // Mode: off by default; a saved level without a mode means multiplier mode.
+        store.set("frameGeneration", json!("off")).unwrap();
+        store.set("frameGenerationMode", json!("off")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("off"));
+        assert_eq!(
+            store.set("frameGenerationMode", json!("display")).unwrap(),
+            json!("display")
+        );
+        assert_eq!(
+            store.set("frameGenerationMode", json!("bogus")).unwrap(),
+            json!("off")
+        );
+        store.set("frameGeneration", json!("2x")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("multiplier"));
+        store.set("frameGenerationMode", json!("target")).unwrap();
+        assert_eq!(store.all()["frameGenerationMode"], json!("target"));
 
         fs::write(
             directory.join("settings.json"),
@@ -3007,6 +3583,70 @@ mod tests {
         .unwrap();
         let store = SettingsStore::load(Some(directory.clone())).unwrap();
         assert_eq!(store.all()["frameGeneration"], json!("off"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn frame_generation_profiles_are_typed_and_bounded() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = env::temp_dir().join(format!("opennow-frame-generation-profiles-{unique}"));
+        let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()[FRAME_GENERATION_PROFILES], json!({}));
+
+        let stored = store
+            .set(
+                FRAME_GENERATION_PROFILES,
+                json!({
+                    "motion|RTX|1920x1080|60": {
+                        "engine": "motion", "gpu": "RTX", "width": 1920, "height": 1080, "fps": 60,
+                        "refreshHz": 239.0, "p50Ms": 1.5, "p95Ms": 2.25, "maxMs": 4.0, "frames": 180,
+                        "gpuTimed": true, "allowed": [4, 2, 2, 7, "x"], "testedAt": "2026-10-23T20:00:00Z",
+                        "version": 1, "unexpected": "dropped"
+                    },
+                    "no-size": {"engine": "motion", "fps": 60},
+                    "": {"width": 1920, "height": 1080},
+                    "not-an-object": 3,
+                    "clamped": {"width": 1920, "height": 1080, "fps": 9999, "p95Ms": -5, "refreshHz": 1e9}
+                }),
+            )
+            .unwrap();
+        let profiles = stored.as_object().unwrap();
+        assert_eq!(profiles.len(), 2);
+        let profile = &profiles["motion|RTX|1920x1080|60"];
+        assert_eq!(profile["allowed"], json!([2, 4]));
+        assert_eq!(profile["p95Ms"], json!(2.25));
+        assert_eq!(profile["frames"], json!(180));
+        assert_eq!(profile["engineMaxFactor"], json!(2));
+        assert!(profile.get("unexpected").is_none());
+        let clamped = &profiles["clamped"];
+        assert_eq!(clamped["fps"], json!(360));
+        assert_eq!(clamped["p95Ms"], json!(0.0));
+        assert_eq!(clamped["refreshHz"], json!(1000.0));
+        assert_eq!(clamped["allowed"], json!([]));
+
+        let mut many = Map::new();
+        for index in 0..100 {
+            many.insert(
+                format!("profile-{index:03}"),
+                json!({"width": 1280, "height": 720, "fps": 60}),
+            );
+        }
+        let stored = store
+            .set(FRAME_GENERATION_PROFILES, Value::Object(many))
+            .unwrap();
+        assert_eq!(
+            stored.as_object().unwrap().len(),
+            MAXIMUM_FRAME_GENERATION_PROFILES
+        );
+        assert_eq!(
+            store
+                .set(FRAME_GENERATION_PROFILES, json!("invalid"))
+                .unwrap(),
+            json!({})
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

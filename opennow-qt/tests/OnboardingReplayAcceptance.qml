@@ -16,7 +16,8 @@ QtObject {
             onboardingCompleted: true, desktopUiScale: 1.25, reducedMotion: true
         })
         const owner = ShellStore.onboardingOwnerState
-        owner.coreClient = acceptance.client
+        ShellStore.settingsOwnerState.coreClient = acceptance.client
+        ShellStore.settingsOwnerState.ready = true
         owner.ready = true
         owner.replayAllowed = true
         AppController.navigate("settings")
@@ -36,20 +37,21 @@ QtObject {
     }
 
     function verify() {
+        const writes = () => acceptance.client.requests.filter(request => ["settings.set", "settings.reset", "settings.shortcuts.update"].includes(request.method))
         const confirmation = page.data.find(item => item.objectName === "replayOnboardingConfirmation")
         acceptance.check(confirmation && confirmation.opened, "replay confirmation did not open")
         const owner = ShellStore.onboardingOwnerState
         confirmation.reject()
-        acceptance.check(acceptance.client.requests.length === 0, "cancel reset onboarding")
+        acceptance.check(writes().length === 0, "cancel reset onboarding")
         confirmation.open()
         confirmation.accept()
-        acceptance.check(owner.replaying && acceptance.client.requests.length === 1,
+        acceptance.check(owner.replaying && writes().length === 1,
             "confirmation did not request a single reset")
         acceptance.check(!owner.needed, "reset changed the visible shell before persistence")
-        const request = acceptance.client.requests[0]
+        const request = writes()[0]
         acceptance.check(request.params.key === "onboardingCompleted" && request.params.value === false,
             "replay wrote the wrong setting")
-        owner.acceptFailure(request.id, "Fixture denied settings persistence")
+        ShellStore.settingsOwnerState.acceptFailure(request.id, "Fixture denied settings persistence")
         acceptance.check(!owner.replaying && ShellStore.onboardingReplayError.length > 0,
             "failed reset did not remain available for retry")
         acceptance.check(acceptance.find(page, "replayOnboardingButton").enabled,

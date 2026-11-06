@@ -2,6 +2,8 @@ import QtQuick
 import OpenNOW
 
 QtObject {
+    property Component gameAccountsComponent: Component { GameAccountsScreen {} }
+    property Component persistentStorageComponent: Component { PersistentStorageScreen {} }
     property QtObject client: QtObject {
         property string state: "ready"
         property string lastError: ""
@@ -28,6 +30,88 @@ QtObject {
         }
     }
     function check(value, message) { if (!value) throw new Error("Catalog sync: " + message) }
+    function mutationRequests() {
+        return client.requests.filter(item => ["account.storage.reset", "account.connections.unlink",
+            "account.connections.sync", "account.connections.link.start"].indexOf(item.method) >= 0)
+    }
+    function verifyConfirmationScopes(host, accounts) {
+        const session = ShellStore.authSession
+        const generation = ShellStore.authGeneration
+        for (const scenario of ["account", "generation", "provider", "valid"]) {
+            accounts.invalidateAccount()
+            ShellStore.authGeneration = 41
+            ShellStore.authSession = {user:{userId:"scope-owner-a",displayName:"Scope owner A"},provider:{idpId:"scope-provider"}}
+            accounts.gameAccounts = [{provider:"UPLAY",label:"Fixture Ubisoft",isConnected:true,
+                status:"connected",supportsSync:false,supportsLinking:true}]
+            accounts.storageLocations = [{code:"EU",name:"Fixture Europe",isAvailable:true,isCurrent:true}]
+            const games = gameAccountsComponent.createObject(host, {width:1920,height:1080,visible:false})
+            const storage = persistentStorageComponent.createObject(host, {width:1920,height:1080,visible:false})
+            check(games && storage, "account confirmation screens could not be created")
+            games.requestUnlink(null)
+            storage.requestReset()
+            check(games.unlinkOpen && storage.resetOpen, "account confirmation fixture did not open")
+            const expectedScope = JSON.parse(JSON.stringify(ShellStore.catalogOwnerState.authScope))
+            if (scenario === "account")
+                ShellStore.authSession = {user:{userId:"scope-owner-b",displayName:"Scope owner B"},provider:{idpId:"scope-provider"}}
+            else if (scenario === "generation")
+                ShellStore.authGeneration = 42
+            else if (scenario === "provider")
+                ShellStore.authSession = {user:{userId:"scope-owner-a",displayName:"Scope owner A"},provider:{idpId:"other-provider"}}
+            accounts.gameAccounts = [{provider:"EPIC",label:"Replacement Epic",isConnected:true,
+                status:"connected",supportsSync:false,supportsLinking:true}]
+            accounts.storageLocations = [{code:"US",name:"Replacement region",isAvailable:true,isCurrent:true}]
+            const before = mutationRequests().length
+            games.confirmUnlink()
+            storage.confirmReset()
+            const sent = mutationRequests().slice(before)
+            check(!games.unlinkOpen && !storage.resetOpen, "confirming retained an open account dialog")
+            if (scenario !== "valid") {
+                check(sent.length === 0, scenario + " change sent a stale account confirmation")
+            } else {
+                check(sent.length === 2, "valid account confirmations did not send both mutations")
+                check(sent[0].method === "account.connections.unlink" && sent[0].params.provider === "UPLAY",
+                    "unlink confirmation used the replacement selection")
+                check(sent[1].method === "account.storage.reset" && sent[1].params.storageRegion === "EU"
+                    && sent[1].params.confirmed === true, "storage confirmation used the replacement selection")
+                for (const request of sent)
+                    check(JSON.stringify(request.params.scope) === JSON.stringify(expectedScope),
+                        "valid account confirmation lost its original auth scope")
+            }
+            games.destroy()
+            storage.destroy()
+        }
+        accounts.invalidateAccount()
+        ShellStore.authGeneration = generation
+        ShellStore.authSession = session
+    }
+    function verifyMutationScopes(accounts) {
+        const generation = ShellStore.authGeneration
+        const actions = [
+            {method:"account.connections.link.start",send:scope => ShellStore.startAccountLink("UPLAY", scope)},
+            {method:"account.connections.sync",send:scope => ShellStore.syncGameAccount("STEAM", scope)},
+            {method:"account.connections.unlink",send:scope => ShellStore.unlinkGameAccount("UPLAY", scope)},
+            {method:"account.storage.reset",send:scope => ShellStore.resetPersistentStorage("EU", scope)}
+        ]
+        for (const action of actions) {
+            accounts.invalidateAccount()
+            const scope = ShellStore.captureAccountScope()
+            check(Object.isFrozen(scope), "account action captured a mutable auth scope")
+            const before = mutationRequests().length
+            action.send(null)
+            action.send(undefined)
+            ShellStore.authGeneration += 1
+            action.send(scope)
+            check(mutationRequests().length === before, action.method + " accepted a missing or stale scope")
+            const current = ShellStore.captureAccountScope()
+            action.send(current)
+            const sent = mutationRequests().slice(before)
+            check(sent.length === 1 && sent[0].method === action.method
+                && JSON.stringify(sent[0].params.scope) === JSON.stringify(current),
+                action.method + " did not preserve the captured scope")
+        }
+        accounts.invalidateAccount()
+        ShellStore.authGeneration = generation
+    }
     function namedChild(item, name) {
         if (item.objectName === name) return item
         for (const child of item.children || []) {
@@ -69,7 +153,7 @@ QtObject {
             }
             client.cancelledResponse = {id:oldId,page:oldPage}
             if (scenario.kind === "sync") {
-                accounts.syncGameAccount("STEAM")
+                accounts.syncGameAccount("STEAM", accounts.captureAuthScope())
                 client.responseReceived(accounts.gameAccountActionRequestId, {operationId:"sync-race-" + gap,provider:"STEAM",phase:"waiting_remote"})
                 accounts.syncPollTimer.stop()
                 accounts.pollSync()
@@ -79,7 +163,7 @@ QtObject {
                 accounts.pollAccountLink()
                 client.responseReceived(accounts.accountLinkPollRequestId, {status:"complete"})
             } else {
-                accounts.unlinkGameAccount("STEAM")
+                accounts.unlinkGameAccount("STEAM", accounts.captureAuthScope())
                 client.responseReceived(accounts.gameAccountActionRequestId, {message:"Disconnected"})
             }
             const freshId = owner.catalogRequestId
@@ -160,13 +244,13 @@ QtObject {
     }
     function verifyAccountLinkReplacement(accounts) {
         ShellStore.lastError = ""
-        accounts.startAccountLink("UPLAY")
+        accounts.startAccountLink("UPLAY", accounts.captureAuthScope())
         client.responseReceived(accounts.accountLinkStartRequestId,
             {attemptId:"first-link",provider:"UPLAY",loginUrl:""})
         accounts.accountLinkPollTimer.stop()
         accounts.pollAccountLink()
         const oldPoll = accounts.accountLinkPollRequestId
-        accounts.startAccountLink("EPIC")
+        accounts.startAccountLink("EPIC", accounts.captureAuthScope())
         client.responseReceived(accounts.accountLinkStartRequestId,
             {attemptId:"replacement-link",provider:"EPIC",loginUrl:""})
         check(ShellStore.lastError === "", "retired link poll cancellation was reported as a global error")
@@ -210,7 +294,9 @@ QtObject {
             const id = account.provider === "STEAM" ? accounts.gameAccountActionRequestId : accounts.accountLinkStartRequestId
             const request = client.requests.find(item => item.id === id)
             check(request && request.method === (account.provider === "STEAM" ? "account.connections.sync" : "account.connections.link.start")
-                && request.params.provider === account.provider, "store button did not dispatch its core RPC")
+                && request.params.provider === account.provider
+                && JSON.stringify(request.params.scope) === JSON.stringify(ShellStore.catalogOwnerState.authScope),
+                "store button did not dispatch its scoped core RPC")
             const notice = namedChild(stores, "storeSyncNotice")
             check(notice.text === accounts.gameAccountMessage && notice.text !== "", "store action did not display progress")
             client.requestFailed(id, "upstream_error", "Fixture account action failure")
@@ -245,6 +331,8 @@ QtObject {
         ShellStore.authSession = {user:{userId:"catalog-fixture",displayName:"Catalog fixture"},provider:{idpId:"fixture"}}
         const owner = ShellStore.catalogOwnerState
         const accounts = ShellStore.accountServicesOwnerState
+        verifyConfirmationScopes(host, accounts)
+        verifyMutationScopes(accounts)
         verifyAccountLinkReplacement(accounts)
         verifyStoreActions(host, accounts)
         verifyAccountChangeDuringTraversal(owner, accounts)
@@ -294,7 +382,7 @@ QtObject {
         check(owner.catalogNextCursor === "__proto__" && owner.catalogError === "", "opaque cursor collided with a JavaScript property")
         owner.requestLibraryPage()
         deliver(owner, [game(2)], "", false)
-        accounts.syncGameAccount("STEAM")
+        accounts.syncGameAccount("STEAM", accounts.captureAuthScope())
         const before = client.requests.filter(item => item.method === "catalog.library.list").length
         client.responseReceived(accounts.gameAccountActionRequestId, {operationId:"sync-one",provider:"STEAM",phase:"waiting_remote"})
         check(client.requests.filter(item => item.method === "catalog.library.list").length === before, "202 started the final refresh")
@@ -304,7 +392,7 @@ QtObject {
         check(accounts.syncOperation.phase === "refreshing_library", "remote completion skipped refresh phase")
         deliver(owner, [game(1),game(2)], "", false)
         check(accounts.syncOperation === null && accounts.gameAccountMessage.indexOf("completed") >= 0, "complete traversal did not finish sync")
-        accounts.syncGameAccount("STEAM")
+        accounts.syncGameAccount("STEAM", accounts.captureAuthScope())
         client.responseReceived(accounts.gameAccountActionRequestId, {operationId:"sync-two",provider:"STEAM",phase:"waiting_remote"})
         accounts.cancelSyncObservation()
         check(accounts.syncOperation === null && !accounts.syncPollTimer.running, "cancel kept observation alive")

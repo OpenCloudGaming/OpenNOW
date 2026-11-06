@@ -112,7 +112,7 @@ certificate. See Apple's [certificate instructions][apple-certificates] and
 ## Configure Windows signing
 
 No Windows signing secrets are needed for the default `windows_signing_mode=unsigned`.
-Both MSI and ZIP payloads still pass deployment-integrity and standalone update-helper checks.
+The ZIP payload still passes deployment-integrity and standalone update-helper checks.
 The isolated signer still creates and verifies every Ed25519 update manifest. Windows may show
 SmartScreen or unknown-publisher warnings because this mode supplies no Authenticode publisher
 identity. It does not change Apple signing or notarization requirements.
@@ -126,7 +126,7 @@ the workflow never silently downgrades that request to unsigned.
 If your provider uses a hardware token, HSM, or cloud signing account, stop before dispatching
 the production workflow in `authenticode` mode. Integrate that provider's supported signing command and authentication
 first. Preserve the existing binary allowlist, timestamping, signature verification, and
-extracted MSI and ZIP checks. A self-signed certificate can test the mechanics but does not
+extracted ZIP checks. A self-signed certificate can test the mechanics but does not
 provide a publicly trusted Windows publisher identity.
 
 ## Build and promote the first signed release
@@ -150,7 +150,7 @@ provide a publicly trusted Windows publisher identity.
    versions on each supported platform before declaring automatic updates ready.
 
 The updater reads GitHub Releases from `OpenCloudGaming/OpenNOW`. Stable users receive
-stable releases. Linux DEB and Windows MSI installation can require administrator approval.
+stable releases. Linux DEB installation can require administrator approval.
 OpenNOW checks automatically when enabled, can download automatically when opted in, and
 requires confirmation before applying an update and restarting. It does not silently quit
 an active stream to install an update.

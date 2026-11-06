@@ -292,22 +292,13 @@ QtObject {
         }
     }
 
-    property Connections collectionResponses: Connections {
-        target: root.coreClient
-        function onResponseReceived(requestId, result) {
-            if (!root.collectionRequestId || requestId !== root.collectionRequestId)
-                return
-            root.applySetting("gameCollections", result.value)
-            root.collectionRequestId = ""
-            root.collectionError = ""
-            root.collectionSaved(root.pendingCollectionId)
-        }
-        function onRequestFailed(requestId, code, message) {
-            if (!root.collectionRequestId || requestId !== root.collectionRequestId)
-                return
-            root.collectionRequestId = ""
-            root.collectionError = message
-        }
+    function finishCollectionWrite(token, result, message) {
+        if (!collectionRequestId || token !== collectionRequestId) return
+        collectionRequestId = ""
+        collectionError = message
+        if (!result) return
+        applySetting("gameCollections", result.value)
+        collectionSaved(pendingCollectionId)
     }
 
     function collectionById(id) {
@@ -397,7 +388,9 @@ QtObject {
     property string storeState: "idle"
     property string storeSource: "public"
     property string storeError: ""
-    property string storeWarning: ""
+    property string storeCoverageWarning: ""
+    property var storePresentationErrors: ({})
+    readonly property string storeWarning: [storeCoverageWarning].concat(Object.values(storePresentationErrors)).filter(value => value !== "").join(" ")
     property string storeSearchQuery: ""
     property string storeNextCursor: ""
     property bool storeHasMore: false
@@ -553,6 +546,8 @@ QtObject {
             storeSeenCursors = cached.seenCursors
             storeForceRefresh = false
             storeLastPageCached = cached.lastPageCached
+            storeCoverageWarning = cached.coverageWarning
+            storeUsesLocalIndex = cached.usesLocalIndex
             requestStorePresentation()
             return
         }
@@ -570,12 +565,14 @@ QtObject {
             storeBrowseCache = {games: storeGames, totalCount: storeTotalCount,
                 state: storeState, error: storeError, nextCursor: storeNextCursor,
                 hasMore: storeHasMore, pageCount: storePageCount,
-                seenCursors: storeSeenCursors, lastPageCached: storeLastPageCached, resume: storeLoading}
+                seenCursors: storeSeenCursors, lastPageCached: storeLastPageCached, resume: storeLoading,
+                coverageWarning: storeCoverageWarning, usesLocalIndex: storeUsesLocalIndex}
         }
         cancelStoreRequests()
         if (query !== storeSearchQuery || !sameFilters) {
             storeGames = []
             storeTotalCount = 0
+            storeCoverageWarning = ""
         }
         if (forceRefresh) {
             resetStoreShelves()
@@ -592,7 +589,6 @@ QtObject {
         storePageCount = 0
         storeSeenCursors = Object.create(null)
         storeError = ""
-        storeWarning = ""
         storeSource = signedIn ? "store-browse" : "public"
         requestStorePage()
     }
@@ -634,9 +630,11 @@ QtObject {
 
     function retryStore() {
         if (storeLoading) return
-        if (storeError !== "") requestStorePage()
-        if (storeWarning !== "") {
-            storeWarning = ""
+        if (storeError !== "" || storeCoverageWarning !== "") {
+            if (storeHasMore) requestStorePage()
+            else refreshStore(storeSearchQuery, true, storeFilters)
+        }
+        if (Object.keys(storePresentationErrors).length && storePresentationRequestId === "") {
             storePresentationIndex = 0
             requestStorePresentation()
         }
@@ -646,12 +644,13 @@ QtObject {
         storeRequestId = ""
         const more = storeSource === "store-browse" && result.hasNextPage === true
         const next = String(result.nextCursor || "")
-        if (!Array.isArray(result.games) || (more && (!next || next === storeNextCursor || storeSeenCursors[next]))) {
+        const replace = result.replace === true || storeReplacePage
+        if (!Array.isArray(result.games) || (more && (!next || (!replace && (next === storeNextCursor || storeSeenCursors[next]))))) {
             storeState = "error"
             storeError = qsTr("The Store returned an invalid page. Try again.")
             return
         }
-        const merged = storeReplacePage ? [] : storeGames.slice()
+        const merged = replace ? [] : storeGames.slice()
         const seen = Object.create(null)
         const identity = game => String(game.uuid || game.id || game.launchAppId || "")
         for (let i = 0; i < merged.length; ++i) seen[identity(merged[i])] = true
@@ -661,12 +660,16 @@ QtObject {
             if (key && !seen[key]) { merged.push(game); seen[key] = true }
         }
         storeGames = merged
+        if (replace) {
+            storeSeenCursors = Object.create(null)
+            storePageCount = 0
+        }
         storeReplacePage = false
         storeForceRefresh = false
         storeLastPageCached = result.cacheHit === true
         storeUsesLocalIndex = result.source === "store-local"
-        if (storeUsesLocalIndex && result.cacheComplete === false)
-            storeWarning = qsTr("Browsing saved Store pages. These results and filters cover only the catalog loaded so far.")
+        storeCoverageWarning = storeUsesLocalIndex && result.cacheComplete === false
+            ? qsTr("Browsing saved Store pages. These results and filters cover only the catalog loaded so far.") : ""
         storePageCount += 1
         storeTotalCount = Math.max(merged.length, Number(result.totalCount || 0))
         if (result.facets) storeFacets = result.facets
@@ -697,7 +700,8 @@ QtObject {
         storeFilterGroups = []
         storePresentationIndex = 0
         storeError = ""
-        storeWarning = ""
+        storeCoverageWarning = ""
+        storePresentationErrors = ({})
         storeHasMore = false
         storeState = "idle"
         // Store is loaded only when its view is opened, not during login on Home.
@@ -922,6 +926,9 @@ QtObject {
 
     function acceptStorePresentation(result) {
         root.storePresentationRequestId = ""
+        const errors = Object.assign({}, storePresentationErrors)
+        delete errors[result.section]
+        storePresentationErrors = errors
         if (result.section === "marquee") root.storeMarquee = result.items || []
         else if (result.section === "panels") root.storePanels = result.items || []
         else if (result.section === "filters") root.storeFilterGroups = result.items || []
@@ -947,7 +954,10 @@ QtObject {
 
     function failStorePresentation(message) {
         root.storePresentationRequestId = ""
-        root.storeWarning = qsTr("Some storefront sections could not load: %1").arg(message)
+        const section = ["marquee", "panels", "filters"][storePresentationIndex]
+        storePresentationErrors = Object.assign({}, storePresentationErrors, {
+            [section]: qsTr("Some storefront sections could not load: %1").arg(message)
+        })
         root.storePresentationIndex += 1
         root.requestStorePresentation()
     }

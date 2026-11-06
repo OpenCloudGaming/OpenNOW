@@ -18,13 +18,13 @@ Each category file is one explanation. They do not mix how-to steps with referen
 - [Audio](audio.md). Opus, WASAPI, RED, jitter, microphone.
 - [Mouse input](mouse-input.md). Why look and aim feel different.
 - [Controller input](controller-input.md). SDL pads, the 38-byte type-12 packet, rumble.
-- [Features and binaries](features.md). NVB types and byte-exact control frames. Type 10 is named in logs. The payload is not dumped.
+- [Features and binaries](features.md). NVB types and byte-exact control frames. Type 10 is serializer-derived and implemented.
 
 ## The short answer on mouse
 
-Official GFN captures with SDL plus a focus-gated Raw Input async thread. On every focus change it tells the host `accel=0, speed=10` (NVB feature type 10). At session start it also logs `Disabling session mouse acceleration`. Cursor lock is server-driven. System cursor ID 0 hides and locks. Other IDs warp the local cursor from 16-bit normalized coordinates.
+Official GFN captures with SDL plus a focus-gated Raw Input async thread. When its mouse-settings source or values change, it tells the host its acceleration and speed (NVB feature type 10), commonly `accel=0, speed=10`. At session start it also logs `Disabling session mouse acceleration`. Cursor lock is server-driven. System cursor ID 0 hides and locks. Other IDs warp the local cursor from 16-bit normalized coordinates.
 
-OpenNOW also uses a dedicated Raw Input thread plus SDL grab. Official logs `accel=0, speed=10` (NVB feature type 10) on every focus change. Those logs do not include the on-wire bytes. OpenNOW can still scale type-7 deltas on the client with `tune_relative_mouse`. Defaults are identity.
+OpenNOW also uses a dedicated Raw Input thread plus SDL grab, and sends the same NVB feature type 10 mouse settings as official. OpenNOW can still scale type-7 deltas on the client with `tune_relative_mouse`. Defaults are identity.
 
 ## What each client is
 

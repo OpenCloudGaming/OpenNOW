@@ -2,7 +2,6 @@
 use crate::gfn::ServiceError;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -11,9 +10,35 @@ const MAX_BACKGROUND: usize = 4;
 
 #[derive(Default)]
 struct RequestState {
-    cancelled: AtomicBool,
-    accepted: Mutex<bool>,
+    receipt: Mutex<Receipt>,
     wake: Condvar,
+}
+
+#[derive(Default)]
+struct Receipt {
+    cancellation: CancellationState,
+    accepted: bool,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum CancellationState {
+    #[default]
+    Active,
+    CommitEntered,
+    Cancelled,
+}
+
+impl CancellationState {
+    fn check(&self) -> Result<(), ServiceError> {
+        if *self == Self::Cancelled {
+            Err(ServiceError {
+                code: "cancelled",
+                message: "Request cancelled".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -23,34 +48,40 @@ impl Cancellation {
         &self,
         work: impl FnOnce() -> Result<T, ServiceError>,
     ) -> Result<T, ServiceError> {
-        let _commit = self.0.accepted.lock().expect("request commit poisoned");
-        self.check()?;
+        {
+            let mut receipt = self.0.receipt.lock().expect("request receipt poisoned");
+            receipt.cancellation.check()?;
+            receipt.cancellation = CancellationState::CommitEntered;
+        }
         work()
     }
     pub fn cancelled(&self) -> bool {
-        self.0.cancelled.load(Ordering::Acquire)
+        self.0
+            .receipt
+            .lock()
+            .expect("request receipt poisoned")
+            .cancellation
+            == CancellationState::Cancelled
     }
 
     pub fn await_acceptance(&self, timeout: Duration) -> bool {
-        let accepted = self.0.accepted.lock().expect("request receipt poisoned");
-        let (accepted, _) = self
+        let receipt = self.0.receipt.lock().expect("request receipt poisoned");
+        let (receipt, _) = self
             .0
             .wake
-            .wait_timeout_while(accepted, timeout, |accepted| {
-                !*accepted && !self.cancelled()
+            .wait_timeout_while(receipt, timeout, |receipt| {
+                !receipt.accepted && receipt.cancellation != CancellationState::Cancelled
             })
             .expect("request receipt poisoned");
-        *accepted && !self.cancelled()
+        receipt.accepted && receipt.cancellation != CancellationState::Cancelled
     }
     pub fn check(&self) -> Result<(), ServiceError> {
-        if self.cancelled() {
-            Err(ServiceError {
-                code: "cancelled",
-                message: "Request cancelled".into(),
-            })
-        } else {
-            Ok(())
-        }
+        self.0
+            .receipt
+            .lock()
+            .expect("request receipt poisoned")
+            .cancellation
+            .check()
     }
 }
 
@@ -78,16 +109,37 @@ impl Requests {
         })
     }
     pub fn cancel(&self, id: &str) {
-        if let Some((_, token)) = self.0.lock().expect("request state poisoned").get(id) {
-            let _accepted = token.0.accepted.lock().expect("request receipt poisoned");
-            token.0.cancelled.store(true, Ordering::Release);
+        let token = self
+            .0
+            .lock()
+            .expect("request state poisoned")
+            .get(id)
+            .map(|(_, token)| token.clone());
+        if let Some(token) = token {
+            token
+                .0
+                .receipt
+                .lock()
+                .expect("request receipt poisoned")
+                .cancellation = CancellationState::Cancelled;
             token.0.wake.notify_all();
         }
     }
 
     pub fn acknowledge(&self, id: &str) {
-        if let Some((_, token)) = self.0.lock().expect("request state poisoned").get(id) {
-            *token.0.accepted.lock().expect("request receipt poisoned") = true;
+        let token = self
+            .0
+            .lock()
+            .expect("request state poisoned")
+            .get(id)
+            .map(|(_, token)| token.clone());
+        if let Some(token) = token {
+            token
+                .0
+                .receipt
+                .lock()
+                .expect("request receipt poisoned")
+                .accepted = true;
             token.0.wake.notify_all();
         }
     }
@@ -132,6 +184,43 @@ pub fn scope<T>(token: Cancellation, work: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn blocked_commit_does_not_block_cancellation_or_unrelated_control_traffic() {
+        let requests = Arc::new(Requests::default());
+        let login = requests.admit("login", "auth.device.complete").unwrap();
+        let allocation = requests.admit("allocation", "session.create").unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let token = login.token.clone();
+            let worker = scope.spawn(move || {
+                token.commit(|| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok("committed")
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let reader = scope.spawn(|| {
+                requests.cancel("login");
+                requests.acknowledge("allocation");
+                let unrelated = requests.admit("status", "app.status").unwrap();
+                drop(unrelated);
+                progress_tx.send(()).unwrap();
+            });
+            let progress = progress_rx.recv_timeout(Duration::from_millis(500));
+            release_tx.send(()).unwrap();
+            assert_eq!(worker.join().unwrap().unwrap(), "committed");
+            reader.join().unwrap();
+            assert!(
+                progress.is_ok(),
+                "control reader blocked behind credential commit"
+            );
+            assert!(login.token.cancelled());
+            assert!(allocation.token.await_acceptance(Duration::ZERO));
+        });
+    }
     #[test]
     fn auth_commit_fence_rejects_prior_cancellation_and_finishes_entered_commit() {
         let requests = Arc::new(Requests::default());

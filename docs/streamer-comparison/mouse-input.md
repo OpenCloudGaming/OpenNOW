@@ -4,11 +4,11 @@
 
 This is why aim feels different.
 
-Official GFN and OpenNOW both use SDL plus a dedicated Windows Raw Input thread. Official then tells the host how to interpret those deltas. OpenNOW's capture-backed activation chain does not include that frame.
+Official GFN and OpenNOW both use SDL plus a dedicated Windows Raw Input thread. Official then tells the host how to interpret those deltas with a type 10 mouse-settings frame. OpenNOW sends the same frame, encoded from the decompiled serializer.
 
-Every official focus change in `geronimo.log` sends `accel=0, speed=10`. Session start also logs `Disabling session mouse acceleration`. OpenNOW's proven activation chain sends enable-input, cursor capture `0x0308`, cursor tracking `0x030d`, and window state 19. The type 10 payload itself is not in any log or capture on this machine. See [features.md](features.md).
+Every official focus change in `geronimo.log` sends `accel=0, speed=10`. Session start also logs `Disabling session mouse acceleration`. OpenNOW's proven activation chain sends enable-input, cursor capture `0x0308`, cursor tracking `0x030d`, and window state 19. Official also sends type 10 whenever its settings source or values change and again on upstream ready. In raw-relative mode the Windows values are the local `SPI_GETMOUSE` acceleration flag and `SPI_GETMOUSESPEED`, so official is not always `accel=0`. See [features.md](features.md).
 
-If you play FPS games with default sensitivity, official is sending raw HID counts into a host that was told accel off and speed 10. The on-wire bytes for that tell are not dumped anywhere here.
+OpenNOW publishes the same values from the embedded capture owner and sends them on change and after every input-ready. How the seat applies them is unverified.
 
 ## Key concepts
 
@@ -16,7 +16,7 @@ If you play FPS games with default sensitivity, official is sending raw HID coun
 
 **Cursor ID 0.** Official system cursor ID 0 with coords (0,0) means lock, hide, relative. OpenNOW treats predefined message type 0 and cursor id 0 as `RemoteCursorState::Hidden` and enters SDL relative mode.
 
-**Feature type 10.** Official NVB mouse settings. Logged as `Update feature type: 10` next to `accel=0, speed=10`. No hex in the logs. See [features.md](features.md).
+**Feature type 10.** Official NVB mouse settings. Logged as `Update feature type: 10` next to `accel=0, speed=10`. Remote-input type 25, accel then speed as BE u32. See [features.md](features.md).
 
 **Feature type 8.** Track remote cursor image. OpenNOW `COMMAND_TRACK_REMOTE_CURSOR_IMAGE` `0x030d`. Official logs enable type 8 once the session is ready.
 
@@ -77,7 +77,7 @@ From `geronimo.log` and `debug.log`:
 
 | Key | OpenNOW | Official |
 |---|---|---|
-| Host accel / speed | No captured frame | Logged as `0` / `10` on focus and blur. Bytes not dumped |
+| Host accel / speed | Type 25: local SPI values in raw-relative mode on Windows, else `0` / `10` | Same rule; macOS maps `com.apple.mouse.scaling` |
 | Session accel disable | Never logged | `Disabling session mouse acceleration` at start |
 | `mouseSensitivity` | Qt env, 0.1–3, default 1. Console UI only | Not persisted |
 | `mouseAcceleration` | Env 1–150, default 1. No Qt slider | Not persisted |
@@ -102,7 +102,7 @@ NVST wrap is `COMMAND_REMOTE_INPUT` `0x0206`. Absolute encode injects flags `0x0
 
 ## Why it feels different
 
-1. **Host curve.** Official disables session accel and pins speed 10 on every focus change. The type 10 frame itself has not been captured. This is still the first thing to match if you want official look.
+1. **Host curve.** OpenNOW now sends the official type 10 settings. The frame is serializer-derived rather than captured, and its effect on the seat is unverified.
 2. **Client curve.** OpenNOW can scale type 7 before send. Official logs imply raw counts.
 3. **i16 split.** A large HID burst becomes several type-7 packets. Official may keep a wider delta.
 4. **Foreground filter.** The embedded Windows capture binds Raw Input ownership to the Qt window and pauses capture while an overlay owns input. Official's async thread is also focus-scoped, but it restarts on window state 19 and resends alternate settings.

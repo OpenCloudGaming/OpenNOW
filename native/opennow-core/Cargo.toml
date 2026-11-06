@@ -13,13 +13,14 @@ ed25519-dalek = "2.2"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hkdf = "0.12"
 httpdate = "1"
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy"] }
 md5 = "0.7"
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 qrcode = { version = "0.14", default-features = false }
 rand = "0.9"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "socks", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,17 +30,24 @@ icu_normalizer = { version = "2.1", default-features = false, features = ["compi
 scrypt = "0.11"
 semver = "1"
 subtle = "2"
+tokio = { version = "1", features = ["time"] }
 url = "2"
 webpki-roots = "1"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 fs2 = "0.4"
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = { version = "=4.1.0", features = ["crypto-rust"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_SystemServices", "Win32_System_IO", "Win32_Storage_FileSystem", "Wdk_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Registry"] }
 
 [profile.release]
 lto = "thin"

@@ -138,10 +138,11 @@ list(GET OPENNOW_BUILD_VERSION_PARTS 2 CPACK_PACKAGE_VERSION_PATCH)
 set(CPACK_PACKAGE_FILE_NAME "${OPENNOW_PACKAGE_FILE_NAME}")
 set(CPACK_STRIP_FILES TRUE)
 if(WIN32)
-    include("${CMAKE_CURRENT_LIST_DIR}/WindowsInstaller.cmake")
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_STRIP_FILES FALSE)
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop;ZIP")
-    set(CPACK_DMG_VOLUME_NAME "OpenNOW")
+    include("${CMAKE_CURRENT_LIST_DIR}/../packaging/macos-dmg.cmake")
 else()
     # Linux packages intentionally use the distribution Qt runtime. AppImage
     # assembly uses linuxdeploy in release CI so plugin selection is explicit.

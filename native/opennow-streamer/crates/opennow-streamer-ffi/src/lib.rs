@@ -1,12 +1,15 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use opennow_streamer_core::{Engine, EventSender};
+use opennow_streamer_core::presentation_timing::{
+    PresentationSample, PresentationTimestampPrecision, PresentationTimingState,
+};
+use opennow_streamer_core::{Engine, EngineCancellation, EventSender, StartupToken};
 use opennow_streamer_hid::generic::{
     GenericAdmission, GenericDevice, GenericError, GenericInterface, GenericReport,
 };
@@ -14,7 +17,7 @@ use opennow_streamer_hid::{
     HidRuntime, InventoryOutcome, SdlDeviceClaim, SnapshotAdmission, SonySnapshot,
 };
 use opennow_streamer_platform::{
-    CapturedInput, CapturedInputQueue, EmbeddedInputCapture, EmbeddedLocalAction,
+    CapturedInput, CapturedInputQueue, CursorUpdate, EmbeddedInputCapture, EmbeddedLocalAction,
     EmbeddedRuntimeConfig, GraphicsApi, GraphicsContext, GraphicsFramePublisher,
     GraphicsFrameToken, GraphicsRecordCommand, GraphicsRecordedFrame, GraphicsRuntimeError,
     GraphicsTextureFormat, RenderThreadGraphics, SharedVulkanDevice, WindowsAdapterLuid,
@@ -26,7 +29,49 @@ use serde_json::Value;
 
 static FIRST_FRAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
-pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 15;
+pub const OPENNOW_STREAMER_FFI_ABI_VERSION: u32 = 18;
+pub const OPENNOW_STREAMER_FRAME_TIMING_CAPTURE: u32 = 1;
+pub const OPENNOW_STREAMER_FRAME_TIMING_PACED: u32 = 2;
+pub const OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION: u32 = 4;
+pub const OPENNOW_STREAMER_PRESENTATION_VERSION: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_QT_QUEUED: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_PRESENT_RETURN: u32 = 2;
+pub const OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED: u32 = 3;
+pub const OPENNOW_STREAMER_PRESENTATION_RENDER_DURATION: u32 = 1;
+pub const OPENNOW_STREAMER_PRESENTATION_COMPLETION_DURATION: u32 = 2;
+pub const OPENNOW_STREAMER_PRESENTATION_VSYNC_INTERVAL: u32 = 4;
+pub const OPENNOW_STREAMER_PRESENTATION_COMPLETION_AGE: u32 = 8;
+pub const OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS: u32 = 15;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenNowStreamerPresentationConfig {
+    pub version: u32,
+    pub struct_size: usize,
+    pub generation: u64,
+    pub scene_epoch: u64,
+    pub active: u32,
+    pub fps: u32,
+    pub cloud_gsync: u32,
+    pub feedback_mode: u32,
+    pub sender_pacing: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenNowStreamerPresentationSample {
+    pub version: u32,
+    pub struct_size: usize,
+    pub generation: u64,
+    pub scene_epoch: u64,
+    pub presentation_time_ns: u64,
+    pub render_duration_ns: u64,
+    pub render_present_to_complete_ns: u64,
+    pub completion_age_ns: u64,
+    pub vsync_interval_ns: u64,
+    pub completion_kind: u32,
+    pub valid_fields: u32,
+}
 pub const OPENNOW_STREAMER_MAX_TEXT_BYTES: usize =
     opennow_streamer_protocol::text_input::MAX_TEXT_BYTES;
 pub const OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION: u32 = 1;
@@ -38,8 +83,15 @@ pub type OpenNowStreamerCallback =
     Option<unsafe extern "C" fn(bytes: *const u8, length: usize, user_data: *mut c_void)>;
 pub type OpenNowStreamerFrameAvailableCallback =
     Option<unsafe extern "C" fn(user_data: *mut c_void)>;
-pub type OpenNowStreamerCursorCallback =
-    Option<unsafe extern "C" fn(bytes: *const u8, length: usize, user_data: *mut c_void)>;
+pub type OpenNowStreamerCursorCallback = Option<
+    unsafe extern "C" fn(
+        start_id: *const u8,
+        start_id_length: usize,
+        bytes: *const u8,
+        length: usize,
+        user_data: *mut c_void,
+    ),
+>;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -366,6 +418,13 @@ pub struct OpenNowStreamerFrameInfo {
     pub height: u32,
     pub sequence: u64,
     pub presentation_time_ns: u64,
+    pub sender_generation: u64,
+    pub sender_scene_epoch: u64,
+    pub sender_frame_index: u32,
+    pub sender_timing_flags: u32,
+    pub sender_capture_time_us: u32,
+    pub sender_paced: u32,
+    pub sender_presentation_time_us: u64,
 }
 
 #[repr(C)]
@@ -422,24 +481,18 @@ impl Callback {
             function(bytes.as_ptr(), bytes.len(), self.user_data as *mut c_void);
         }
     }
-
-    fn invoke_bytes(self, bytes: &[u8]) {
-        let Some(function) = self.function else {
-            return;
-        };
-        unsafe {
-            function(bytes.as_ptr(), bytes.len(), self.user_data as *mut c_void);
-        }
-    }
 }
 
 enum WorkerCommand {
-    Send(Vec<u8>),
+    Send(Vec<u8>, StartupToken),
     Destroy,
 }
 
 pub struct OpenNowStreamer {
+    presentation: Arc<PresentationTimingState>,
     commands: Option<SyncSender<WorkerCommand>>,
+    cancellation: EngineCancellation,
+    command_admission: Mutex<()>,
     worker: Option<JoinHandle<()>>,
     response_dispatcher: Option<JoinHandle<()>>,
     event_dispatcher: Option<JoinHandle<()>>,
@@ -458,7 +511,11 @@ impl OpenNowStreamer {
         config: OpenNowStreamerConfig,
         captured_input: Arc<CapturedInputQueue>,
         hid: Arc<HidRuntime>,
-        engine_factory: impl FnOnce(EventSender, GraphicsFramePublisher, SyncSender<Vec<u8>>) -> Engine
+        engine_factory: impl FnOnce(
+            EventSender,
+            GraphicsFramePublisher,
+            SyncSender<CursorUpdate>,
+        ) -> Engine
         + Send
         + 'static,
         exit_hook: impl FnOnce() + Send + 'static,
@@ -475,6 +532,8 @@ impl OpenNowStreamer {
         let (graphics, frame_publisher) =
             RenderThreadGraphics::new(move || frame_available.invoke());
         let engine_frame_publisher = frame_publisher.clone();
+        let presentation = Arc::new(PresentationTimingState::default());
+        let engine_presentation = Arc::clone(&presentation);
         let (commands, command_receiver) = sync_channel(config.command_queue_capacity);
         let (responses, response_receiver) = sync_channel(config.response_queue_capacity);
         let (events, event_receiver) = sync_channel(config.event_queue_capacity);
@@ -496,17 +555,22 @@ impl OpenNowStreamer {
                 return Err(status);
             }
         };
-        let cursor_dispatcher =
-            match spawn_cursor_dispatcher(cursor_receiver, callback(config.cursor_callback)) {
-                Ok(dispatcher) => dispatcher,
-                Err(status) => {
-                    drop(responses);
-                    drop(events);
-                    let _ = response_dispatcher.join();
-                    let _ = event_dispatcher.join();
-                    return Err(status);
-                }
-            };
+        let cursor_dispatcher = match spawn_cursor_dispatcher(
+            cursor_receiver,
+            config.cursor_callback,
+            config.user_data as usize,
+        ) {
+            Ok(dispatcher) => dispatcher,
+            Err(status) => {
+                drop(responses);
+                drop(events);
+                let _ = response_dispatcher.join();
+                let _ = event_dispatcher.join();
+                return Err(status);
+            }
+        };
+        let cancellation = EngineCancellation::default();
+        let engine_cancellation = cancellation.clone();
         let worker = match thread::Builder::new()
             .name("opennow-ffi-engine".to_owned())
             .spawn(move || {
@@ -516,7 +580,11 @@ impl OpenNowStreamer {
                         responses,
                         EventSender::bounded(events),
                         move |events| {
-                            engine_factory(events, engine_frame_publisher, cursor_updates)
+                            let mut engine =
+                                engine_factory(events, engine_frame_publisher, cursor_updates)
+                                    .with_presentation_timing(engine_presentation);
+                            engine.set_cancellation(engine_cancellation);
+                            engine
                         },
                     );
                 }));
@@ -532,7 +600,10 @@ impl OpenNowStreamer {
             }
         };
         Ok(Self {
+            presentation,
             commands: Some(commands),
+            cancellation,
+            command_admission: Mutex::new(()),
             worker: Some(worker),
             response_dispatcher: Some(response_dispatcher),
             event_dispatcher: Some(event_dispatcher),
@@ -558,7 +629,18 @@ impl OpenNowStreamer {
         let Some(commands) = self.commands.as_ref() else {
             return OpenNowStreamerStatus::Closed;
         };
-        match commands.try_send(WorkerCommand::Send(bytes.to_vec())) {
+        let cancels_startup = serde_json::from_slice::<Command>(bytes)
+            .is_ok_and(|command| matches!(command.kind.as_str(), "stop" | "shutdown"));
+        let Ok(_admission) = self.command_admission.lock() else {
+            return OpenNowStreamerStatus::Closed;
+        };
+        if cancels_startup {
+            self.cancellation.cancel();
+        }
+        match commands.try_send(WorkerCommand::Send(
+            bytes.to_vec(),
+            self.cancellation.token(),
+        )) {
             Ok(()) => OpenNowStreamerStatus::Ok,
             Err(TrySendError::Full(_)) => OpenNowStreamerStatus::QueueFull,
             Err(TrySendError::Disconnected(_)) => OpenNowStreamerStatus::Closed,
@@ -566,6 +648,7 @@ impl OpenNowStreamer {
     }
 
     fn shutdown(&mut self) {
+        self.cancellation.cancel();
         if let Some(commands) = self.commands.take() {
             let _ = commands.send(WorkerCommand::Destroy);
         }
@@ -673,14 +756,25 @@ fn should_log_event(
 }
 
 fn spawn_cursor_dispatcher(
-    receiver: Receiver<Vec<u8>>,
-    callback: Callback,
+    receiver: Receiver<CursorUpdate>,
+    callback: OpenNowStreamerCursorCallback,
+    user_data: usize,
 ) -> Result<JoinHandle<()>, OpenNowStreamerStatus> {
     thread::Builder::new()
         .name("opennow-ffi-cursor".to_owned())
         .spawn(move || {
-            while let Ok(bytes) = receiver.recv() {
-                callback.invoke_bytes(&bytes);
+            while let Ok(update) = receiver.recv() {
+                if let Some(callback) = callback {
+                    unsafe {
+                        callback(
+                            update.start_id.as_ptr(),
+                            update.start_id.len(),
+                            update.bytes.as_ptr(),
+                            update.bytes.len(),
+                            user_data as *mut c_void,
+                        );
+                    }
+                }
             }
         })
         .map_err(|_| OpenNowStreamerStatus::Closed)
@@ -694,8 +788,8 @@ fn run_engine(
 ) {
     let mut engine = engine_factory(events);
     while let Ok(command) = commands.recv() {
-        let bytes = match command {
-            WorkerCommand::Send(bytes) => bytes,
+        let (bytes, token) = match command {
+            WorkerCommand::Send(bytes, token) => (bytes, token),
             WorkerCommand::Destroy => break,
         };
         let command: Command = match serde_json::from_slice(&bytes) {
@@ -710,7 +804,7 @@ fn run_engine(
                 continue;
             }
         };
-        let (messages, keep_running) = engine.handle(command);
+        let (messages, keep_running) = engine.handle_with_startup_token(command, token);
         for message in messages {
             if responses.send(message).is_err() {
                 return;
@@ -940,8 +1034,8 @@ pub unsafe extern "C" fn opennow_streamer_create(
             captured_input,
             Arc::clone(&hid),
             move |events, frames, cursor_updates| {
-                let cursor_update = Arc::new(move |bytes: Vec<u8>| {
-                    let _ = cursor_updates.try_send(bytes);
+                let cursor_update = Arc::new(move |update: CursorUpdate| {
+                    let _ = cursor_updates.try_send(update);
                 });
                 Engine::with_embedded_media_runtime_and_hid(
                     events,
@@ -1718,6 +1812,52 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
             }
         };
         let frame_info = token.info();
+        let mut acquired_info = OpenNowStreamerFrameInfo {
+            width: frame_info.width,
+            height: frame_info.height,
+            sequence: frame_info.sequence,
+            presentation_time_ns: frame_info.presentation_time_ns,
+            ..OpenNowStreamerFrameInfo::default()
+        };
+        let precision = if cfg!(target_os = "windows") {
+            Some(PresentationTimestampPrecision::Windows)
+        } else if cfg!(target_os = "linux") {
+            Some(PresentationTimestampPrecision::Linux)
+        } else if cfg!(target_os = "macos") {
+            Some(PresentationTimestampPrecision::MacOs)
+        } else {
+            None
+        };
+        let presentation = &unsafe { &*handle }.presentation;
+        let config = presentation.config();
+        if let Some(source) = precision.and_then(|precision| {
+            presentation.lookup_source(
+                config.generation,
+                config.scene_epoch,
+                frame_info.presentation_time_ns,
+                precision,
+                std::time::Instant::now(),
+            )
+        }) {
+            acquired_info.sender_generation = source.generation;
+            acquired_info.sender_scene_epoch = source.scene_epoch;
+            acquired_info.sender_frame_index = source.frame_index;
+            acquired_info.sender_timing_flags = OPENNOW_STREAMER_FRAME_TIMING_CAPTURE
+                | if source.timing.sender_paced.is_some() {
+                    OPENNOW_STREAMER_FRAME_TIMING_PACED
+                } else {
+                    0
+                }
+                | if source.timing.presentation_time_us.is_some() {
+                    OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION
+                } else {
+                    0
+                };
+            acquired_info.sender_capture_time_us = source.timing.capture_time_us;
+            acquired_info.sender_paced = u32::from(source.timing.sender_paced.unwrap_or(0));
+            acquired_info.sender_presentation_time_us =
+                source.timing.presentation_time_us.unwrap_or(0);
+        }
         if !FIRST_FRAME_LOGGED.swap(true, Ordering::Relaxed) {
             log::log_line(
                 "INFO",
@@ -1729,12 +1869,7 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
             );
         }
         unsafe {
-            info.write(OpenNowStreamerFrameInfo {
-                width: frame_info.width,
-                height: frame_info.height,
-                sequence: frame_info.sequence,
-                presentation_time_ns: frame_info.presentation_time_ns,
-            });
+            info.write(acquired_info);
             output.write(Box::into_raw(Box::new(OpenNowStreamerFrame { token })));
         }
         OpenNowStreamerStatus::Ok
@@ -1870,6 +2005,9 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
             .graphics
             .shutdown()
             .map_or_else(graphics_status, |()| OpenNowStreamerStatus::Ok);
+        if status != OpenNowStreamerStatus::WrongThread {
+            unsafe { &*handle }.presentation.invalidate_scene();
+        }
         FIRST_FRAME_LOGGED.store(false, Ordering::Relaxed);
         log::log_line(
             "INFO",
@@ -1877,6 +2015,96 @@ pub unsafe extern "C" fn opennow_streamer_scene_graph_shutdown(
             &format!("scene graph shutdown: {status:?}"),
         );
         status
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Reads negotiated session presentation policy without using the engine command queue.
+///
+/// # Safety
+/// `handle` must be live and must not race with destroy. `output` must contain a readable
+/// version/size prefix and a writable allocation of its declared size.
+pub unsafe extern "C" fn opennow_streamer_get_presentation_config(
+    handle: *const OpenNowStreamer,
+    output: *mut OpenNowStreamerPresentationConfig,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || output.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let version = unsafe { ptr::addr_of!((*output).version).read() };
+        let struct_size = unsafe { ptr::addr_of!((*output).struct_size).read() };
+        if version != OPENNOW_STREAMER_PRESENTATION_VERSION
+            || struct_size < size_of::<OpenNowStreamerPresentationConfig>()
+        {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        let config = unsafe { &*handle }.presentation.config();
+        unsafe {
+            output.write(OpenNowStreamerPresentationConfig {
+                version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+                struct_size: size_of::<OpenNowStreamerPresentationConfig>(),
+                generation: config.generation,
+                scene_epoch: config.scene_epoch,
+                active: u32::from(config.active),
+                fps: config.fps,
+                cloud_gsync: u32::from(config.cloud_gsync),
+                feedback_mode: config.feedback_mode,
+                sender_pacing: config.sender_pacing,
+            });
+        }
+        OpenNowStreamerStatus::Ok
+    })) {
+        Ok(status) => status,
+        Err(_) => OpenNowStreamerStatus::Panic,
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Admits a bounded, explicitly sourced presentation observation.
+///
+/// # Safety
+/// `handle` must be live and must not race with destroy. `sample` must have a readable
+/// version/size prefix and a readable allocation of its declared size.
+pub unsafe extern "C" fn opennow_streamer_submit_presentation_sample(
+    handle: *const OpenNowStreamer,
+    sample: *const OpenNowStreamerPresentationSample,
+) -> OpenNowStreamerStatus {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() || sample.is_null() {
+            return OpenNowStreamerStatus::NullPointer;
+        }
+        let version = unsafe { ptr::addr_of!((*sample).version).read() };
+        let struct_size = unsafe { ptr::addr_of!((*sample).struct_size).read() };
+        if version != OPENNOW_STREAMER_PRESENTATION_VERSION
+            || struct_size < size_of::<OpenNowStreamerPresentationSample>()
+        {
+            return OpenNowStreamerStatus::InvalidConfig;
+        }
+        let handle = unsafe { &*handle };
+        let sample = unsafe { sample.read() };
+        let accepted = handle.presentation.submit(
+            PresentationSample {
+                generation: sample.generation,
+                scene_epoch: sample.scene_epoch,
+                presentation_time_ns: sample.presentation_time_ns,
+                render_duration_ns: sample.render_duration_ns,
+                render_present_to_complete_ns: sample.render_present_to_complete_ns,
+                completion_age_ns: sample.completion_age_ns,
+                vsync_interval_ns: sample.vsync_interval_ns,
+                completion_kind: sample.completion_kind,
+                valid_fields: sample.valid_fields,
+            },
+            std::time::Instant::now(),
+        );
+        if accepted {
+            OpenNowStreamerStatus::Ok
+        } else {
+            OpenNowStreamerStatus::StaleFrame
+        }
     })) {
         Ok(status) => status,
         Err(_) => OpenNowStreamerStatus::Panic,
@@ -2093,7 +2321,7 @@ mod tests {
 
     #[test]
     fn abi_twelve_adds_the_deterministic_graphics_unsupported_status() {
-        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 15);
+        assert_eq!(OPENNOW_STREAMER_FFI_ABI_VERSION, 18);
         assert_eq!(OpenNowStreamerStatus::GraphicsUnsupported as i32, 15);
         let header = include_str!("../include/opennow_streamer_ffi.h");
         assert!(header.contains("OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED = 15,"));
@@ -2204,6 +2432,15 @@ mod tests {
         values: Mutex<Vec<Value>>,
         changed: Condvar,
         frames_available: AtomicUsize,
+        response_gate: Mutex<Option<CallbackGate>>,
+        worker_exited: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    struct CallbackGate {
+        id: &'static str,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        completed: std::sync::mpsc::Sender<()>,
     }
 
     impl CallbackMessages {
@@ -2228,12 +2465,27 @@ mod tests {
 
     unsafe extern "C" fn collect_response(bytes: *const u8, length: usize, user_data: *mut c_void) {
         let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-        let Ok(value) = serde_json::from_slice(bytes) else {
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
             return;
         };
         let messages = unsafe { &*(user_data as *const CallbackMessages) };
+        let gate = {
+            let mut gate = messages.response_gate.lock().expect("callback gate");
+            if gate.as_ref().is_some_and(|gate| value["id"] == gate.id) {
+                gate.take()
+            } else {
+                None
+            }
+        };
+        if let Some(gate) = &gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv_timeout(Duration::from_secs(5));
+        }
         messages.values.lock().expect("callback values").push(value);
         messages.changed.notify_all();
+        if let Some(gate) = gate {
+            let _ = gate.completed.send(());
+        }
     }
 
     unsafe extern "C" fn collect_frame_available(user_data: *mut c_void) {
@@ -2257,6 +2509,73 @@ mod tests {
             vulkan_device: ptr::null(),
             windows_adapter_luid: 0,
         }
+    }
+
+    #[test]
+    fn cursor_dispatcher_preserves_producer_identity_and_rejects_old_abi() {
+        unsafe extern "C" fn collect_cursor(
+            start_id: *const u8,
+            start_id_length: usize,
+            bytes: *const u8,
+            length: usize,
+            user_data: *mut c_void,
+        ) {
+            let sender = unsafe { &*user_data.cast::<SyncSender<CursorUpdate>>() };
+            let start_id = unsafe { std::slice::from_raw_parts(start_id, start_id_length) };
+            let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
+            sender
+                .send(CursorUpdate {
+                    start_id: String::from_utf8(start_id.to_vec()).unwrap(),
+                    bytes: bytes.to_vec(),
+                })
+                .unwrap();
+        }
+
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        config.abi_version = 15;
+        assert_eq!(
+            validate_config(&config),
+            Err(OpenNowStreamerStatus::InvalidConfig)
+        );
+        let (callbacks, received) = sync_channel::<CursorUpdate>(2);
+        let (sender, receiver) = sync_channel(2);
+        sender
+            .send(CursorUpdate {
+                start_id: "old".into(),
+                bytes: vec![0, 0],
+            })
+            .unwrap();
+        sender
+            .send(CursorUpdate {
+                start_id: "replacement".into(),
+                bytes: vec![1, 12, 0],
+            })
+            .unwrap();
+        drop(sender);
+        let dispatcher = spawn_cursor_dispatcher(
+            receiver,
+            Some(collect_cursor),
+            ptr::from_ref(&callbacks) as usize,
+        )
+        .unwrap();
+        dispatcher.join().unwrap();
+        assert_eq!(
+            received.recv().unwrap(),
+            CursorUpdate {
+                start_id: "old".into(),
+                bytes: vec![0, 0]
+            }
+        );
+        assert_eq!(
+            received.recv().unwrap(),
+            CursorUpdate {
+                start_id: "replacement".into(),
+                bytes: vec![1, 12, 0]
+            }
+        );
+        let header = include_str!("../include/opennow_streamer_ffi.h");
+        assert!(header.contains("OpenNowStreamerCursorCallback cursor_callback;"));
     }
 
     #[test]
@@ -2357,7 +2676,7 @@ mod tests {
             },
         )
         .unwrap();
-        let expected: Vec<_> = [
+        let mut expected: Vec<_> = [
             RecordingCompletion::Complete,
             RecordingCompletion::Cut {
                 reason: RecordingCutReason::Discontinuity,
@@ -2376,13 +2695,16 @@ mod tests {
             "audioPackets":3, "completion":completion})
         })
         .collect();
+        expected.push(json!({"type":"recording-state", "state":"failed",
+            "requestId":"recording-start-10", "message":"recording ended before a decodable video keyframe arrived",
+            "completion":{"kind":"cut","reason":"interrupted"}}));
         for event in &expected {
             sender.send(event.clone()).unwrap();
         }
         drop(sender);
         dispatcher.join().unwrap();
         assert_eq!(*messages.values.lock().unwrap(), expected);
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
     }
 
     fn create_with_test_runtime(
@@ -2393,12 +2715,18 @@ mod tests {
     ) {
         let (host, runtime) = create_test_runtime();
         let shutdown_runtime = runtime.clone();
+        let worker_exited = messages.worker_exited.clone();
         let handle = OpenNowStreamer::create(
             test_config(messages),
             runtime.captured_input(),
             Arc::new(HidRuntime::new()),
             move |events, _frames, _cursor| Engine::with_embedded_media_runtime(events, runtime),
-            move || shutdown_runtime.shutdown(),
+            move || {
+                shutdown_runtime.shutdown();
+                if let Some(exited) = worker_exited {
+                    let _ = exited.send(());
+                }
+            },
         )
         .expect("FFI handle");
         (handle, host)
@@ -2628,6 +2956,405 @@ mod tests {
             || {},
         )
         .expect("FFI handle")
+    }
+
+    #[test]
+    fn presentation_config_is_versioned_and_reads_native_policy_without_commands() {
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        let mut output = OpenNowStreamerPresentationConfig::default();
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        output.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+        output.struct_size = size_of::<OpenNowStreamerPresentationConfig>();
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(output.active, 0);
+        assert_eq!(output.sender_pacing, 0);
+        handle.presentation.activate(42, 120, false, 1, true);
+        handle.presentation.register_source(
+            42,
+            Some(1),
+            900,
+            90_000,
+            Some(opennow_streamer_core::presentation_timing::SenderFrameTiming::default()),
+            std::time::Instant::now(),
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, &mut output) },
+            OpenNowStreamerStatus::Ok
+        );
+        assert_eq!(
+            (
+                output.generation,
+                output.active,
+                output.fps,
+                output.cloud_gsync,
+                output.feedback_mode,
+                output.sender_pacing
+            ),
+            (42, 1, 120, 0, 1, 1)
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(ptr::null(), &mut output) },
+            OpenNowStreamerStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_get_presentation_config(&handle, ptr::null_mut()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+    }
+
+    #[test]
+    fn presentation_samples_validate_provenance_and_scene_epoch() {
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        handle.presentation.activate(42, 120, true, 1, true);
+        let mut sample = OpenNowStreamerPresentationSample {
+            version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+            struct_size: size_of::<OpenNowStreamerPresentationSample>(),
+            generation: 42,
+            scene_epoch: handle.presentation.config().scene_epoch,
+            presentation_time_ns: 1_000_000,
+            render_duration_ns: 1_000,
+            render_present_to_complete_ns: 2_000,
+            completion_age_ns: 0,
+            vsync_interval_ns: 0,
+            completion_kind: OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED,
+            valid_fields: OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS,
+        };
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::Ok
+        );
+        sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_QT_QUEUED;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.completion_kind = OPENNOW_STREAMER_PRESENTATION_PLATFORM_PRESENTED;
+        sample.valid_fields &= !OPENNOW_STREAMER_PRESENTATION_VSYNC_INTERVAL;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.valid_fields = OPENNOW_STREAMER_PRESENTATION_REQUIRED_FIELDS;
+        handle.presentation.invalidate_scene();
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::StaleFrame
+        );
+        sample.struct_size = 0;
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, &sample) },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            unsafe { opennow_streamer_submit_presentation_sample(&handle, ptr::null()) },
+            OpenNowStreamerStatus::NullPointer
+        );
+    }
+
+    #[test]
+    fn presentation_boundary_checks_only_readable_prefix_before_full_struct() {
+        #[repr(C)]
+        struct Prefix {
+            version: u32,
+            struct_size: usize,
+        }
+        let messages = CallbackMessages::default();
+        let handle = graphics_test_handle(&messages);
+        let mut prefix = Prefix {
+            version: OPENNOW_STREAMER_PRESENTATION_VERSION,
+            struct_size: size_of::<Prefix>(),
+        };
+        assert_eq!(
+            unsafe {
+                opennow_streamer_get_presentation_config(&handle, ptr::from_mut(&mut prefix).cast())
+            },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            unsafe {
+                opennow_streamer_submit_presentation_sample(&handle, ptr::from_ref(&prefix).cast())
+            },
+            OpenNowStreamerStatus::InvalidConfig
+        );
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerPresentationConfig, scene_epoch),
+            std::mem::offset_of!(OpenNowStreamerPresentationSample, scene_epoch)
+        );
+    }
+
+    #[test]
+    fn sender_timing_abi_matches_header_and_appends_fields_without_reordering() {
+        let header = include_str!("../include/opennow_streamer_ffi.h");
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 18u"));
+        for (name, value) in [
+            ("CAPTURE", OPENNOW_STREAMER_FRAME_TIMING_CAPTURE),
+            ("PACED", OPENNOW_STREAMER_FRAME_TIMING_PACED),
+            ("PRESENTATION", OPENNOW_STREAMER_FRAME_TIMING_PRESENTATION),
+        ] {
+            assert!(header.contains(&format!(
+                "#define OPENNOW_STREAMER_FRAME_TIMING_{name} {value}u"
+            )));
+        }
+        for ((field, offset, c_type), expected) in [
+            (
+                "sender_generation",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_generation),
+                "uint64_t",
+            ),
+            (
+                "sender_scene_epoch",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_scene_epoch),
+                "uint64_t",
+            ),
+            (
+                "sender_frame_index",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_frame_index),
+                "uint32_t",
+            ),
+            (
+                "sender_timing_flags",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_timing_flags),
+                "uint32_t",
+            ),
+            (
+                "sender_capture_time_us",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_capture_time_us),
+                "uint32_t",
+            ),
+            (
+                "sender_paced",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_paced),
+                "uint32_t",
+            ),
+            (
+                "sender_presentation_time_us",
+                std::mem::offset_of!(OpenNowStreamerFrameInfo, sender_presentation_time_us),
+                "uint64_t",
+            ),
+        ]
+        .into_iter()
+        .zip([24, 32, 40, 44, 48, 52, 56])
+        {
+            assert_eq!(offset, expected, "{field}");
+            assert!(header.contains(&format!("{c_type} {field};")));
+        }
+        assert_eq!(size_of::<OpenNowStreamerFrameInfo>(), 64);
+        assert_eq!(
+            std::mem::offset_of!(OpenNowStreamerPresentationConfig, sender_pacing),
+            48
+        );
+        assert_eq!(size_of::<OpenNowStreamerPresentationConfig>(), 56);
+        assert!(header.contains("uint32_t sender_pacing;"));
+        let messages = CallbackMessages::default();
+        let mut config = test_config(&messages);
+        for version in [16, 17] {
+            config.abi_version = version;
+            assert_eq!(
+                validate_config(&config),
+                Err(OpenNowStreamerStatus::InvalidConfig)
+            );
+        }
+    }
+
+    #[test]
+    fn acquisition_correlates_actual_gpu_pts_and_preserves_raw_sender_fields() {
+        use opennow_streamer_core::presentation_timing::SenderFrameTiming;
+        let messages = Box::new(CallbackMessages::default());
+        let mut handle = graphics_test_handle(&messages);
+        let context = ffi_graphics_context();
+        assert_eq!(
+            unsafe { opennow_streamer_set_graphics_context(&handle, &context) },
+            OpenNowStreamerStatus::Ok
+        );
+        let publisher = handle.frame_publisher();
+        let lease = publisher.context().unwrap();
+        let recorded = Arc::new(RecordedCommands::default());
+        handle
+            .presentation
+            .activate(7, 120, false, 0, cfg!(target_os = "windows"));
+        for (index, raw) in [
+            SenderFrameTiming {
+                capture_time_us: 0,
+                sender_paced: None,
+                presentation_time_us: None,
+            },
+            SenderFrameTiming {
+                capture_time_us: u32::MAX,
+                sender_paced: Some(0),
+                presentation_time_us: Some(0),
+            },
+            SenderFrameTiming {
+                capture_time_us: 42,
+                sender_paced: Some(9),
+                presentation_time_us: Some(u64::MAX),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sequence = (index as u64 + 1) * 1_000;
+            let pts = 8_333_333 * sequence;
+            handle.presentation.register_source(
+                7,
+                Some(100 + index as u32),
+                pts / 1_000,
+                1_000_000,
+                Some(raw),
+                std::time::Instant::now(),
+            );
+            publisher
+                .publish(
+                    lease,
+                    Arc::new(TestGraphicsFrame {
+                        sequence,
+                        recorded: Arc::clone(&recorded),
+                        panic_on_record: false,
+                        error: None,
+                    }),
+                )
+                .unwrap();
+            let mut token = ptr::null_mut();
+            let mut info = OpenNowStreamerFrameInfo::default();
+            assert_eq!(
+                unsafe { opennow_streamer_acquire_latest_frame(&handle, &mut token, &mut info) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(info.sequence, sequence);
+            assert_eq!(info.presentation_time_ns, pts);
+            assert_eq!(info.sender_frame_index, 100 + index as u32);
+            assert_eq!(info.sender_generation, 7);
+            assert_eq!(
+                info.sender_scene_epoch,
+                handle.presentation.config().scene_epoch
+            );
+            assert_eq!(info.sender_capture_time_us, raw.capture_time_us);
+            assert_eq!(info.sender_paced, u32::from(raw.sender_paced.unwrap_or(0)));
+            assert_eq!(
+                info.sender_presentation_time_us,
+                raw.presentation_time_us.unwrap_or(0)
+            );
+            assert_eq!(
+                info.sender_timing_flags,
+                1 | if raw.sender_paced.is_some() { 2 } else { 0 }
+                    | if raw.presentation_time_us.is_some() {
+                        4
+                    } else {
+                        0
+                    }
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_release_frame(token) },
+                OpenNowStreamerStatus::Ok
+            );
+        }
+        handle.shutdown();
+    }
+
+    #[test]
+    fn acquisition_never_attaches_metadata_for_ambiguous_or_invalidated_gpu_pts() {
+        use opennow_streamer_core::presentation_timing::SenderFrameTiming;
+        for invalidation in 0..9 {
+            let messages = Box::new(CallbackMessages::default());
+            let mut handle = graphics_test_handle(&messages);
+            let context = ffi_graphics_context();
+            assert_eq!(
+                unsafe { opennow_streamer_set_graphics_context(&handle, &context) },
+                OpenNowStreamerStatus::Ok
+            );
+            let publisher = handle.frame_publisher();
+            let lease = publisher.context().unwrap();
+            let recorded = Arc::new(RecordedCommands::default());
+            handle
+                .presentation
+                .activate(7, 120, false, 0, cfg!(target_os = "windows"));
+            handle.presentation.register_source(
+                7,
+                Some(1),
+                8_333_333,
+                1_000_000,
+                Some(SenderFrameTiming::default()),
+                std::time::Instant::now()
+                    - if invalidation == 8 {
+                        std::time::Duration::from_secs(3)
+                    } else {
+                        std::time::Duration::ZERO
+                    },
+            );
+            match invalidation {
+                0 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    8_333_333,
+                    1_000_000,
+                    Some(SenderFrameTiming::default()),
+                    std::time::Instant::now(),
+                ),
+                1 => handle.presentation.invalidate_scene(),
+                2 => handle.presentation.set_feedback_mode(1),
+                3 => handle.presentation.deactivate(),
+                4 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    8_333_333,
+                    1_000_000,
+                    None,
+                    std::time::Instant::now(),
+                ),
+                5 => handle.presentation.register_source(
+                    7,
+                    Some(2),
+                    833_333_301,
+                    100_000_000,
+                    Some(SenderFrameTiming::default()),
+                    std::time::Instant::now(),
+                ),
+                7 => handle
+                    .presentation
+                    .activate(8, 120, false, 0, cfg!(target_os = "windows")),
+                _ => {}
+            }
+            let sequence = if invalidation == 6 { 2_000 } else { 1_000 };
+            publisher
+                .publish(
+                    lease,
+                    Arc::new(TestGraphicsFrame {
+                        sequence,
+                        recorded: Arc::clone(&recorded),
+                        panic_on_record: false,
+                        error: None,
+                    }),
+                )
+                .unwrap();
+            let mut token = ptr::null_mut();
+            let mut info = OpenNowStreamerFrameInfo::default();
+            assert_eq!(
+                unsafe { opennow_streamer_acquire_latest_frame(&handle, &mut token, &mut info) },
+                OpenNowStreamerStatus::Ok
+            );
+            assert_eq!(
+                info,
+                OpenNowStreamerFrameInfo {
+                    width: 2560,
+                    height: 1440,
+                    sequence,
+                    presentation_time_ns: 8_333_333 * sequence,
+                    ..OpenNowStreamerFrameInfo::default()
+                }
+            );
+            assert_eq!(
+                unsafe { opennow_streamer_release_frame(token) },
+                OpenNowStreamerStatus::Ok
+            );
+            handle.shutdown();
+        }
     }
 
     #[test]
@@ -3040,7 +3767,7 @@ mod tests {
     #[test]
     fn generic_output_contract_is_versioned_bounded_and_matches_header() {
         let header = include_str!("../include/opennow_streamer_ffi.h");
-        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 15u"));
+        assert!(header.contains("#define OPENNOW_STREAMER_FFI_ABI_VERSION 18u"));
         assert!(header.contains("#define OPENNOW_STREAMER_GENERIC_HID_VERSION 1u"));
         for name in [
             "OpenNowGenericHidInterface",
@@ -3902,6 +4629,7 @@ mod tests {
                 height: 1440,
                 sequence: 42,
                 presentation_time_ns: 349_999_986,
+                ..OpenNowStreamerFrameInfo::default()
             }
         );
         let command = ffi_render_command();
@@ -4072,6 +4800,205 @@ mod tests {
         );
     }
 
+    struct CancellationTestRuntime {
+        handle: Option<Box<OpenNowStreamer>>,
+        messages: Arc<CallbackMessages>,
+        host: Option<opennow_streamer_platform::TestMediaRuntimeHost>,
+    }
+
+    impl CancellationTestRuntime {
+        fn new() -> Self {
+            Self::with_messages(Arc::new(CallbackMessages::default()))
+        }
+
+        fn with_messages(messages: Arc<CallbackMessages>) -> Self {
+            let (handle, host) = create_with_test_runtime(&messages);
+            Self {
+                handle: Some(Box::new(handle)),
+                messages,
+                host: Some(host),
+            }
+        }
+
+        fn send(&self, bytes: &[u8]) -> OpenNowStreamerStatus {
+            unsafe {
+                opennow_streamer_send(self.handle.as_deref().unwrap(), bytes.as_ptr(), bytes.len())
+            }
+        }
+
+        fn destroy(&mut self) -> OpenNowStreamerStatus {
+            unsafe { opennow_streamer_destroy(Box::into_raw(self.handle.take().unwrap())) }
+        }
+    }
+
+    impl Drop for CancellationTestRuntime {
+        fn drop(&mut self) {
+            drop(self.handle.take());
+            if let Some(host) = self.host.take() {
+                let result = host.join();
+                if !thread::panicking() {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+
+    fn verify_in_flight_callback_drain(unwind: bool) {
+        use std::sync::mpsc;
+
+        let (entered, callback_entered) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (completed, callback_completed) = mpsc::channel();
+        let (exited, worker_exited) = mpsc::channel();
+        let messages = Arc::new(CallbackMessages {
+            response_gate: Mutex::new(Some(CallbackGate {
+                id: "unwind",
+                entered,
+                release: released,
+                completed,
+            })),
+            worker_exited: Some(exited),
+            ..CallbackMessages::default()
+        });
+        let mut runtime = CancellationTestRuntime::with_messages(Arc::clone(&messages));
+        let userdata = Arc::downgrade(&messages);
+        assert_eq!(
+            runtime.send(br#"{"id":"unwind","type":"hello","protocolVersion":8}"#),
+            OpenNowStreamerStatus::Ok
+        );
+        callback_entered
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let (finished, completion) = mpsc::channel();
+        let destroy = thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                if unwind {
+                    let _runtime = runtime;
+                    panic!("injected fixture failure");
+                }
+                runtime.destroy()
+            }))
+            .map_err(|_| ());
+            finished.send(result).unwrap();
+        });
+        worker_exited.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = completion.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        callback_completed
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let returned_early = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| completion.recv_timeout(Duration::from_secs(5)).unwrap());
+        destroy.join().unwrap();
+        assert!(
+            !returned_early,
+            "runtime destruction returned with a live callback"
+        );
+        assert_eq!(
+            result,
+            if unwind {
+                Err(())
+            } else {
+                Ok(OpenNowStreamerStatus::Ok)
+            }
+        );
+        assert_eq!(messages.values.lock().unwrap()[0]["id"], "unwind");
+        drop(messages);
+        assert!(userdata.upgrade().is_none());
+    }
+
+    #[test]
+    fn cancellation_fixture_unwind_destroys_runtime_before_callback_userdata() {
+        verify_in_flight_callback_drain(true);
+    }
+
+    #[test]
+    fn destroy_waits_for_an_in_flight_response_callback() {
+        verify_in_flight_callback_drain(false);
+    }
+
+    #[test]
+    fn stop_and_destroy_cancel_startup_while_the_tls_peer_stays_open() {
+        use std::io::Read;
+        use std::sync::mpsc;
+
+        for stop in [true, false] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let (accepted, acceptance) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let peer = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "startup did not connect");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept failed: {error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                assert!(socket.read(&mut [0; 4096]).unwrap() > 0);
+                accepted.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(5));
+            });
+            let mut runtime = CancellationTestRuntime::new();
+            let messages = Arc::clone(&runtime.messages);
+            let start = serde_json::to_vec(&json!({
+                "id":"in-flight", "type":"start", "context": {
+                    "session":{"sessionId":"ffi-startup-test", "serverIp":"127.0.0.1",
+                               "rtspsEndpoints":[format!("rtsps://{address}")]},
+                    "settings":{"transportMode":"nvst"}, "shortcuts":{}
+                }
+            }))
+            .unwrap();
+            assert_eq!(runtime.send(&start), OpenNowStreamerStatus::Ok);
+            acceptance.recv_timeout(Duration::from_secs(5)).unwrap();
+            let completed_while_peer_open;
+            if stop {
+                let command = br#"{"id":"stop-in-flight","type":"stop"}"#;
+                assert_eq!(runtime.send(command), OpenNowStreamerStatus::Ok);
+                let values = messages.values.lock().unwrap();
+                let (values, _) = messages
+                    .changed
+                    .wait_timeout_while(values, Duration::from_secs(1), |values| {
+                        !values.iter().any(|value| value["id"] == "stop-in-flight")
+                    })
+                    .unwrap();
+                completed_while_peer_open = values.iter().any(|value| {
+                    value["id"] == "in-flight" && value["code"] == "nvst-start-aborted"
+                }) && values
+                    .iter()
+                    .any(|value| value["id"] == "stop-in-flight" && value["type"] == "ok");
+                drop(values);
+                release.send(()).unwrap();
+                assert_eq!(runtime.destroy(), OpenNowStreamerStatus::Ok);
+            } else {
+                let (finished, completion) = mpsc::channel();
+                let destroy = thread::spawn(move || {
+                    let result = runtime.destroy();
+                    finished.send(result).unwrap();
+                });
+                let result = completion.recv_timeout(Duration::from_secs(1));
+                completed_while_peer_open = matches!(result, Ok(OpenNowStreamerStatus::Ok));
+                release.send(()).unwrap();
+                destroy.join().unwrap();
+            }
+            peer.join().unwrap();
+            assert!(
+                completed_while_peer_open,
+                "cancellation waited for the TLS peer, stop={stop}"
+            );
+        }
+    }
+
     #[test]
     fn hello_round_trips_through_the_response_callback_with_test_media_runtime() {
         let messages = Box::new(CallbackMessages::default());
@@ -4079,7 +5006,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-1",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
 
@@ -4144,7 +5071,7 @@ mod tests {
         assert_eq!(response["type"], "audioDevices");
         assert_eq!(response["devices"], json!([]));
         assert_eq!(
-            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":7}"#),
+            handle.send(br#"{"id":"hello-after-audio","type":"hello","protocolVersion":8}"#),
             OpenNowStreamerStatus::Ok
         );
         assert_eq!(messages.wait_for_id("hello-after-audio")["type"], "ready");
@@ -4165,7 +5092,7 @@ mod tests {
         let command = serde_json::to_vec(&json!({
             "id": "hello-production",
             "type": "hello",
-            "protocolVersion": 7
+            "protocolVersion": 8
         }))
         .expect("hello command");
         assert_eq!(

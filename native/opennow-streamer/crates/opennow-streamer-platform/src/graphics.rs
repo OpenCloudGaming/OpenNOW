@@ -132,6 +132,13 @@ pub trait GraphicsRenderResources: Send + Sync + 'static {
 pub trait GraphicsFrame: Send + Sync + 'static {
     fn info(&self) -> GraphicsFrameInfo;
 
+    fn acquire(
+        &self,
+        _context: GraphicsContext,
+    ) -> Result<Option<Arc<dyn GraphicsFrame>>, GraphicsFrameError> {
+        Ok(None)
+    }
+
     fn render_resources(&self) -> Option<Arc<dyn GraphicsRenderResources>> {
         None
     }
@@ -359,6 +366,16 @@ impl fmt::Display for GraphicsRuntimeError {
 
 impl std::error::Error for GraphicsRuntimeError {}
 
+impl From<GraphicsFrameError> for GraphicsRuntimeError {
+    fn from(error: GraphicsFrameError) -> Self {
+        match error {
+            GraphicsFrameError::NotReady => Self::NoFrame,
+            GraphicsFrameError::Unsupported(message) => Self::RecordUnsupported(message),
+            GraphicsFrameError::Failed(message) => Self::RecordFailed(message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsPublishOutcome {
     Published,
@@ -506,15 +523,30 @@ impl RenderThreadGraphics {
     }
 
     pub fn acquire_latest(&self) -> Result<GraphicsFrameToken, GraphicsRuntimeError> {
+        let (context, slot) = {
+            let mut scene = lock_scene(&self.inner.scene);
+            require_render_thread(&scene)?;
+            let context = scene
+                .context
+                .ok_or(GraphicsRuntimeError::SceneGraphInactive)?;
+            let slot = scene.latest.take().ok_or(GraphicsRuntimeError::NoFrame)?;
+            if slot.epoch != scene.epoch {
+                return Err(GraphicsRuntimeError::StaleFrame);
+            }
+            scene.retain_frame_resources(slot.frame.as_ref())?;
+            (context, slot)
+        };
+        let acquired = slot.frame.acquire(context);
         let mut scene = lock_scene(&self.inner.scene);
-        require_render_thread(&scene)?;
-        let slot = scene.latest.take().ok_or(GraphicsRuntimeError::NoFrame)?;
-        if slot.epoch != scene.epoch {
+        if slot.epoch != scene.epoch || scene.context != Some(context) {
             return Err(GraphicsRuntimeError::StaleFrame);
         }
+        require_render_thread(&scene)?;
+        let frame = acquired?.unwrap_or(slot.frame);
+        scene.retain_frame_resources(frame.as_ref())?;
         Ok(GraphicsFrameToken {
             epoch: slot.epoch,
-            frame: slot.frame,
+            frame,
             owner: Arc::clone(&self.inner),
             recorded: AtomicBool::new(false),
         })
@@ -538,19 +570,7 @@ impl RenderThreadGraphics {
             if frame.recorded.swap(true, Ordering::AcqRel) {
                 return Err(GraphicsRuntimeError::FrameAlreadyRecorded);
             }
-            if let Some(resources) = frame.frame.render_resources() {
-                if scene
-                    .resources
-                    .as_ref()
-                    .is_some_and(|active| !Arc::ptr_eq(active, &resources))
-                {
-                    return Err(GraphicsRuntimeError::RecordFailed(
-                        "retire the previous session renderer before recording a new session"
-                            .to_owned(),
-                    ));
-                }
-                scene.resources = Some(resources);
-            }
+            scene.retain_frame_resources(frame.frame.as_ref())?;
             scene
                 .context
                 .ok_or(GraphicsRuntimeError::SceneGraphInactive)?
@@ -558,13 +578,7 @@ impl RenderThreadGraphics {
         frame
             .frame
             .record(context, command)
-            .map_err(|error| match error {
-                GraphicsFrameError::NotReady => GraphicsRuntimeError::NoFrame,
-                GraphicsFrameError::Unsupported(message) => {
-                    GraphicsRuntimeError::RecordUnsupported(message)
-                }
-                GraphicsFrameError::Failed(message) => GraphicsRuntimeError::RecordFailed(message),
-            })
+            .map_err(GraphicsRuntimeError::from)
     }
 
     /// The host must submit and drain all commands and release its imported
@@ -604,6 +618,26 @@ struct SceneGraphState {
 }
 
 impl SceneGraphState {
+    fn retain_frame_resources(
+        &mut self,
+        frame: &dyn GraphicsFrame,
+    ) -> Result<(), GraphicsRuntimeError> {
+        if let Some(resources) = frame.render_resources() {
+            if self
+                .resources
+                .as_ref()
+                .is_some_and(|active| !Arc::ptr_eq(active, &resources))
+            {
+                return Err(GraphicsRuntimeError::RecordFailed(
+                    "retire the previous session renderer before recording a new session"
+                        .to_owned(),
+                ));
+            }
+            self.resources = Some(resources);
+        }
+        Ok(())
+    }
+
     fn retire_resources(&mut self) -> Result<(), GraphicsRuntimeError> {
         if let Some(resources) = self.resources.take() {
             resources
@@ -937,6 +971,259 @@ mod tests {
             drops: Arc::clone(drops),
             records: Arc::clone(records),
         })
+    }
+
+    type AcquireFrame = dyn Fn(GraphicsContext) -> Result<Option<Arc<dyn GraphicsFrame>>, GraphicsFrameError>
+        + Send
+        + Sync;
+
+    struct AcquiringFrame {
+        acquire: Box<AcquireFrame>,
+        resources: Option<Arc<dyn GraphicsRenderResources>>,
+    }
+
+    impl GraphicsFrame for AcquiringFrame {
+        fn info(&self) -> GraphicsFrameInfo {
+            GraphicsFrameInfo {
+                width: 1,
+                height: 1,
+                sequence: 0,
+                presentation_time_ns: 0,
+            }
+        }
+
+        fn acquire(
+            &self,
+            context: GraphicsContext,
+        ) -> Result<Option<Arc<dyn GraphicsFrame>>, GraphicsFrameError> {
+            (self.acquire)(context)
+        }
+
+        fn render_resources(&self) -> Option<Arc<dyn GraphicsRenderResources>> {
+            self.resources.clone()
+        }
+
+        fn record(
+            &self,
+            _: GraphicsContext,
+            _: GraphicsRecordCommand,
+        ) -> Result<GraphicsRecordedFrame, GraphicsFrameError> {
+            panic!("only the selected frame may be recorded")
+        }
+    }
+
+    #[test]
+    fn acquisition_selects_exact_frame_without_holding_scene_lock() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let selected = frame(42, &drops, &records);
+        let expected = selected.info();
+        let callback_graphics = graphics.clone();
+        publisher
+            .publish_pending(
+                publisher.context().unwrap(),
+                Arc::new(AcquiringFrame {
+                    acquire: Box::new(move |actual_context| {
+                        assert_eq!(actual_context, context());
+                        assert!(callback_graphics.inner.scene.try_lock().is_ok());
+                        Ok(Some(selected.clone()))
+                    }),
+                    resources: None,
+                }),
+            )
+            .unwrap();
+        let token = graphics.acquire_latest().unwrap();
+        assert_eq!(token.info(), expected);
+        publisher
+            .publish(publisher.context().unwrap(), frame(99, &drops, &records))
+            .unwrap();
+        let (other, _) = RenderThreadGraphics::new(|| {});
+        other.initialize(context()).unwrap();
+        assert_eq!(
+            other.record(&token, command()),
+            Err(GraphicsRuntimeError::StaleFrame)
+        );
+        let recorded = graphics.record(&token, command()).unwrap();
+        assert_eq!(recorded.generation, 42);
+        assert_eq!(recorded.presentation_time_ns, expected.presentation_time_ns);
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::FrameAlreadyRecorded)
+        );
+        assert_eq!(records.lock().unwrap().len(), 1);
+        assert_eq!(graphics.acquire_latest().unwrap().info().sequence, 99);
+        graphics.shutdown().unwrap();
+    }
+
+    #[test]
+    fn acquisition_errors_preserve_runtime_error_and_retirement_contracts() {
+        for (error, expected) in [
+            (GraphicsFrameError::NotReady, GraphicsRuntimeError::NoFrame),
+            (
+                GraphicsFrameError::Unsupported("unsupported".to_owned()),
+                GraphicsRuntimeError::RecordUnsupported("unsupported".to_owned()),
+            ),
+            (
+                GraphicsFrameError::Failed("failed".to_owned()),
+                GraphicsRuntimeError::RecordFailed("failed".to_owned()),
+            ),
+        ] {
+            let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+            graphics.initialize(context()).unwrap();
+            let retired = Arc::new(Mutex::new(Vec::new()));
+            publisher
+                .publish_pending(
+                    publisher.context().unwrap(),
+                    Arc::new(AcquiringFrame {
+                        acquire: Box::new(move |_| Err(error.clone())),
+                        resources: Some(Arc::new(RetainedResources(retired.clone()))),
+                    }),
+                )
+                .unwrap();
+            assert_eq!(graphics.acquire_latest().err(), Some(expected));
+            assert_eq!(
+                graphics.acquire_latest().err(),
+                Some(GraphicsRuntimeError::NoFrame)
+            );
+            assert!(retired.lock().unwrap().is_empty());
+            graphics.shutdown().unwrap();
+            graphics.shutdown().unwrap();
+            assert_eq!(*retired.lock().unwrap(), vec![thread::current().id()]);
+        }
+    }
+
+    #[test]
+    fn acquisition_rejects_scene_invalidation_during_callback() {
+        for replacement in [
+            None,
+            Some(context()),
+            Some(GraphicsContext {
+                device: 9,
+                ..context()
+            }),
+        ] {
+            let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+            graphics.initialize(context()).unwrap();
+            let callback_graphics = graphics.clone();
+            let retired = Arc::new(Mutex::new(Vec::new()));
+            let callback_retired = retired.clone();
+            publisher
+                .publish_pending(
+                    publisher.context().unwrap(),
+                    Arc::new(AcquiringFrame {
+                        acquire: Box::new(move |_| {
+                            callback_graphics.shutdown().unwrap();
+                            if let Some(context) = replacement {
+                                callback_graphics.initialize(context).unwrap();
+                            }
+                            Ok(Some(Arc::new(ResourceFrame(Arc::new(RetainedResources(
+                                callback_retired.clone(),
+                            ))))))
+                        }),
+                        resources: None,
+                    }),
+                )
+                .unwrap();
+            assert_eq!(
+                graphics.acquire_latest().err(),
+                Some(GraphicsRuntimeError::StaleFrame)
+            );
+            graphics.shutdown().unwrap();
+            assert!(retired.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn acquired_unrecorded_resources_are_retired_on_render_thread() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        let retired = Arc::new(Mutex::new(Vec::new()));
+        let resources = Arc::new(RetainedResources(retired.clone()));
+        let weak = Arc::downgrade(&resources);
+        publisher
+            .publish_pending(
+                publisher.context().unwrap(),
+                Arc::new(AcquiringFrame {
+                    acquire: Box::new(move |_| {
+                        Ok(Some(Arc::new(ResourceFrame(resources.clone()))))
+                    }),
+                    resources: None,
+                }),
+            )
+            .unwrap();
+        let token = graphics.acquire_latest().unwrap();
+        assert!(weak.upgrade().is_some());
+        graphics.shutdown().unwrap();
+        assert_eq!(*retired.lock().unwrap(), vec![thread::current().id()]);
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::SceneGraphInactive)
+        );
+        drop(token);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn acquisition_preserves_render_resource_owner_identity() {
+        let (graphics, publisher) = RenderThreadGraphics::new(|| {});
+        graphics.initialize(context()).unwrap();
+        let retired = Arc::new(Mutex::new(Vec::new()));
+        let original: Arc<dyn GraphicsRenderResources> =
+            Arc::new(RetainedResources(retired.clone()));
+        let other_retired = Arc::new(Mutex::new(Vec::new()));
+        let other: Arc<dyn GraphicsRenderResources> =
+            Arc::new(RetainedResources(other_retired.clone()));
+        publisher
+            .publish_pending(
+                publisher.context().unwrap(),
+                Arc::new(AcquiringFrame {
+                    acquire: Box::new(move |_| Ok(Some(Arc::new(ResourceFrame(other.clone()))))),
+                    resources: Some(original.clone()),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            graphics.acquire_latest(),
+            Err(GraphicsRuntimeError::RecordFailed(_))
+        ));
+        publisher
+            .publish_pending(
+                publisher.context().unwrap(),
+                Arc::new(AcquiringFrame {
+                    acquire: Box::new(|_| {
+                        panic!("a different owner cannot acquire the active device")
+                    }),
+                    resources: Some(Arc::new(RetainedResources(other_retired.clone()))),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            graphics.acquire_latest(),
+            Err(GraphicsRuntimeError::RecordFailed(_))
+        ));
+        publisher
+            .publish_pending(
+                publisher.context().unwrap(),
+                Arc::new(AcquiringFrame {
+                    acquire: Box::new(move |_| Ok(Some(Arc::new(ResourceFrame(original.clone()))))),
+                    resources: None,
+                }),
+            )
+            .unwrap();
+        let token = graphics.acquire_latest().unwrap();
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::NoFrame)
+        );
+        assert_eq!(
+            graphics.record(&token, command()),
+            Err(GraphicsRuntimeError::FrameAlreadyRecorded)
+        );
+        graphics.shutdown().unwrap();
+        assert_eq!(*retired.lock().unwrap(), vec![thread::current().id()]);
+        assert!(other_retired.lock().unwrap().is_empty());
     }
 
     #[test]

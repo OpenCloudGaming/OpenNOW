@@ -3,6 +3,7 @@
 #include <QLocalServer>
 #include <QLockFile>
 #include <QObject>
+#include <QPointer>
 #include <QStringList>
 #include <memory>
 
@@ -17,9 +18,16 @@ public:
 
     enum class Acquisition { Primary, Forwarded, Failed };
     Acquisition acquire(const QStringList &arguments);
+    static int requestQuit();
+    void finishQuitRequest();
+
+public slots:
+    void cancelQuitRequest();
 
 signals:
     void activationRequested(const QStringList &arguments);
+    void quitRequested();
+    void quitRequestAbandoned();
 
 private:
     void acceptConnection();
@@ -29,4 +37,5 @@ private:
 
     std::unique_ptr<QLockFile> m_lock;
     QLocalServer m_server;
+    QPointer<QLocalSocket> m_quitPeer;
 };
