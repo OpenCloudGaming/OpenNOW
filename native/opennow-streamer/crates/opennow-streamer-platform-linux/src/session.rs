@@ -808,17 +808,18 @@ fn run_video_worker(
                     let since = *backlog_since.get_or_insert(now);
                     if now.duration_since(since) >= STALE_BACKLOG {
                         backlog_since = None;
-                        let dropped = commands
-                            .remove_where(|queued| matches!(queued, VideoCommand::Decode { .. }));
-                        need_keyframe = true;
+                        let backlog = drop_stale_backlog(&commands, active_generation);
                         emit(
                             &events,
                             BackendEvent::QueueOverflow {
                                 media: "video",
-                                count: dropped,
+                                count: backlog.dropped,
                             },
                         );
-                        emit(&events, BackendEvent::NeedKeyframe);
+                        if !backlog.recovery_queued {
+                            need_keyframe = true;
+                            emit(&events, BackendEvent::NeedKeyframe);
+                        }
                     }
                 } else {
                     backlog_since = None;
@@ -938,6 +939,35 @@ fn decoder_needs_poll(backend: DecoderBackend, codec: VideoCodec) -> bool {
 /// latency; past `STALE_BACKLOG` it is dropped and a keyframe requested.
 const BACKLOG_FRAMES: usize = 12;
 const STALE_BACKLOG: Duration = Duration::from_millis(250);
+
+struct StaleBacklog {
+    dropped: usize,
+    /// A newer generation's keyframe is queued, so the recovery it starts is
+    /// already on its way and no other keyframe has to be requested.
+    recovery_queued: bool,
+}
+
+/// Drops the frames of the generation being decoded. A queue overflow can have
+/// put a newer generation behind them, and that one is the recovery itself.
+fn drop_stale_backlog(commands: &BoundedQueue<VideoCommand>, generation: u64) -> StaleBacklog {
+    let mut recovery_queued = false;
+    let dropped = commands.remove_where(|queued| match queued {
+        VideoCommand::Decode {
+            frame,
+            generation: queued,
+            ..
+        } if *queued > generation => {
+            recovery_queued |= frame.keyframe;
+            false
+        }
+        VideoCommand::Decode { .. } => true,
+        VideoCommand::Reconfigure { .. } => false,
+    });
+    StaleBacklog {
+        dropped,
+        recovery_queued,
+    }
+}
 
 const AUDIO_DECODE_STRIKES_BEFORE_RESET: u32 = 8;
 const AUDIO_DECODER_RESET_LIMIT: u32 = 2;
@@ -2068,6 +2098,45 @@ mod tests {
         assert_eq!(session.submit_video(frame).unwrap(), PushOutcome::Queued);
 
         assert!(session.stop().is_ok());
+    }
+
+    #[test]
+    fn stale_backlog_drop_keeps_a_newer_generation_recovery() {
+        let decode = |generation, keyframe| super::VideoCommand::Decode {
+            frame: super::EncodedVideoFrame::new(vec![0, 0, 0, 1, 0x65], 42, keyframe).unwrap(),
+            generation,
+            reset: keyframe,
+        };
+        let commands = super::BoundedQueue::new(8);
+        for command in [
+            decode(1, false),
+            decode(1, false),
+            decode(2, true),
+            decode(2, false),
+        ] {
+            assert!(matches!(commands.push(command), super::QueuePush::Added));
+        }
+        let backlog = super::drop_stale_backlog(&commands, 1);
+        assert_eq!(backlog.dropped, 2);
+        assert!(backlog.recovery_queued);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            commands.try_pop(),
+            Some(super::VideoCommand::Decode {
+                generation: 2,
+                reset: true,
+                ..
+            })
+        ));
+
+        let commands = super::BoundedQueue::new(8);
+        assert!(matches!(
+            commands.push(decode(1, false)),
+            super::QueuePush::Added
+        ));
+        let backlog = super::drop_stale_backlog(&commands, 1);
+        assert_eq!(backlog.dropped, 1);
+        assert!(!backlog.recovery_queued);
     }
 
     #[test]
