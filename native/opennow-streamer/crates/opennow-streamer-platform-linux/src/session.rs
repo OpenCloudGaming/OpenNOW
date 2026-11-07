@@ -526,9 +526,12 @@ fn queue_video_command(
                 needs_keyframe.store(false, Ordering::Release);
                 Ok(PushOutcome::Queued)
             }
+            // Replacing stale decode work is the point of the recovery: the
+            // keyframe itself is queued, and the caller must see that so it can
+            // clear its keyframe-request latch.
             QueuePush::DroppedOldest => {
                 needs_keyframe.store(false, Ordering::Release);
-                Ok(PushOutcome::DroppedOldest)
+                Ok(PushOutcome::Queued)
             }
             QueuePush::Full => Ok(PushOutcome::DroppedOldest),
             QueuePush::Closed => Err(Error::QueueClosed),
@@ -563,6 +566,7 @@ fn queue_video_command(
                     QueuePush::Closed => return Err(Error::QueueClosed),
                     QueuePush::Added | QueuePush::DroppedOldest => {
                         needs_keyframe.store(false, Ordering::Release);
+                        return Ok(PushOutcome::Queued);
                     }
                     QueuePush::Full => {}
                 }
@@ -2010,6 +2014,37 @@ mod tests {
     }
 
     #[test]
+    fn keyframe_at_the_overflow_boundary_reports_itself_queued() {
+        let commands = BoundedQueue::new(1);
+        let events = Arc::new(BoundedQueue::new(8));
+        let generation = AtomicU64::new(0);
+        let needs_keyframe = AtomicBool::new(false);
+        let frame = |timestamp_us, keyframe| {
+            EncodedVideoFrame::new(vec![timestamp_us as u8 + 1], timestamp_us, keyframe).unwrap()
+        };
+        queue_video_command(
+            &commands,
+            &events,
+            &generation,
+            &needs_keyframe,
+            frame(0, false),
+        )
+        .unwrap();
+        assert_eq!(
+            queue_video_command(
+                &commands,
+                &events,
+                &generation,
+                &needs_keyframe,
+                frame(1, true),
+            )
+            .unwrap(),
+            PushOutcome::Queued
+        );
+        assert!(!needs_keyframe.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn overflow_preserves_recovery_keyframe_and_rejects_inter_frames_until_it_arrives() {
         let commands = BoundedQueue::new(2);
         let events = Arc::new(BoundedQueue::new(8));
@@ -2079,7 +2114,7 @@ mod tests {
                 frame(4, true),
             )
             .unwrap(),
-            PushOutcome::DroppedOldest
+            PushOutcome::Queued
         );
         assert!(!needs_keyframe.load(Ordering::Acquire));
         assert_eq!(
