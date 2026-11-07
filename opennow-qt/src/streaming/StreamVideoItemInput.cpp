@@ -897,17 +897,15 @@ void StreamVideoItem::touchEvent(QTouchEvent *event)
         if (point.state() == QEventPoint::Pressed)
             m_touch.pressed(point.id(), point.position(), now, mode);
     }
+    // Moves before releases, for the same reason: a contact lifted first would
+    // cut the other one's share out of a two-finger scroll.
     for (const auto &point : event->points()) {
-        switch (point.state()) {
-        case QEventPoint::Updated:
+        if (point.state() == QEventPoint::Updated)
             m_touch.moved(point.id(), point.position(), now);
-            break;
-        case QEventPoint::Released:
+    }
+    for (const auto &point : event->points()) {
+        if (point.state() == QEventPoint::Released)
             m_touch.released(point.id(), point.position(), now);
-            break;
-        default:
-            break;
-        }
     }
     event->accept();
 }
