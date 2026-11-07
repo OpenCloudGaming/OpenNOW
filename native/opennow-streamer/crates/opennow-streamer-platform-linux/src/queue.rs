@@ -120,6 +120,17 @@ impl<T> BoundedQueue<T> {
         outcome
     }
 
+    /// Remove every queued item matching `should_remove`; returns how many.
+    pub fn remove_where(&self, mut should_remove: impl FnMut(&T) -> bool) -> usize {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let original_len = state.items.len();
+        state.items.retain(|queued| !should_remove(queued));
+        original_len - state.items.len()
+    }
+
     pub fn try_pop(&self) -> Option<T> {
         self.state
             .lock()
@@ -201,7 +212,6 @@ impl<T> BoundedQueue<T> {
         self.ready.notify_all();
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.state
             .lock()
@@ -214,6 +224,18 @@ impl<T> BoundedQueue<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_where_keeps_the_other_items_in_order() {
+        let queue = BoundedQueue::new(4);
+        for value in [1, 2, 3, 4] {
+            assert_eq!(queue.push(value), QueuePush::Added);
+        }
+        assert_eq!(queue.remove_where(|value| value % 2 == 0), 2);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.try_pop(), Some(1));
+        assert_eq!(queue.try_pop(), Some(3));
+    }
 
     #[test]
     fn latest_pop_discards_stale_frames_and_counts_them() {
