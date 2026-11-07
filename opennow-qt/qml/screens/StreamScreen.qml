@@ -140,6 +140,7 @@ FocusScope {
             if (Qt.platform.os === "osx" && macPointerLockEnabled !== (ShellStore.settings.macPointerLockEnabled !== false))
                 ShellStore.setSetting("macPointerLockEnabled", macPointerLockEnabled)
         }
+        touchMode: String(ShellStore.settings.touchMode || "auto")
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGenerationFactor: ShellStore.frameGenerationFactor()
@@ -421,6 +422,8 @@ FocusScope {
         }
         opacity: afkMotion.progress
     }
+
+    StreamTouchModeNotice { surface: streamVideo }
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)
