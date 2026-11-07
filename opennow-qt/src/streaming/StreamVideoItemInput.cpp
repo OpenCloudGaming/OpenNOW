@@ -704,15 +704,19 @@ void StreamVideoItem::mouseReleaseEvent(QMouseEvent *event)
             if (!m_relativeMouse) submitAbsoluteMouse(event->position());
             s_nativeRuntime->submitMouseButton(button, false);
         }
-        if (m_pressedMouseButtons.isEmpty() && m_pendingRelativeMouse) {
-            const auto relative = *m_pendingRelativeMouse;
-            m_pendingRelativeMouse.reset();
-            setRelativeMouse(relative);
-        }
+        applyPendingRelativeMouse();
         event->accept();
         return;
     }
     event->ignore();
+}
+
+void StreamVideoItem::applyPendingRelativeMouse()
+{
+    if (!m_pressedMouseButtons.isEmpty() || !m_pendingRelativeMouse) return;
+    const auto relative = *m_pendingRelativeMouse;
+    m_pendingRelativeMouse.reset();
+    setRelativeMouse(relative);
 }
 
 void StreamVideoItem::mouseMoveEvent(QMouseEvent *event)
@@ -862,7 +866,14 @@ void StreamVideoItem::submitTouchRelative(QPointF delta)
 
 void StreamVideoItem::submitTouchButton(int button, bool pressed)
 {
-    if (s_nativeRuntime) s_nativeRuntime->submitMouseButton(static_cast<quint8>(button), pressed);
+    if (!s_nativeRuntime) return;
+    // Tracked with the mouse's buttons: a cursor update during a touch drag is
+    // deferred the same way, instead of dropping the capture under the finger.
+    const auto remoteButton = static_cast<quint8>(button);
+    if (pressed) m_pressedMouseButtons.insert(remoteButton);
+    else m_pressedMouseButtons.remove(remoteButton);
+    s_nativeRuntime->submitMouseButton(remoteButton, pressed);
+    if (!pressed) applyPendingRelativeMouse();
 }
 
 void StreamVideoItem::touchEvent(QTouchEvent *event)
@@ -1117,9 +1128,9 @@ void StreamVideoItem::releaseInput()
 {
     m_waylandPointer->release();
     m_macPointer->release();
-    m_touch.cancel();  // releases a button a touch drag still holds
     const auto pendingRelativeMouse = m_pendingRelativeMouse;
     m_pendingRelativeMouse.reset();
+    m_touch.cancel();  // releases a button a touch drag still holds
     if (s_nativeRuntime) {
         for (const auto &pressed : std::as_const(m_pressedKeys))
             s_nativeRuntime->submitKey(pressed.virtualKey, 0, false);

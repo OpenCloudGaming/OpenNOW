@@ -295,6 +295,7 @@ private:
     void switchTouchMode();
     void submitTouchRelative(QPointF delta);
     void submitTouchButton(int button, bool pressed);
+    void applyPendingRelativeMouse();
     QCursor m_remoteCursor;
     std::optional<bool> m_pendingRelativeMouse;
     std::optional<bool> m_manualRelativeMouse;

@@ -401,6 +401,36 @@ private slots:
         QTest::touchEvent(&session.window, touchscreen).release(2, QPoint(300, 140));
     }
 
+    void cursorUpdateWaitsForATouchDragToEnd()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("direct"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        item.applyRemoteCursor(QByteArray::fromHex("0001"));
+        QVERIFY(!item.relativeMouse());
+
+        // Straight to the gesture state: Qt holds touch moves back until a frame.
+        item.m_touch.pressed(1, {100, 100}, 0, StreamTouchGestures::Mode::Direct);
+        item.m_touch.moved(1, {160, 100}, 10);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}}));
+
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));  // the host hides its cursor
+        QVERIFY(!item.relativeMouse());
+        item.m_touch.moved(1, {220, 100}, 20);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}}));
+
+        item.m_touch.released(1, {220, 100}, 30);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}, {1, false}}));
+        QVERIFY(item.relativeMouse());
+    }
+
     void trackpadTouchMovesTheLocalCursorWhenTheHostDrawsNone()
     {
         CursorSession session;
