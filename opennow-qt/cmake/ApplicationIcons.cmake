@@ -1,10 +1,16 @@
 set(OPENNOW_APPLICATION_ICON_SIZES 16 24 32 48 64 128 256 512 1024)
 set(OPENNOW_APPLICATION_ICON_FILES)
 foreach(size IN LISTS OPENNOW_APPLICATION_ICON_SIZES)
-    list(APPEND OPENNOW_APPLICATION_ICON_FILES "packaging/icons/opennow-${size}.png")
+    if(APPLE)
+        list(APPEND OPENNOW_APPLICATION_ICON_FILES "packaging/icons/opennow-macos-${size}.png")
+    else()
+        list(APPEND OPENNOW_APPLICATION_ICON_FILES "packaging/icons/opennow-${size}.png")
+    endif()
 endforeach()
 
 function(opennow_add_application_icons target)
+    target_sources(${target} PRIVATE src/app/ApplicationIcon.h)
+    target_include_directories(${target} PRIVATE src)
     qt_add_resources(${target} "${target}-application-icons"
         PREFIX "/icons" BASE "packaging/icons"
         FILES ${OPENNOW_APPLICATION_ICON_FILES})

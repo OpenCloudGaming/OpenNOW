@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "app/ApplicationIcon.h"
 #include "app/platform/GraphicsDeviceSelection.h"
 #include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
@@ -147,10 +148,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (flyHighSelfTest >= 0 && flyHighSelfTest + 1 < application.arguments().size())
         return FrameGenerationBenchmark::flyHighSelfTest(application.arguments().at(flyHighSelfTest + 1));
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
-    QIcon applicationIcon;
-    for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})
-        applicationIcon.addFile(u":/icons/opennow-%1.png"_s.arg(size), QSize(size, size));
-    QGuiApplication::setWindowIcon(applicationIcon);
+    QGuiApplication::setWindowIcon(applicationWindowIcon());
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     LinuxVulkanGraphics::requestDeviceExtensions();
 #endif
