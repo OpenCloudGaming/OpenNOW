@@ -92,14 +92,16 @@ FocusScope {
     // Fit the design within bounded readable sizes, then apply the user's
     // interface scale. Qt handles device-pixel-ratio changes independently.
     function updateUiScale() {
-        if (root.width <= 0 || root.height <= 0)
+        if (!root || root.width <= 0 || root.height <= 0)
             return
         const fitted = DesktopTokens.scaleForWindow(root.width, root.height)
         const preference = Number(ShellStore.settings.desktopUiScale || 1)
         DesktopTokens.uiScale = Math.min(1.4, Math.max(0.9, fitted * preference))
     }
-    onWidthChanged: root.updateUiScale()
-    onHeightChanged: root.updateUiScale()
+    // A native resize changes both dimensions together. Publish one scale for
+    // the settled geometry instead of relaying out every token twice per event.
+    onWidthChanged: Qt.callLater(root.updateUiScale)
+    onHeightChanged: Qt.callLater(root.updateUiScale)
     Connections {
         target: ShellStore
         function onSettingsChanged() { root.updateUiScale() }
