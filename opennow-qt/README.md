@@ -485,25 +485,31 @@ on direct launch.
 
 ### Local frame generation (experimental)
 
-On Windows, frame generation requires `flyhigh.dll` beside `OpenNOW.exe` and a `flyhigh`
-subdirectory containing `graph.json`, `flyhighfg.json`, and `flyhighfg.bin`. The loader searches
-only the application directory for the engine and models. DLL dependencies are restricted to
-the engine directory and Windows System32. Missing or invalid bundles make frame generation
-unavailable rather than silently selecting the motion engine. Normal streaming remains active.
-The capability test must pass before frame generation can be selected.
+Windows and non-Windows releases use the motion engine by default. The capability test must
+pass before frame generation can be selected. An application filename or model directory
+does not change engine selection.
+
+The experimental FlyHigh prototype is unavailable until its asynchronous GPU completion and
+resource-lifetime bridge can be verified. On Windows, `OPENNOW_FLYHIGH=1` explicitly selects
+that prototype, but initialization reports unavailable before loading any DLL or submitting
+GPU work, including through the direct self-test. Staging an engine and models does not
+bypass this gate. Normal motion frame generation needs neither a bundle nor an environment
+flag; an explicit FlyHigh request fails closed without silently switching engines.
 
 The Windows release workflows and install rules do not currently acquire, pin, or package
 FlyHigh or its models. A release bundle requires an owner-approved engine and model version,
 artifact checksums, redistribution rights, and dependency/license packaging rules. CMake does
 not copy a developer checkout, and `OPENNOW_FLYHIGH_ENGINE` and `OPENNOW_FLYHIGH_DIR` are no
 longer supported. No engine binaries or weights are supplied by these build rules.
-The engine artifact also needs matching, reviewable bridge source for the required
+Any future engine artifact also needs matching, reviewable bridge source for the required
 `fh_copy_output_d3d11` and `fh_release_d3d11_target` exports. An upstream engine revision alone
 does not establish compatibility or safe GPU completion and resource lifetime behavior.
-Tests default to the motion engine. Windows developer tests can explicitly select FlyHigh
-with `OPENNOW_FLYHIGH=1` after staging a verified bundle beside the test executable.
+The retained loader policy requires `flyhigh.dll` beside the executable and a `flyhigh`
+subdirectory containing `graph.json`, `flyhighfg.json`, and `flyhighfg.bin`. It restricts DLL
+dependencies to the application directory and Windows System32; these checks remain required
+after the bridge contract is implemented, but do not establish that contract by themselves.
+Tests also default to motion.
 `OPENNOW_FLYHIGH=0` or `OPENNOW_FRAME_GENERATION_ENGINE=motion` explicitly selects motion.
-Non-Windows builds use the motion engine.
 
 Frame generation is local video interpolation. It does not change the negotiated stream FPS,
 input rate, or game simulation. See [Native frame generation](../docs/fg-legacy.md#levels-target-fps-display-refresh-and-the-capability-test)

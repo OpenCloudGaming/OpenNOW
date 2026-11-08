@@ -1,18 +1,23 @@
 # Native frame generation
 
-On Windows the OpenNOW process uses the [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine)
-(`flyhigh.dll` and the `flyhigh/` model next to the executable, imported through
-`FlyHighNetwork`). If that engine cannot start, frame generation turns off. It
-does not fall back to block matching.
-
-The block-matching interpolator in
-`opennow-qt/src/streaming/rendering/StreamFrameInterpolator.cpp` remains for
-builds where FlyHigh is not enabled: test binaries, and platforms other than the
-Windows client. It uses QRhi vertex/fragment passes, including
+Normal Windows and non-Windows releases use the block-matching motion interpolator in
+`opennow-qt/src/streaming/rendering/StreamFrameInterpolator.cpp`. It uses QRhi vertex/fragment passes, including
 `framegen_motion.frag` and `framegen_synthesize.frag`. The capability-test
-profile key is still `motion`. `OPENNOW_FLYHIGH=0` or
-`OPENNOW_FRAME_GENERATION_ENGINE=motion` forces that path in a process that
-would otherwise load FlyHigh.
+profile key and engine label are `motion`. An application filename or a model
+directory never selects a different engine. `OPENNOW_FLYHIGH=0` or
+`OPENNOW_FRAME_GENERATION_ENGINE=motion` explicitly keeps the motion path.
+
+The experimental [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine)
+prototype is unavailable in this release. `OPENNOW_FLYHIGH=1` explicitly selects
+it on Windows, but initialization fails before DLL loading or GPU submission,
+including in its direct self-test. There is no reviewed bridge contract proving
+asynchronous Vulkan input/output completion and safe imported D3D11 texture
+reuse and teardown. The prototype's per-copy GPU drains must not run on the
+render thread. It remains gated until that contract and an implementation are
+available; staging a DLL and models cannot bypass the gate. An explicit FlyHigh
+request reports unavailable rather than silently claiming a neural engine or
+switching to motion. Ordinary releases retain motion frame generation without
+requiring an environment flag or a FlyHigh bundle.
 
 No Framegen v7-small neural runtime is bundled. This tree does not contain
 `rt_v7s.bin` or `rt_v7s.json`.

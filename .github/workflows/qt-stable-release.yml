@@ -138,6 +138,7 @@ jobs:
           - Linux HID identity fixes for wheels, mouse-button release recovery after capture loss, and Wayland Vulkan teardown fixes.
           - Stream startup and session-end callbacks that survive diagnostic queue pressure, and catalog tooltips that stay out of active streams.
           - Microphone signal and uplink diagnostics to help investigate silent input. These diagnostics do not establish that every microphone report is resolved.
+          - Motion frame generation remains the default on Windows; experimental FlyHigh is unavailable pending a verified bridge.
 
           Updates are authenticated with signed Ed25519 manifests.
           The macOS DMGs require macOS 13+ and are Developer ID-signed and notarized.

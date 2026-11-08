@@ -30,13 +30,15 @@ private slots:
         QTest::addColumn<QString>("flag");
         QTest::addColumn<QString>("engine");
         QTest::addColumn<bool>("windowsEnabled");
-        QTest::newRow("production-missing-bundle") << true << 0 << QString() << QString() << true;
-        QTest::newRow("production-partial-bundle") << true << 2 << QString() << QString() << true;
-        QTest::newRow("production-complete-bundle") << true << 3 << QString() << QString() << true;
+        QTest::newRow("production-missing-bundle") << true << 0 << QString() << QString() << false;
+        QTest::newRow("production-partial-bundle") << true << 2 << QString() << QString() << false;
+        QTest::newRow("production-complete-bundle") << true << 3 << QString() << QString() << false;
         QTest::newRow("test-missing-bundle") << false << 0 << QString() << QString() << false;
         QTest::newRow("test-complete-bundle") << false << 3 << QString() << QString() << false;
         QTest::newRow("explicit-disable") << true << 3 << QStringLiteral("0") << QString() << false;
         QTest::newRow("explicit-enable-missing-bundle") << false << 0 << QStringLiteral("1") << QString() << true;
+        QTest::newRow("production-explicit-enable-missing-dll") << true << 3 << QStringLiteral("1") << QString() << true;
+        QTest::newRow("invalid-enable-value") << true << 3 << QStringLiteral("yes") << QString() << false;
         QTest::newRow("explicit-motion") << true << 3 << QStringLiteral("1") << QStringLiteral("motion") << false;
     }
 
@@ -85,11 +87,15 @@ private slots:
         QVERIFY(!result.isEmpty());
 #if defined(Q_OS_WIN)
         QCOMPARE(result.value(QStringLiteral("enabled")).toBool(), windowsEnabled);
-        if (windowsEnabled) {
-            QVERIFY(result.value(QStringLiteral("rhiCreated")).toBool());
-            QVERIFY(!result.value(QStringLiteral("firstInitialize")).toBool());
-            QVERIFY(!result.value(QStringLiteral("secondInitialize")).toBool());
-        }
+        QVERIFY(!result.value(QStringLiteral("directInitialize")).toBool());
+        QVERIFY(result.value(QStringLiteral("directError")).toString().contains(QStringLiteral("bridge is verified")));
+        QVERIFY(result.value(QStringLiteral("rhiCreated")).toBool());
+        QVERIFY(!result.value(QStringLiteral("directRhiInitialize")).toBool());
+        QVERIFY(result.value(QStringLiteral("directRhiError")).toString().contains(QStringLiteral("bridge is verified")));
+        QCOMPARE(result.value(QStringLiteral("firstInitialize")).toBool(), !windowsEnabled);
+        QCOMPARE(result.value(QStringLiteral("secondInitialize")).toBool(), !windowsEnabled);
+        if (!windowsEnabled)
+            QCOMPARE(result.value(QStringLiteral("engine")).toString(), QStringLiteral("motion"));
 #else
         Q_UNUSED(windowsEnabled);
         QVERIFY(!result.value(QStringLiteral("enabled")).toBool());
@@ -116,6 +122,25 @@ private slots:
         QVERIFY(!build.contains("flyhighfg.bin"));
     }
 
+    void unavailableBridgeCannotCreateOrPublishFrames()
+    {
+        FlyHighNetwork network;
+        QVERIFY(!network.initialize(nullptr));
+#if defined(Q_OS_WIN)
+        QVERIFY(network.error().contains(QStringLiteral("bridge is verified")));
+#else
+        QVERIFY(network.error().contains(QStringLiteral("Windows only")));
+#endif
+        QVERIFY(!network.pair(nullptr, nullptr, nullptr, 1));
+        QVERIFY(!network.frame(nullptr, 1));
+        QVERIFY(!network.output(1));
+        QCOMPARE(network.count(), 0);
+        QCOMPARE(network.networkSize(), QSize());
+        QCOMPARE(network.lastGpuMs(), 0.0);
+        network.release();
+        QVERIFY(!network.initialize(nullptr));
+    }
+
     void initializationFailureReleasesState()
     {
         QFile interpolator(QStringLiteral(OPENNOW_QT_SOURCE_DIR "/src/streaming/rendering/StreamFrameInterpolator.cpp"));
@@ -139,15 +164,22 @@ int main(int argc, char **argv)
         QJsonObject result{{QStringLiteral("enabled"), FlyHighNetwork::enabled()},
                            {QStringLiteral("weights"), FlyHighNetwork::weightsPath()}};
 #if defined(Q_OS_WIN)
-        if (FlyHighNetwork::enabled()) {
-            QRhiD3D11InitParams params;
-            std::unique_ptr<QRhi> rhi(QRhi::create(QRhi::D3D11, &params, QRhi::PreferSoftwareRenderer));
-            result.insert(QStringLiteral("rhiCreated"), bool(rhi));
-            if (rhi) {
-                StreamFrameInterpolator interpolator;
-                result.insert(QStringLiteral("firstInitialize"), interpolator.initialize(rhi.get()));
-                result.insert(QStringLiteral("secondInitialize"), interpolator.initialize(rhi.get()));
-            }
+        // Even direct self-test entry points must stop before loading a DLL or
+        // executing the quarantined render-thread synchronization prototype.
+        FlyHighNetwork direct;
+        result.insert(QStringLiteral("directInitialize"), direct.initialize(nullptr));
+        result.insert(QStringLiteral("directError"), direct.error());
+        QRhiD3D11InitParams params;
+        std::unique_ptr<QRhi> rhi(QRhi::create(QRhi::D3D11, &params, QRhi::PreferSoftwareRenderer));
+        result.insert(QStringLiteral("rhiCreated"), bool(rhi));
+        if (rhi) {
+            FlyHighNetwork directRhi;
+            result.insert(QStringLiteral("directRhiInitialize"), directRhi.initialize(rhi.get()));
+            result.insert(QStringLiteral("directRhiError"), directRhi.error());
+            StreamFrameInterpolator interpolator;
+            result.insert(QStringLiteral("firstInitialize"), interpolator.initialize(rhi.get()));
+            result.insert(QStringLiteral("secondInitialize"), interpolator.initialize(rhi.get()));
+            result.insert(QStringLiteral("engine"), interpolator.engine());
         }
 #endif
         QFile output;

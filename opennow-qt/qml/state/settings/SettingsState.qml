@@ -830,7 +830,7 @@ QtObject {
         }
     }
     function frameGenerationEngineNotice() {
-        return qsTr("Experimental. Windows frame generation requires a bundled FlyHigh engine and models. Run the capability test to check availability.")
+        return qsTr("Experimental motion interpolation can show artifacts. Run the capability test for your GPU, resolution, and frame rate. FlyHigh is currently unavailable.")
     }
     // Description of the mode control: what will run for the selected mode.
     function frameGenerationDescription() {
