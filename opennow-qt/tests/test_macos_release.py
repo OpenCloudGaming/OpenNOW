@@ -65,8 +65,11 @@ class MacOSReleaseTest(unittest.TestCase):
         elif args[:2] == ["cmake", "--install"]:
             app = Path(args[-1]) / "OpenNOW.app"
             (app / "Contents/MacOS").mkdir(parents=True)
-            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": RELEASE.BUNDLE_ID}))
-            for relative in ("MacOS/OpenNOW", "MacOS/opennow-core", "MacOS/opennow-update-helper",
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": RELEASE.BUNDLE_ID, "CFBundleExecutable": "OpenNOW",
+            }))
+            for relative in ("MacOS/OpenNOW", "MacOS/opennow-core", "MacOS/opennow-acceptance-verify",
+                             "MacOS/opennow-update-helper",
                              "MacOS/libopennow_streamer_ffi.dylib", "PlugIns/platforms/libqcocoa.dylib",
                              "Frameworks/libSDL3.0.dylib", "Frameworks/libavcodec.61.dylib",
                              "Frameworks/QtCore.framework/Versions/A/QtCore",
@@ -168,6 +171,16 @@ class MacOSReleaseTest(unittest.TestCase):
                          {"OpenNOW-Qt-1.2.3-Darwin-arm64.zip", "OpenNOW-Qt-1.2.3-Darwin-arm64.dmg"})
         self.assertFalse(list(self.root.glob("opennow-macos-signing-*")))
 
+    def test_main_executable_is_signed_only_through_the_final_bundle(self):
+        self.package()
+        signed = [Path(call[-1]) for call in self.calls if call[:2] == ["codesign", "--force"]]
+        app = next(path for path in signed if path.name == "OpenNOW.app")
+        self.assertNotIn(app / "Contents/MacOS/OpenNOW", signed)
+        for name in ("opennow-core", "opennow-acceptance-verify", "opennow-update-helper"):
+            self.assertLess(signed.index(app / "Contents/MacOS" / name), signed.index(app))
+        self.assertTrue(any(call[0] == "lipo" and call[1] == str(app / "Contents/MacOS/OpenNOW")
+                            for call in self.calls), "The bundle executable still requires architecture validation")
+
     def test_only_root_app_receives_exact_jit_and_microphone_entitlements(self):
         with RELEASE.ENTITLEMENTS.open("rb") as source:
             self.assertEqual(plistlib.load(source), self.entitlements)
@@ -267,6 +280,40 @@ class MacOSReleaseTest(unittest.TestCase):
                     self.package()
                 self.assertEqual(self.calls, [])
                 self.assertFalse(list(self.root.glob("opennow-macos-signing-*")))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "Requires Apple's real Mach-O signing tools")
+class MacOSUnsignedIntelBundleTest(unittest.TestCase):
+    def test_unsigned_intel_helpers_are_signed_before_their_containing_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "OpenNOW.app"
+            binaries = app / "Contents/MacOS"
+            binaries.mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": RELEASE.BUNDLE_ID,
+                "CFBundleExecutable": "OpenNOW",
+                "CFBundlePackageType": "APPL",
+                "CFBundleVersion": "1",
+            }))
+            source = root / "main.c"
+            source.write_text("int main(void) { return 0; }\n")
+            subprocess.run(["clang", "-arch", "x86_64", "-Wl,-no_adhoc_codesign",
+                            str(source), "-o", str(binaries / "OpenNOW")],
+                           check=True, capture_output=True, text=True, timeout=60)
+            for name in ("opennow-core", "opennow-acceptance-verify", "opennow-update-helper"):
+                shutil.copy2(binaries / "OpenNOW", binaries / name)
+            unsigned = subprocess.run(["codesign", "--verify", str(binaries / "OpenNOW")],
+                                      capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(unsigned.returncode, 0, "The fixture must start without a code signature")
+            self.assertIn("not signed", unsigned.stderr)
+            for target in RELEASE.verified_bundle_targets(app, "x86_64"):
+                signed = subprocess.run(["codesign", "--force", "--sign", "-", str(target)],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(signed.returncode, 0, signed.stdout + signed.stderr)
+            verified = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)],
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
 
 
 class MacOSSigningCommandTest(unittest.TestCase):
