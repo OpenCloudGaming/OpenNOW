@@ -68,7 +68,7 @@ fn store_definitions() -> Vec<(u16, Value)> {
         (200, json!({"data":{"subscriptionDefinitions":[]}})),
         (
             200,
-            json!({"data":{"userAccount":{"storesData":[{"store":"STEAM","isConnected":true,"status":"connected"}],"subscriptions":[]}}}),
+            json!({"data":{"userAccount":{"storesData":[{"store":"STEAM","accountLinkingData":null}],"subscriptions":[]}}}),
         ),
     ]
 }
@@ -429,7 +429,7 @@ fn store_launch_requires_a_linked_store_account_when_the_store_requires_it() {
             store_definitions()[2].clone(),
             (
                 200,
-                json!({"data":{"userAccount":{"storesData":[{"store":"STEAM","isConnected":false,"status":"disconnected"}],"subscriptions":[]}}}),
+                json!({"data":{"userAccount":{"storesData":[],"subscriptions":[]}}}),
             ),
             detail_game("platform-steam", "12345", "PLAYABLE"),
         ],

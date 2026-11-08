@@ -646,13 +646,16 @@ fn bind_callback() -> Result<(TcpListener, u16), ServiceError> {
 fn connection_from_store(definition: &Value, store: Option<&Value>, fetched_at: i64) -> Value {
     let linking = store.map(|value| &value["accountLinkingData"]);
     let sync = linking.map(|value| &value["accountSyncingData"]);
-    let connected = linking.is_some_and(|value| value.is_object());
+    // The matching LCARS store entry is the connection marker; its optional
+    // accountLinkingData can be null, as in the vendor's account connections.
+    let connected = store.is_some();
     let expires_in = linking
         .and_then(|value| value["expiresIn"].as_str())
         .and_then(|value| value.parse::<i64>().ok());
+    // The vendor uses zero and the negative sentinel for links without expiry.
     let expires_at = expires_in
-        .filter(|value| *value >= 0)
-        .map(|value| fetched_at + value * 1000);
+        .filter(|value| *value > 0)
+        .map(|value| fetched_at.saturating_add(value.saturating_mul(1000)));
     let sync_state = sync.and_then(|value| value["syncState"].as_str());
     let expired = connected
         && definition["supportsLinking"].as_bool() == Some(true)
@@ -724,9 +727,17 @@ fn normalize_provider(value: &str) -> String {
 
 fn observed_sync_phase(baseline: &Value, current: Option<&Value>) -> &'static str {
     let Some(current) = current else {
-        return "failed";
+        return if baseline["isConnected"] == true {
+            "failed"
+        } else {
+            "waiting_remote"
+        };
     };
-    if current["isConnected"] != true || current["status"] == "expired" {
+    // A first accepted sync can create the connection asynchronously. Only a
+    // connection lost since the baseline is evidence of disconnection.
+    if (baseline["isConnected"] == true && current["isConnected"] != true)
+        || current["status"] == "expired"
+    {
         return "failed";
     }
     let state = current["syncState"].as_str().unwrap_or("");
@@ -1102,6 +1113,47 @@ mod tests {
     }
 
     #[test]
+    fn store_membership_confirms_connection_without_optional_linking_metadata() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "STEAM")
+            .unwrap();
+        for store in [
+            json!({"store":"STEAM"}),
+            json!({"store":"STEAM","accountLinkingData":null}),
+            json!({"store":"STEAM","accountLinkingData":{}}),
+        ] {
+            let account = connection_from_store(&definition, Some(&store), 1_000);
+            assert_eq!(account["isConnected"], true);
+            assert_eq!(account["status"], "connected");
+            assert!(account["syncState"].is_null());
+        }
+        let missing = connection_from_store(&definition, None, 1_000);
+        assert_eq!(missing["isConnected"], false);
+        assert_eq!(missing["status"], "not_connected");
+    }
+
+    #[test]
+    fn zero_and_negative_link_expiry_do_not_expire_connected_stores() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "GOG")
+            .unwrap();
+        for expiry in ["0", "-1", "invalid"] {
+            let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":expiry}});
+            let account = connection_from_store(&definition, Some(&store), 1_000);
+            assert_eq!(account["status"], "connected");
+            assert!(account["expiresAt"].is_null());
+        }
+        let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":"60"}});
+        let account = connection_from_store(&definition, Some(&store), 1_000);
+        assert_eq!(account["expiresAt"], 61_000);
+        let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":i64::MAX.to_string()}});
+        let account = connection_from_store(&definition, Some(&store), 1_000);
+        assert_eq!(account["expiresAt"], i64::MAX);
+    }
+
+    #[test]
     fn sync_acceptance_requires_new_remote_success_then_library_acknowledgement() {
         let old = "2026-09-14T00:00:00Z";
         let fresh = "2026-09-14T01:00:00Z";
@@ -1202,6 +1254,30 @@ mod tests {
             "waiting_remote"
         );
         assert_eq!(observed_sync_phase(&baseline, None), "failed");
+    }
+
+    #[test]
+    fn accepted_first_sync_waits_for_connection_instead_of_failing_unchanged_absence() {
+        let baseline =
+            json!({"isConnected":false,"status":"not_connected","syncState":null,"syncDate":null});
+        assert_eq!(observed_sync_phase(&baseline, None), "waiting_remote");
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&baseline)),
+            "waiting_remote"
+        );
+        let connected =
+            json!({"isConnected":true,"status":"connected","syncState":null,"syncDate":null});
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&connected)),
+            "waiting_remote"
+        );
+        let success = json!({"isConnected":true,"status":"connected","syncState":"SYNC_SUCCESS","syncDate":"2026-11-08T12:00:00Z"});
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&success)),
+            "refreshing_library"
+        );
+        let denied = json!({"isConnected":true,"status":"sync_error","syncState":"SYNC_DENIED","syncDate":null});
+        assert_eq!(observed_sync_phase(&baseline, Some(&denied)), "failed");
     }
 
     #[test]
