@@ -1161,7 +1161,8 @@ mod tests {
             .find(|definition| definition["provider"] == "GOG")
             .unwrap();
         for remaining in [-2, -60, i64::MIN] {
-            let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":remaining.to_string()}});
+            let store =
+                json!({"store":"GOG","accountLinkingData":{"expiresIn":remaining.to_string()}});
             let account = connection_from_store(&definition, Some(&store), 100_000);
             assert_eq!(account["isConnected"], true);
             assert_eq!(account["status"], "expired", "{remaining}");
