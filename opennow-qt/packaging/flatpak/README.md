@@ -43,8 +43,9 @@ compilation. The Flatpak build has no network access and uses the generated sour
 `build/flatpak/cargo`. Do not commit that directory.
 
 The package downloads a checksum-pinned FFmpeg source archive before entering the build
-sandbox. x86_64 uses FFmpeg 9. ARM64 uses the same pinned Raspberry Pi FFmpeg fork as the
-native ARM64 packages, preserving V4L2 request decoding support. `OPENNOW_FFMPEG_ARCHIVE`
+sandbox. Both architectures use the FFmpeg 9.0 release tarball. On ARM64 the build applies
+the V4L2 request hwaccel patches from `native/opennow-streamer/vendor/ffmpeg-sys-next/patches`,
+the same ones the native ARM64 packages use. `OPENNOW_FFMPEG_ARCHIVE`
 tells the existing bundled-FFmpeg build to extract that archive into its private build
 directory instead of fetching Git sources. Decoder features and GPU presentation stay
 the same as the native package.

@@ -19,6 +19,27 @@ mapping, including native macOS keycode zero. Unknown Linux layouts and syntheti
 events without a native scan code retain logical-key fallback. Layout lookup occurs when the property
 changes; each gameplay event uses a bounded array lookup without allocation.
 
+Selecting a secondary keyboard on the host does not renegotiate the session's
+keyboard layout or select an input language in the remote Windows desktop.
+Choose French in OpenNOW's keyboard layout setting before starting or resuming
+a French AZERTY session. Local layout changes still affect Qt's logical keys,
+but gameplay input preserves native physical-key identity and releases the key
+saved on press. This path sends keys, not the host's composed text. Dead keys
+and AltGr combinations are composed by the remote layout; clipboard paste is a
+separate explicit text-input operation.
+
+On Windows, modifier sides also come from native scan codes. Qt 6.8.3's
+[`QWindowsKeyMapper`](https://code.qt.io/cgit/qt/qtbase.git/tree/src/plugins/platforms/windows/qwindowskeymapper.cpp?h=6.8.3)
+passes the generic `VK_SHIFT`, `VK_CONTROL`, and `VK_MENU` message values to key
+events. It prefixes extended scan codes with `0xe000`, so right Control is
+`0xe01d` and right Alt is `0xe038`. AltGr retains generic `VK_MENU` even when Qt
+labels the logical key `Key_AltGr`. Mapping generic modifiers to their left-side
+VKs without consulting the scan code loses right Alt and breaks that identity.
+Qt's Windows plugin leaves explicit AltGr detection disabled unless its `altgr`
+option is enabled. The stream item also recognizes Control+right Alt as AltGr,
+so accompanying keys cannot trigger local Control+Alt shortcuts. Left Alt and
+left Control combinations retain their local-shortcut behavior.
+
 The Rust core owns the keyboard choices and wire identifiers. Japanese uses
 `ja-106`, with `ja-JP` and `Japanese106` accepted as saved aliases; Spanish uses
 `es-ES_tradnl`, with `es-ES` accepted as a saved alias. Native table lookup resolves
@@ -39,6 +60,23 @@ events and let the remote Windows layout compose them. AltGr is sent as right
 Alt, with Control+Alt modifier bits on the accompanying keys. It must not match
 an unmodified local shortcut. Key-up uses the virtual key saved on key-down,
 even if the logical key or selected map changes before release.
+
+## German physical wire keys
+
+Linux German input uses the existing US physical-position mapper before the
+generated regional table, matching the Windows and macOS gameplay paths.
+The generated Windows VK table is not a native-stream wire table. Applying it
+to German input swaps Y and Z and sends the wrong OEM positions. For example,
+the physical ö key must send `0xba`, not the German Windows VK `0xc0`.
+The generated tables stay unchanged, and other Linux layouts retain their
+existing behavior.
+
+German Shift+2 sends `0x32` with Shift, and AltGr+Q sends `0x51` with Control+Alt.
+The remote session must use German to compose the intended characters. A
+`SESSION_NOT_PAUSED` resume response does not confirm a layout change. The core
+keeps the same session's last-known layout instead of replacing it with the
+current preference. End the existing session and launch a new German session
+if the remote layout has not changed.
 
 ## Swedish OEM wire keys
 
@@ -109,6 +147,9 @@ builds nor the application fetch these files.
 ```sh
 cmake --build build/opennow-qt --target opennow-streamvideo-tests
 QT_QPA_PLATFORM=offscreen build/opennow-qt/opennow-streamvideo-tests \
+  germanKeysUseNativePhysicalPositions \
+  windowsModifierScanCodesPreserveSides \
+  secondaryLayoutAltGrPreservesKeyLifetimes \
   swedishOemKeysMatchOfficialNativeInput \
   linuxRegionalKeysUsePhysicalPositions \
   linuxPhysicalKeysFollowTheRequestedKeyboardLayout \

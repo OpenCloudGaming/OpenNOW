@@ -56,8 +56,11 @@ FocusScope {
 
     Connections {
         target: root.Window.window
-        function onActiveFocusItemChanged() { Qt.callLater(root.revealFocusedControl) }
+        function onActiveFocusItemChanged() { focusRevealTimer.restart() }
     }
+    // Cancel a pending reveal when a desktop/onboarding surface switch destroys
+    // the sign-in page; the next live page owns its own focus and scroll state.
+    Timer { id: focusRevealTimer; interval: 0; onTriggered: root.revealFocusedControl() }
 
     component BodyText: Text {
         color: root.bodyInk

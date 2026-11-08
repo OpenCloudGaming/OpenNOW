@@ -10,6 +10,8 @@ fn accepted_frames_emit_webrtc_telemetry_with_optional_transport_stats() {
         telemetry.observe(&MediaFeedback::VideoFrameAccepted {
             frame_index: Some(index),
             timestamp: u64::from(index) * 1_500,
+            clock_rate_hz: 90_000,
+            accepted_at: Instant::now(),
             bytes: 100_000,
             keyframe: index == 0,
         });
@@ -180,6 +182,8 @@ fn accepted_compressed_frames_do_not_refresh_observable_decoded_health() {
             &MediaFeedback::VideoFrameAccepted {
                 frame_index: None,
                 timestamp: second * 90_000,
+                clock_rate_hz: 90_000,
+                accepted_at: Instant::now(),
                 bytes: 1000,
                 keyframe: second == 1,
             },
@@ -493,7 +497,7 @@ impl PeerFixture {
                             .uri()
                             .query()
                             .unwrap()
-                            .contains("version=2&peer_role=1&pairing_id=fixture-seat")
+                            .contains("version=3.0&peer_role=1&pairing_id=fixture-seat")
                     );
                     assert_eq!(request.headers()["Origin"], "https://play.geforcenow.com");
                     assert_eq!(
@@ -514,6 +518,11 @@ impl PeerFixture {
                 peer_info["peer_info"]["resolution"],
                 format!("{}x{}", profile.width, profile.height)
             );
+            assert_eq!(peer_info["peer_info"]["version"], 3);
+            assert_eq!(peer_info["peer_info"]["signalingVersion"], "3.0");
+            assert_eq!(peer_info["peer_info"]["peer_role"], 1);
+            assert_eq!(peer_info["peer_info"]["browserVersion"], "131.0.0.0");
+            assert!(peer_info["peer_info"].get("peerRole").is_none());
             websocket.get_mut().set_nonblocking(true).unwrap();
             websocket.set_config(|config| config.max_write_buffer_size = 1024 * 1024);
             fixture_write(
@@ -838,6 +847,8 @@ fn engine_webrtc_session_emits_frame_and_network_telemetry() {
                     .send(MediaFeedback::VideoFrameAccepted {
                         frame_index: frame.frame_index,
                         timestamp: frame.rtp_timestamp,
+                        clock_rate_hz: 90_000,
+                        accepted_at: Instant::now(),
                         bytes: frame.payload.len().try_into().unwrap(),
                         keyframe: frame.keyframe,
                     })

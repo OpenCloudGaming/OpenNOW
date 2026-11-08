@@ -66,6 +66,9 @@ class AppImageUpdatesTest(unittest.TestCase):
     def test_every_packaging_path_embeds_verifies_and_uploads_sidecars(self):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             workflow = (ROOT / ".github/workflows" / name).read_text()
+            if name == "qt-build.yml":
+                self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
             self.assertIn("LDAI_UPDATE_INFORMATION=$(python3 opennow-qt/packaging/appimage_updates.py information", workflow)
             self.assertIn("appimage_updates.py verify", workflow)
             self.assertIn("OpenNOW-Qt-*.AppImage.zsync", workflow)
@@ -80,6 +83,19 @@ class AppImageUpdatesTest(unittest.TestCase):
             self.assertIn("sign_nightly_release.py preflight", workflow)
         promotion = (ROOT / "opennow-qt/packaging/promote_candidate.py").read_text()
         self.assertIn('with_name("update-public-key.base64")', promotion)
+
+    def test_production_candidates_use_the_checksum_pinned_appimage_runtime(self):
+        candidate = (ROOT / ".github/workflows/qt-release-candidate.yml").read_text()
+        shared = (ROOT / ".github/actions/linux-package/action.yml").read_text()
+        runtime = shared.split("        APPIMAGE_RUNTIME_SHA256:", 1)[1].splitlines()[0]
+        for checksum in ("00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444",
+                         "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"):
+            self.assertIn(checksum, runtime)
+            self.assertIn(checksum, candidate)
+        self.assertIn("type2-runtime/releases/download/20251108/runtime-${LINUXDEPLOY_ARCH}", candidate)
+        self.assertIn('echo "$APPIMAGE_RUNTIME_SHA256  build/appimage-runtime-${LINUXDEPLOY_ARCH}" '
+                      '| sha256sum --check --strict', candidate)
+        self.assertIn('LDAI_RUNTIME_FILE="$PWD/build/appimage-runtime-${LINUXDEPLOY_ARCH}"', candidate)
 
 
 if __name__ == "__main__":

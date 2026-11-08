@@ -2,8 +2,9 @@ import QtQuick
 import QtMultimedia
 import OpenNOW
 
-MediaPlayer {
+QtObject {
     id: root
+    readonly property string sessionId: String(ShellStore.activeSession && ShellStore.activeSession.sessionId || "")
     readonly property var adState: ShellStore.activeSession ? (ShellStore.activeSession.adState || ({})) : ({})
     readonly property var ads: adState.sessionAds || adState.ads || []
     readonly property var ad: ads.length ? ads[0] : null
@@ -14,9 +15,20 @@ MediaPlayer {
             if (files[index].mediaFileUrl) return files[index].mediaFileUrl
         return ad.adUrl || ad.mediaUrl || ""
     }
+    readonly property string adIdentity: ad ? JSON.stringify([sessionId, String(ad.adId || "")]) : ""
+    property var videoOutput: null
+    property var player: null
+    readonly property int playbackState: player ? player.playbackState : MediaPlayer.StoppedState
+    readonly property real position: player ? player.position : 0
+    readonly property real duration: player ? player.duration : 0
     readonly property bool playing: playbackState === MediaPlayer.PlayingState
     property bool started: false
     property bool completed: false
+    property Timer admissionTimer: Timer {
+        interval: 1000
+        repeat: true
+        onTriggered: root.beginAd()
+    }
 
     function toggle() {
         if (root.playing) {
@@ -24,30 +36,79 @@ MediaPlayer {
             return
         }
         root.play()
-        if (root.started)
-            ShellStore.reportSessionAd("resume", root.ad, root.position, "")
     }
 
-    source: root.mediaUrl
-    audioOutput: AudioOutput { volume: 1 }
-    onPlaybackStateChanged: {
-        if (playbackState === MediaPlayer.PlayingState && root.ad && !root.started) {
-            root.started = true
-            ShellStore.reportSessionAd("start", root.ad, 0, "")
-        } else if (playbackState === MediaPlayer.PausedState && root.ad && root.started && !root.completed) {
-            ShellStore.reportSessionAd("pause", root.ad, position, "")
+    function play() { if (player && !completed) player.play() }
+    function pause() { if (player) player.pause() }
+
+    function replaceAd() {
+        admissionTimer.stop()
+        const previous = player
+        player = null
+        started = false
+        completed = false
+        if (previous) {
+            previous.stop()
+            previous.destroy()
+        }
+        beginAd()
+    }
+
+    function beginAd() {
+        if (!ad || !sessionId || player)
+            return
+        if (!ShellStore.prepareSessionAd(ad, sessionId)) {
+            admissionTimer.start()
+            return
+        }
+        admissionTimer.stop()
+        player = playerComponent.createObject(root, {
+            playbackAd: Object.assign({}, ad), playbackSessionId: sessionId,
+            playbackIdentity: adIdentity
+        })
+        if (player && mediaUrl) player.play()
+    }
+
+    property Component playerComponent: Component {
+        MediaPlayer {
+            id: backend
+            required property var playbackAd
+            required property string playbackSessionId
+            required property string playbackIdentity
+            source: ownsPlayback() ? root.mediaUrl : ""
+            videoOutput: root.videoOutput
+            audioOutput: AudioOutput { volume: 1 }
+
+            function ownsPlayback() {
+                return root.player === backend && root.adIdentity === playbackIdentity
+            }
+            function report(action, watched, reason) {
+                return ShellStore.reportSessionAd(action, playbackAd, watched, reason, playbackSessionId)
+            }
+            function acceptPlaybackState(state) {
+                if (!ownsPlayback() || root.completed) return
+                if (state === MediaPlayer.PlayingState) {
+                    if (!root.started)
+                        root.started = report("start", 0, "")
+                    else
+                        report("resume", position, "")
+                } else if (state === MediaPlayer.PausedState && root.started) {
+                    report("pause", position, "")
+                }
+            }
+            function acceptMediaStatus(status) {
+                if (!ownsPlayback() || root.completed) return
+                if (status === MediaPlayer.LoadedMedia)
+                    play()
+                else if (status === MediaPlayer.EndOfMedia)
+                    root.completed = report("finish", duration, "")
+                else if (status === MediaPlayer.InvalidMedia)
+                    root.completed = report("cancel", position, "error")
+            }
+            onPlaybackStateChanged: acceptPlaybackState(playbackState)
+            onMediaStatusChanged: acceptMediaStatus(mediaStatus)
         }
     }
-    onMediaStatusChanged: {
-        if (mediaStatus === MediaPlayer.LoadedMedia)
-            play()
-        else if (mediaStatus === MediaPlayer.EndOfMedia && root.ad && !root.completed) {
-            root.completed = true
-            ShellStore.reportSessionAd("finish", root.ad, duration, "")
-        } else if (mediaStatus === MediaPlayer.InvalidMedia && root.ad && !root.completed) {
-            root.completed = true
-            ShellStore.reportSessionAd("cancel", root.ad, position, "error")
-        }
-    }
-    Component.onCompleted: if (root.mediaUrl) root.play()
+    onAdIdentityChanged: replaceAd()
+    Component.onCompleted: if (!player) replaceAd()
 }

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use crate::{DecodedVideoFrame, EncodedVideoFrame, Result, StreamFormat, VideoCodec};
 
 #[cfg(feature = "ffmpeg")]
+mod cuda_probe;
+#[cfg(feature = "ffmpeg")]
 mod ffmpeg;
 mod mediacodec;
 mod v4l2;
@@ -38,15 +40,21 @@ pub fn vaapi_color_support(codec: VideoCodec) -> VaapiColorSupport {
 pub(crate) use ffmpeg::{FfmpegDecoder, FfmpegMode};
 pub(crate) use v4l2::probe_v4l2_devices;
 
-pub(crate) fn probe_v4l2_request() -> std::result::Result<String, String> {
+pub(crate) fn probe_v4l2_request(
+    codec: VideoCodec,
+) -> std::result::Result<(String, Option<[u32; 2]>), String> {
     #[cfg(feature = "ffmpeg")]
     {
-        let device = v4l2_request::probe()?;
-        let decoder = FfmpegDecoder::probe(VideoCodec::H265, FfmpegMode::V4l2Request)?;
-        Ok(format!("{device}; {decoder}"))
+        let device = v4l2_request::probe(codec, 1920, 1080)?;
+        let decoder = FfmpegDecoder::probe(codec, FfmpegMode::V4l2Request)?;
+        Ok((
+            format!("{}; {decoder}", device.detail),
+            device.max_dimensions,
+        ))
     }
     #[cfg(not(feature = "ffmpeg"))]
     {
+        let _ = codec;
         Err("crate was built without the ffmpeg feature".to_owned())
     }
 }
@@ -63,6 +71,9 @@ pub(crate) fn probe_ffmpeg_cuda(codec: VideoCodec) -> std::result::Result<String
 
 #[cfg(feature = "ffmpeg")]
 pub(crate) fn probe_ffmpeg_software(codec: VideoCodec) -> std::result::Result<String, String> {
+    if cfg!(feature = "hardware-only") {
+        return Err("hardware-only build forbids software video decoding".to_owned());
+    }
     FfmpegDecoder::probe(codec, FfmpegMode::Software)
 }
 
@@ -78,7 +89,12 @@ pub(crate) fn probe_ffmpeg_cuda(_: VideoCodec) -> std::result::Result<String, St
 
 #[cfg(not(feature = "ffmpeg"))]
 pub(crate) fn probe_ffmpeg_software(_: VideoCodec) -> std::result::Result<String, String> {
-    Err("crate was built without the ffmpeg feature".to_owned())
+    Err(if cfg!(feature = "hardware-only") {
+        "hardware-only build forbids software video decoding"
+    } else {
+        "crate was built without the ffmpeg feature"
+    }
+    .to_owned())
 }
 
 pub(crate) trait VideoDecoder {

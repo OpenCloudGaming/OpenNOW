@@ -1,0 +1,160 @@
+name: Linux ARM64 cross-build measurement
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      update_public_key:
+        type: string
+        default: ""
+      channel:
+        type: string
+        default: nightly
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile ARM64 on x64
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      SDL_VERSION: release-3.2.20
+      OPENNOW_BUILD_VERSION: ${{ inputs.version }}
+      OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare Ubuntu HTTPS mirrors
+        run: sudo python3 .github/scripts/prepare-ubuntu-apt-https.py
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Install x64 Qt host tools
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux
+          arch: linux_gcc_64
+          modules: qtshadertools
+          dir: ${{ runner.temp }}/qt-host
+          set-env: false
+          cache: true
+          cache-key-prefix: qt-host-linux-x64
+      - name: Install ARM64 Qt libraries
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux_arm64
+          arch: linux_gcc_arm64
+          modules: qtmultimedia qtshadertools qtwaylandcompositor
+          set-env: false
+          cache: true
+          cache-key-prefix: qt-target-linux-arm64
+      - name: Prepare isolated ARM64 SDK and native compiler wrappers
+        run: |
+          bash .github/scripts/prepare-linux-arm64-cross.sh
+          echo "QT_ROOT_DIR=$(dirname "$GITHUB_WORKSPACE")/Qt/6.8.3/gcc_arm64" >> "$GITHUB_ENV"
+      - name: Cache cross-build Rust artifacts
+        uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: qt-ci-linux-arm64-cross-${{ env.OPENNOW_ARM64_SDK_ID }}-${{ hashFiles('.github/scripts/prepare-linux-arm64-cross.sh', '.github/cmake/linux-arm64-cross.cmake') }}
+          workspaces: |
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
+      - name: Build and cache ARM64 SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: arm64
+          parallel: "8"
+          cmake-toolchain-file: ${{ github.workspace }}/.github/cmake/linux-arm64-cross.cmake
+          sdk-identity: ${{ env.OPENNOW_ARM64_SDK_ID }}
+      - name: Configure complete ARM64 release and test build
+        run: |
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/.github/cmake/linux-arm64-cross.cmake" \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR;$RUNNER_TEMP/SDL-install" \
+            -DQt6_DIR="$QT_ROOT_DIR/lib/cmake/Qt6" \
+            -DQT_HOST_PATH="$RUNNER_TEMP/qt-host/Qt/6.8.3/gcc_64" \
+            -DOPENNOW_RUST_TARGET=aarch64-unknown-linux-gnu \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY"
+      - name: Cross-compile release and all Qt tests
+        run: cmake --build build/opennow-qt-release --config Release --parallel 8
+      - name: Verify ARM binaries and pack native validation handoff
+        run: |
+          python3 .github/scripts/linux-arm64-handoff.py pack \
+            "$RUNNER_TEMP/linux-arm64-handoff.tar.gz" --version "$OPENNOW_BUILD_VERSION"
+          cp "$RUNNER_TEMP/opennow-arm64-sdk/packages.txt" "$RUNNER_TEMP/linux-arm64-sdk-packages.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-cross-handoff
+          path: |
+            ${{ runner.temp }}/linux-arm64-handoff.tar.gz
+            ${{ runner.temp }}/linux-arm64-sdk-packages.txt
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  validate:
+    name: Validate and package cross-build on ARM64
+    needs: compile
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
+    timeout-minutes: 90
+    env:
+      OPENNOW_BUILD_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify native validation architecture
+        run: test "$(uname -m)" = aarch64
+      - name: Install native ARM64 Qt runtime and package tools
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: linux_arm64
+          arch: linux_gcc_arm64
+          modules: qtmultimedia qtshadertools qtwaylandcompositor
+          cache: true
+          cache-key-prefix: qt-target-linux-arm64
+      - uses: ./.github/actions/linux-dependencies
+        with:
+          arch: aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64-cross-handoff
+          path: ${{ runner.temp }}/linux-arm64-handoff
+      - name: Verify and restore the ARM64 build without rebuilding
+        run: |
+          python3 .github/scripts/linux-arm64-handoff.py restore \
+            "$RUNNER_TEMP/linux-arm64-handoff/linux-arm64-handoff.tar.gz" \
+            --version "$OPENNOW_BUILD_VERSION"
+      - name: Test Qt shell natively on ARM64
+        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel 8 --no-tests=error -LE interactive-desktop
+      - name: Create Linux AppImage and bundled DEB and smoke-test
+        uses: ./.github/actions/linux-package
+        with:
+          arch: aarch64
+          channel: ${{ inputs.channel }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-cross-measurement-packages
+          path: |
+            build/qt-packages/*.AppImage
+            build/qt-packages/*.AppImage.zsync
+            build/qt-packages/*.deb
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

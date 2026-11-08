@@ -165,6 +165,8 @@ struct NativeStreamRuntime::CallbackState final
         bool event = false;
         bool cursor = false;
         quint64 rumbleEpoch = 0;
+        QByteArray cursorStartId;
+        bool diagnostic = false;
     };
 
     std::mutex mutex;
@@ -201,6 +203,11 @@ struct NativeStreamRuntime::Private {
     bool firstNotification = false;
     std::atomic<quint64> presentationGeneration{0};
     std::atomic_bool presentationAllowed{false};
+    std::atomic<quint64> screenshotRequest{0};
+    quint64 screenshotSerial = 0;
+    quint64 screenshotPending = 0;
+    quint64 screenshotGeneration = 0;
+    QTimer *screenshotTimeout = nullptr;
     QSize decodedDisplaySize;
     std::mutex displaySizeMutex;
     QSize pendingDisplaySize;
@@ -249,7 +256,9 @@ NativeStreamRuntime::NativeStreamRuntime(QObject *parent,
                               &opennow_streamer_replace_generic_hid_inventory,
                               &opennow_streamer_submit_generic_hid_report,
                               &opennow_streamer_take_generic_hid_output,
-                              &opennow_streamer_get_generic_hid_admissions}, parent, vulkanDevice, windowsAdapterLuid)
+                              &opennow_streamer_get_generic_hid_admissions,
+                              &opennow_streamer_get_presentation_config,
+                              &opennow_streamer_submit_presentation_sample}, parent, vulkanDevice, windowsAdapterLuid)
 {
 }
 
@@ -261,6 +270,12 @@ NativeStreamRuntime::NativeStreamRuntime(Api api, QObject *parent,
 {
     d->vulkanDevice = vulkanDevice;
     d->windowsAdapterLuid = windowsAdapterLuid;
+    d->screenshotTimeout = new QTimer(this);
+    d->screenshotTimeout->setSingleShot(true);
+    d->screenshotTimeout->setInterval(5000);
+    connect(d->screenshotTimeout, &QTimer::timeout, this, [this] {
+        completeScreenshot(d->screenshotPending, {});
+    });
     if (d->api.takeGenericHidOutput || d->api.getGenericHidAdmissions) {
         auto *timer = new QTimer(this);
         d->genericHidOutputTimer = timer;
@@ -453,6 +468,9 @@ void NativeStreamRuntime::invalidatePresentation()
 {
     d->presentationAllowed.store(false, std::memory_order_release);
     const auto generation = d->presentationGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    d->screenshotRequest.store(0);
+    d->screenshotTimeout->stop();
+    if (std::exchange(d->screenshotPending, 0)) emit screenshotReady({});
     {
         const std::lock_guard lock(d->displaySizeMutex);
         d->pendingDisplaySize = {};
@@ -469,6 +487,35 @@ void NativeStreamRuntime::invalidatePresentation()
     d->upstreamProgressSamples.publish(false, false, 0, 0);
     emit controllerRumbleStopped();
     emit frameAvailable(); // Repaint even when the dead transport sends no more frames.
+}
+
+bool NativeStreamRuntime::requestScreenshot()
+{
+    if (!presentationAllowed() || d->screenshotPending) return false;
+    const auto request = ++d->screenshotSerial;
+    d->screenshotPending = request;
+    d->screenshotGeneration = presentationGeneration();
+    d->screenshotRequest.store(request);
+    d->screenshotTimeout->start();
+    emit frameAvailable();
+    return true;
+}
+
+quint64 NativeStreamRuntime::takeScreenshotRequest()
+{
+    return d->screenshotRequest.exchange(0);
+}
+
+void NativeStreamRuntime::completeScreenshot(quint64 request, QImage image)
+{
+    QMetaObject::invokeMethod(this, [this, request, image = std::move(image)] {
+        if (!request || request != d->screenshotPending) return;
+        d->screenshotTimeout->stop();
+        d->screenshotRequest.store(0);
+        d->screenshotPending = 0;
+        emit screenshotReady(presentationAllowed()
+            && d->screenshotGeneration == presentationGeneration() ? image : QImage());
+    }, Qt::QueuedConnection);
 }
 
 void NativeStreamRuntime::logRenderDiagnostic(const QString &detail)
@@ -727,30 +774,55 @@ OpenNowStreamerStatus NativeStreamRuntime::setGraphicsContext(
     return status;
 }
 
-OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
-    const OpenNowStreamerRecordCommand &command,
-    OpenNowStreamerFrameInfo *info,
-    OpenNowStreamerRecordedFrame *recorded,
-    OpenNowStreamerFrame **frame)
+OpenNowStreamerPresentationConfig NativeStreamRuntime::presentationConfig() const
 {
-    if (!info || !recorded || !frame) return OPENNOW_STREAMER_NULL_POINTER;
+    OpenNowStreamerPresentationConfig config{};
+    config.version = OPENNOW_STREAMER_PRESENTATION_VERSION;
+    config.struct_size = sizeof(config);
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.getPresentationConfig
+            || d->api.getPresentationConfig(d->handle, &config) != OPENNOW_STREAMER_OK)
+        return {};
+    return config;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::submitPresentationSample(
+    const OpenNowStreamerPresentationSample &sample)
+{
+    const std::shared_lock lock(d->handleMutex);
+    return d->handle && d->api.submitPresentationSample
+        ? d->api.submitPresentationSample(d->handle, &sample) : OPENNOW_STREAMER_CLOSED;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::acquireFrame(
+    OpenNowStreamerFrameInfo *info, OpenNowStreamerFrame **frame)
+{
+    if (!info || !frame) return OPENNOW_STREAMER_NULL_POINTER;
     *info = {};
-    *recorded = {};
     *frame = nullptr;
     const std::shared_lock lock(d->handleMutex);
-    if (!d->handle || !d->api.acquireLatestFrame || !d->api.recordFrame
-        || !d->api.releaseFrame) {
-        return OPENNOW_STREAMER_CLOSED;
-    }
+    return d->handle && d->api.acquireLatestFrame
+        ? d->api.acquireLatestFrame(d->handle, frame, info) : OPENNOW_STREAMER_CLOSED;
+}
 
+OpenNowStreamerStatus NativeStreamRuntime::recordFrame(OpenNowStreamerFrame *frame,
+    const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+    OpenNowStreamerRecordedFrame *recorded)
+{
+    if (!frame || !info || !recorded) return OPENNOW_STREAMER_NULL_POINTER;
+    *recorded = {};
+    const std::shared_lock lock(d->handleMutex);
+    if (!d->handle || !d->api.recordFrame) return OPENNOW_STREAMER_CLOSED;
     const auto generation = presentationGeneration();
-    auto status = d->api.acquireLatestFrame(d->handle, frame, info);
-    if (status != OPENNOW_STREAMER_OK) return status;
-    if (!*frame) return OPENNOW_STREAMER_NULL_POINTER;
-    status = d->api.recordFrame(d->handle, *frame, &command, recorded);
-    if (status != OPENNOW_STREAMER_OK) {
-        d->api.releaseFrame(std::exchange(*frame, nullptr));
-    } else {
+    const auto status = d->api.recordFrame(d->handle, frame, &command, recorded);
+    if (status == OPENNOW_STREAMER_OK) {
+        if (info->presentation_time_ns != recorded->presentation_time_ns) {
+            const auto acquired = *info;
+            *info = {};
+            info->width = acquired.width;
+            info->height = acquired.height;
+            info->sequence = acquired.sequence;
+        }
         if (recorded->graphics_api != OPENNOW_STREAMER_GRAPHICS_API_METAL) {
             info->width = recorded->width;
             info->height = recorded->height;
@@ -762,6 +834,20 @@ OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
             publishDecodedDisplaySize(QSize(int(info->width), int(info->height)), generation);
         }
     }
+    return status;
+}
+
+OpenNowStreamerStatus NativeStreamRuntime::recordLatestFrame(
+    const OpenNowStreamerRecordCommand &command, OpenNowStreamerFrameInfo *info,
+    OpenNowStreamerRecordedFrame *recorded, OpenNowStreamerFrame **frame)
+{
+    if (!info || !recorded || !frame) return OPENNOW_STREAMER_NULL_POINTER;
+    *recorded = {};
+    const auto acquired = acquireFrame(info, frame);
+    if (acquired != OPENNOW_STREAMER_OK) return acquired;
+    const auto status = recordFrame(*frame, command, info, recorded);
+    if (status != OPENNOW_STREAMER_OK && *frame)
+        releaseFrame(std::exchange(*frame, nullptr));
     return status;
 }
 
@@ -962,11 +1048,14 @@ void NativeStreamRuntime::frameAvailableCallback(void *userData)
     enqueueFrameAvailable(static_cast<CallbackState *>(userData));
 }
 
-void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t length,
+void NativeStreamRuntime::cursorCallback(const std::uint8_t *startId, std::size_t startIdLength,
+                                         const std::uint8_t *bytes, std::size_t length,
                                          void *userData)
 {
     auto *state = static_cast<CallbackState *>(userData);
-    if (!state || (!bytes && length != 0)
+    if (!state || !startId || startIdLength == 0
+        || startIdLength > static_cast<std::size_t>(MaximumCallbackBytes)
+        || (!bytes && length != 0)
         || length > static_cast<std::size_t>(MaximumCallbackBytes)
         || length > static_cast<std::size_t>(std::numeric_limits<qsizetype>::max())) {
         return;
@@ -983,7 +1072,9 @@ void NativeStreamRuntime::cursorCallback(const std::uint8_t *bytes, std::size_t 
         }
         state->pending.enqueue(
             {QByteArray(reinterpret_cast<const char *>(bytes),
-                        static_cast<qsizetype>(length)), false, true});
+                        static_cast<qsizetype>(length)), false, true, 0,
+             QByteArray(reinterpret_cast<const char *>(startId),
+                        static_cast<qsizetype>(startIdLength))});
         if (!state->drainScheduled) {
             state->drainScheduled = true;
             shouldSchedule = true;
@@ -1002,26 +1093,54 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
     }
 
     const QByteArray payload(reinterpret_cast<const char *>(bytes), static_cast<qsizetype>(length));
-    bool cursorCapture = false;
-    if (event && payload.size() <= 1024 && payload.contains("\"cursor-capture\"")) {
-        const auto object = QJsonDocument::fromJson(payload).object();
-        cursorCapture = object.value(u"type"_s) == u"cursor-capture"_s
+    // Classify once, outside the queue mutex. Overload admission must not parse
+    // hundreds of retained payloads while producers wait for this lock.
+    const auto object = event ? QJsonDocument::fromJson(payload).object() : QJsonObject{};
+    const auto type = object.value(u"type"_s);
+    const auto status = object.value(u"status"_s);
+    const bool diagnostic = type == u"log"_s || type == u"telemetry"_s || type == u"stats"_s;
+    const bool firstFrame = type == u"status"_s && object.value(u"event"_s) == u"first-frame"_s
+        && status == u"streaming"_s;
+    const bool terminal = type == u"error"_s
+        || (type == u"status"_s && (status == u"stopped"_s || status == u"error"_s));
+    const bool cursorCapture = payload.size() <= 1024 && type == u"cursor-capture"_s
             && object.value(u"composited"_s).isBool()
             && object.value(u"startId"_s).isString();
-    }
     const auto sharedState = state->shared_from_this();
     bool shouldSchedule = false;
     {
         const std::lock_guard lock(state->mutex);
         if (!state->accepting) return;
+        bool replacedDiagnostic = false;
+        if (!cursorCapture && state->pending.size() >= MaximumPendingCallbacks) {
+            if (!event || firstFrame || terminal) {
+                // Startup replies authorize presentation, and first-frame is a
+                // one-shot UI transition. Terminal events must also survive a
+                // burst of stale lifecycle callbacks. Drop diagnostic samples
+                // while the GUI is busy. Keep retained callbacks
+                // in order and leave the terminal reserve and total bound intact.
+                const auto disposable = std::find_if(state->pending.begin(), state->pending.end(),
+                    [](const CallbackState::Message &message) {
+                        return message.diagnostic;
+                    });
+                if (disposable != state->pending.end()) {
+                    state->pending.erase(disposable);
+                    replacedDiagnostic = true;
+                    ++state->dropped;
+                    ++state->rumbleEpoch;
+                }
+            }
+        }
         if (cursorCapture) {
             state->cursorCapture = payload;
-        } else if (state->pending.size() >= MaximumPendingCallbacks) {
+        } else if (!replacedDiagnostic && state->pending.size() >= MaximumPendingCallbacks
+                   && (!event || state->pending.size() >= MaximumPendingCallbacks + TerminalCallbackReserve
+                       || !terminal)) {
             ++state->dropped;
             ++state->rumbleEpoch;
             return;
         } else {
-            state->pending.enqueue({payload, event, false, state->rumbleEpoch});
+            state->pending.enqueue({payload, event, false, state->rumbleEpoch, {}, diagnostic});
         }
         if (!state->drainScheduled) {
             state->drainScheduled = true;
@@ -1113,6 +1232,8 @@ void NativeStreamRuntime::drainCallbacks(const std::shared_ptr<CallbackState> &s
         if (!current()) return;
         const auto message = messages.dequeue();
         if (message.cursor) {
+            if (!d->streamSessionActive || d->cursorStartId.isEmpty()
+                || message.cursorStartId != d->cursorStartId.toUtf8()) continue;
             emit cursorUpdated(message.bytes);
             continue;
         }

@@ -111,6 +111,9 @@ class VaapiLauncherTest(unittest.TestCase):
         for name in ("qt-build.yml", "qt-release-candidate.yml"):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".github/workflows" / name).read_text()
+                if name == "qt-build.yml":
+                    self.assertIn("uses: ./.github/actions/linux-package", workflow)
+                    workflow += (ROOT / ".github/actions/linux-package/action.yml").read_text()
                 install = workflow.index("install -Dm644 opennow-qt/packaging/opennow-vaapi-hook.sh")
                 deploy = workflow.index("--plugin qt")
                 verify = workflow.index("--appdir build/AppDir", deploy)

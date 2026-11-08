@@ -24,8 +24,8 @@ hardware check, select V4L2 explicitly, HEVC, 8-bit 4:2:0, HDR off, and
 or frame-rate setting is not evidence that the board can decode and present it
 reliably.
 
-Qt still owns the only window and video surface. HEVC uses the Raspberry Pi
-FFmpeg hardware acceleration code to retain DRM DMA-BUF frames. The GPU converts
+Qt still owns the only window and video surface. HEVC uses FFmpeg's V4L2 Request
+hardware acceleration to retain DRM DMA-BUF frames. The GPU converts
 the Pi's SAND128 column layout into textures used by the existing embedded
 Vulkan renderer, without mapping video pixels into CPU memory. This is a GPU
 copy, not literal zero-copy presentation. The existing stateful H.264 path uses
@@ -68,9 +68,10 @@ not llvmpipe/lavapipe. Install `vulkan-tools` and `v4l-utils` if the diagnostic
 commands are missing. An advertised decoder or a working desktop alone does not
 prove that compressed video has been decoded successfully.
 
-Linux ARM64 bundled builds include a pinned Raspberry Pi FFmpeg source revision
-with V4L2 Request and SAND support; they do not depend on the system `ffmpeg`
-command to decode a live stream. Other platforms retain their existing bundled
+Linux ARM64 bundled builds use FFmpeg 9.0 with the V4L2 Request hwaccel patches
+in `native/opennow-streamer/vendor/ffmpeg-sys-next/patches/v4l2-request`, which
+include the Raspberry Pi SAND128 capture formats; they do not depend on the
+system `ffmpeg` command to decode a live stream. Other platforms retain their existing bundled
 FFmpeg source. Use the bundled build for this target; custom system-FFmpeg
 configurations are not covered by these Pi build checks, and a generic FFmpeg
 installation does not provide the required hardware accelerator.
@@ -84,15 +85,15 @@ older Raspberry Pi boards.
 ## Real-device acceptance
 
 For a local decoder-only check on the Pi, install an FFmpeg command-line build
-with `libx265` for generating the test input, then run:
+with `libx264` and `libx265` for generating the test input, then run:
 
 ```sh
 cargo test --manifest-path native/opennow-streamer/Cargo.toml \
   -p opennow-streamer-platform-linux --features ffmpeg-bundled \
-  raspberry_pi_hevc_request_drm_only -- --ignored --nocapture
+  v4l2_request_decode_is_drm_only -- --ignored --nocapture
 ```
 
-This opt-in test exercises the bundled HEVC request decoder and checks retained
+This opt-in test exercises each H.264 or HEVC request decoder the board exposes and checks retained
 DRM output, not Qt display, network streaming, or sustained performance. It must
 run on actual Pi hardware; skipping it is not a passing hardware test.
 

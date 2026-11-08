@@ -1,7 +1,6 @@
 # OpenNOW str0m patch
 
-This directory is the published `str0m` 0.23.0 crate with one upstream fix backported
-and an additive direct-API payload registration method.
+This directory is the published `str0m` 0.23.0 crate with one upstream fix backported.
 It replaces the crates.io package through `[patch.crates-io]` in
 `native/opennow-streamer/Cargo.toml`.
 
@@ -28,11 +27,6 @@ queue-index range. A late or retransmitted packet inserted in front of it shifts
 without invalidating that cache, so the repaired frame is emitted with the following frame's
 payload and timestamp and is reported as contiguous. No other upstream change is included.
 
-`src/change/direct.rs` adds `DirectApi::register_payload_type` using the existing
-codec configuration insertion path. OpenNOW reserves the RTC identity before SDP
-negotiation, then registers negotiated microphone Opus and RED payload types before
-starting DTLS. Unknown payload types retain their existing drop behavior.
-
 ## Verification
 
 - `late_packet_in_front_of_waiting_frame` fails on unpatched 0.23.0
@@ -41,12 +35,8 @@ starting DTLS. Unknown payload types retain their existing drop behavior.
   `repairable_delta_loss_waits_for_retransmission_and_stays_contiguous` holds back one
   original SRTP datagram, re-injects it, and requires all 20 frames with their sender
   timestamps and payloads.
-- `registered_microphone_payload_type_survives_direct_rtp_poll` checks dynamic
-  registration through a local ICE/DTLS exchange and verifies that an unregistered
-  payload type is still dropped.
 
 ## Removal
 
 Delete this directory and its `[patch.crates-io]` entry when the workspace moves to
-str0m 0.24.0 or later, which contains the cache fix, and an equivalent direct-API
-payload registration API is available. Keep the transport regression tests.
+str0m 0.24.0 or later, which contains this fix. Keep the transport regression test.

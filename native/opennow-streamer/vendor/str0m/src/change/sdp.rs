@@ -40,6 +40,20 @@ impl<'a> SdpApi<'a> {
         }
     }
 
+    fn new_mid(&self) -> Mid {
+        loop {
+            let mid = self.rtc.new_mid();
+            let pending = self.changes.iter().any(|change| match change {
+                Change::AddMedia(media) => media.mid == mid,
+                Change::AddApp(app) => *app == mid,
+                _ => false,
+            });
+            if !pending {
+                return mid;
+            }
+        }
+    }
+
     /// Accept an [`SdpOffer`] from the remote peer. If this call returns successfully, the
     /// changes will have been made to the session. The resulting [`SdpAnswer`] should be
     /// sent to the remote peer.
@@ -279,7 +293,7 @@ impl<'a> SdpApi<'a> {
         track_id: Option<String>,
         simulcast: Option<crate::media::Simulcast>,
     ) -> Mid {
-        let mid = self.rtc.new_mid();
+        let mid = self.new_mid();
 
         // https://www.rfc-editor.org/rfc/rfc8830
         // msid-id = 1*64token-char
@@ -443,7 +457,7 @@ impl<'a> SdpApi<'a> {
         let changes_contains_add_app = self.changes.contains_add_app();
 
         if !has_media && !changes_contains_add_app {
-            let mid = self.rtc.new_mid();
+            let mid = self.new_mid();
             self.changes.0.push(Change::AddApp(mid));
         }
 
@@ -1869,6 +1883,96 @@ mod test {
 
     fn get_setup_from_media_line(line: &MediaLine) -> Setup {
         line.setup().expect("Expected a=setup attribute in SDP")
+    }
+
+    #[test]
+    fn sdp_api_retries_pending_media_mid_for_channel() {
+        crate::init_crypto_default();
+
+        let now = Instant::now();
+        let mut offerer = Rtc::new(now);
+        let mut answerer = Rtc::new(now);
+        let mut change = offerer.sdp_api();
+
+        fastrand::seed(7);
+        let audio = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+        fastrand::seed(7);
+        change.add_channel("channel".into());
+
+        let (offer, pending) = change.apply().unwrap();
+        assert_eq!(offer.media_lines.len(), 2);
+        let app = offer.media_lines[1].mid();
+        let answer = answerer.sdp_api().accept_offer(offer).unwrap();
+        offerer.sdp_api().accept_answer(pending, answer).unwrap();
+
+        assert_ne!(audio, app);
+        assert_eq!(offerer.media(audio).unwrap().kind(), MediaKind::Audio);
+        assert_eq!(offerer.session.app().unwrap().0, app);
+    }
+
+    #[test]
+    fn sdp_api_retries_pending_mids_for_media() {
+        crate::init_crypto_default();
+
+        for channel_first in [false, true] {
+            let mut rtc = Rtc::new(Instant::now());
+            let mut change = rtc.sdp_api();
+
+            fastrand::seed(7);
+            let first = if channel_first {
+                change.add_channel("channel".into());
+                let Change::AddApp(mid) = change.changes[0] else {
+                    panic!("Expected application change");
+                };
+                mid
+            } else {
+                change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None)
+            };
+            fastrand::seed(7);
+            let second = change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+
+            assert_ne!(first, second, "channel_first={channel_first}");
+
+            fastrand::seed(7);
+            let third = change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+            assert_ne!(first, third, "channel_first={channel_first}");
+            assert_ne!(second, third, "channel_first={channel_first}");
+        }
+    }
+
+    #[test]
+    fn sdp_api_retries_session_mids() {
+        crate::init_crypto_default();
+
+        for channel_first in [false, true] {
+            let now = Instant::now();
+            let mut offerer = Rtc::new(now);
+            let mut answerer = Rtc::new(now);
+            let mut change = offerer.sdp_api();
+
+            fastrand::seed(7);
+            if channel_first {
+                change.add_channel("channel".into());
+            } else {
+                change.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+            }
+            let (offer, pending) = change.apply().unwrap();
+            let existing = offer.media_lines[0].mid();
+            let answer = answerer.sdp_api().accept_offer(offer).unwrap();
+            offerer.sdp_api().accept_answer(pending, answer).unwrap();
+
+            let mut change = offerer.sdp_api();
+            fastrand::seed(7);
+            let added = change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+            assert_ne!(existing, added, "channel_first={channel_first}");
+
+            let (offer, pending) = change.apply().unwrap();
+            assert_eq!(offer.media_lines.len(), 2);
+            assert_eq!(offer.media_lines[0].mid(), existing);
+            assert_eq!(offer.media_lines[1].mid(), added);
+            let answer = answerer.sdp_api().accept_offer(offer).unwrap();
+            offerer.sdp_api().accept_answer(pending, answer).unwrap();
+        }
     }
 
     /// RFC 8842 §5.2: an offer MUST use a=setup:actpass regardless of DTLS role.

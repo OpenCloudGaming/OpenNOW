@@ -57,7 +57,7 @@ an existing tag or asset. Remove abandoned drafts separately if needed.
 
 ## Download formats
 
-Each release contains eleven packages with distinct version/platform/architecture filenames:
+Each release contains twelve packages with distinct version/platform/architecture filenames:
 
 - `OpenNOW-Qt-<version>-Windows-x64.zip` and `...-Windows-arm64.zip` are unsigned portable builds.
   Extract the entire archive, then launch `bin/OpenNOW.exe`. Windows may display SmartScreen or
@@ -65,9 +65,9 @@ Each release contains eleven packages with distinct version/platform/architectur
 - `OpenNOW-Qt-<version>-Windows-x64-setup.exe` and `...-Windows-arm64-setup.exe` install that
   same portable layout into `%LOCALAPPDATA%\OpenNOW`. They do not register a Windows Installer
   product.
-- `OpenNOW-Qt-<version>-Windows-x64.msi` and `...-Windows-arm64.msi` install **OpenNOW Nightly**
-  into a separate **OpenNOW Nightly** directory. They do not replace a stable OpenNOW installation.
-  Newer runs and retries upgrade the nightly installation; older nightlies are rejected.
+- Windows `.msi` installers are no longer published. An existing MSI installation cannot update
+  itself. Run setup.exe once: it finds the registered OpenNOW MSI product and offers to uninstall
+  it before installing into `%LOCALAPPDATA%\OpenNOW`. Settings in `%APPDATA%\OpenNOW` are kept.
 - `OpenNOW-Qt-<version>-Linux-x64.AppImage` and `...-Linux-arm64.AppImage` are the recommended
   portable Linux downloads. Make the downloaded file executable before starting it.
 - `OpenNOW-Qt-<version>-Linux-x64.deb` and `...-Linux-arm64.deb` bundle the AppImage's deployed
@@ -78,15 +78,16 @@ Each release contains eleven packages with distinct version/platform/architectur
   The internal Debian version uses `1.0.0~nightly.<run>.<attempt>` so a later stable `1.0.0`
   correctly supersedes it.
 - `OpenNOW-Qt-<version>-Darwin-arm64.dmg` contains the Apple Silicon application for macOS 13+.
-  Open the disk image and drag OpenNOW into Applications. There is no Intel or universal download.
+  Intel Macs use `OpenNOW-Qt-<version>-Darwin-x64.dmg`. These are separate native packages, not universal binaries.
+  Open the disk image and drag OpenNOW into Applications.
   Gatekeeper can block this non-notarized application. After checking the release and download,
   use the explicit **Open Anyway** confirmation in **System Settings → Privacy & Security** if
   macOS offers it. Do not disable Gatekeeper globally. CI also retains a separate macOS ZIP for
   validation; that ZIP is not a public release asset.
 
-The public signed set contains 28 files: eleven packages, two `.AppImage.zsync` sidecars,
-thirteen `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
-Its checksums cover all 27 other files. The no-key
+The public signed set contains 30 files: twelve packages, two `.AppImage.zsync` sidecars,
+fourteen `<asset>.manifest.json` siblings, `RELEASE-INFO.json`, and `SHA256SUMS`.
+Its checksums cover all 29 other files. The no-key
 artifact-only inventory has no manifests; its checksums cover the packages and release metadata.
 Checksums detect corruption; they do not replace a publisher signature. The inventory rejects
 missing platforms, duplicate basenames, wrong versions, empty files, and unexpected assets
@@ -101,18 +102,9 @@ to repeat these checks locally with Docker. Direct developer CPack builds withou
 `LinuxBundledDeb.cmake` project configuration still require distribution Qt 6.8+ and SDL3.
 macOS checks mount the actual DMG, copy the app out, detach the image, and smoke both that app
 and the validation ZIP with development Qt, SDL3, and build directories hidden. Windows checks
-extract MSI and ZIP payloads and compare every binary in the
+extract the ZIP payload and compare every binary in the
 [Windows release list](../opennow-qt/packaging/windows-release-binaries.txt) against the deployment
-copies, including the update helper. Native Windows x64 installer fixtures exercise run upgrades,
-retry upgrades, downgrade rejection, and stable/nightly isolation. Windows ARM64 still requires
-runtime testing on hardware.
-
-The MSI version is independent of the full application SemVer. For nightly run `R` and attempt
-`A`, Windows Installer receives `floor(R / 256).(R % 256).A`. Both values must be in `1..65535`;
-configuration fails instead of wrapping or truncating an exhausted counter. Retries order within
-a run, and every new run orders after every attempt of the preceding run. A changed workflow that
-resets its run numbers needs an explicit installer migration. Stable packages keep their existing
-upgrade family and numeric version; supporter packages use a third family and directory.
+copies, including the update helper. Windows ARM64 still requires runtime testing on hardware.
 
 ## Updates and signed candidates
 
@@ -155,8 +147,7 @@ See the [signing setup and bootstrap instructions](update-signing-setup.md) befo
 public update-enabled release.
 
 The updater compares complete semantic versions, so nightly runs order numerically and stable
-`1.0.0` sorts after its nightlies. A stable MSI installs separately from the nightly MSI family
-rather than replacing it. Portable Windows replacement requires persistent ACL support;
+`1.0.0` sorts after its nightlies. Portable Windows replacement requires persistent ACL support;
 FAT/exFAT installations are refused before shutdown and require manual updating.
 macOS nightly ad-hoc signatures also differ from stable Developer ID signatures. Install
 the selected channel manually once when switching between these signing identities;
@@ -164,7 +155,7 @@ automatic updates must not bypass the helper's identity checks.
 
 Authenticode and Apple Developer ID signatures authenticate platform applications. Ed25519
 manifests authenticate the exact updater payload bytes; they do not remove SmartScreen or
-Gatekeeper warnings. Apple Silicon ad-hoc executable signatures are not Developer ID signatures
+Gatekeeper warnings. macOS ad-hoc executable signatures are not Developer ID signatures
 or notarization. Keep the Ed25519 private key on the isolated signer, never on platform build workers.
 
 The separate [`qt-release-candidate`](qt-release-candidate.md) workflow remains a signed,

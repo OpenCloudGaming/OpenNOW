@@ -732,9 +732,14 @@ FocusScope {
             spacing: 16
             Repeater {
                 id: shelfRepeater
-                model: root.shelfModels
+                // Replacing a JS-array model recreates every row, including its
+                // cards and in-flight request. Keep rows alive while their data
+                // updates; category changes still invalidate the shelf owner.
+                model: root.shelfModels.length
                 delegate: DesktopStoreShelf {
-                    required property var modelData
+                    required property int index
+                    readonly property var modelData: root.shelfModels[index]
+                        || ({zone:"",title:"",games:[],panel:false,seeAll:false})
                     objectName: "storeShelf-" + modelData.zone
                     width: shelvesColumn.width
                     title: modelData.title

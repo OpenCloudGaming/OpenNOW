@@ -101,6 +101,22 @@ FocusScope {
         streamVideo.resynchronizeInput()
     }
 
+    // Window/fullscreen transitions can outlive this surface. Owner-scoped
+    // timers coalesce work and are destroyed with it, preserving the current
+    // geometry and focus guards without invoking deleted QML wrappers.
+    Timer {
+        id: inputResyncTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.resynchronizeStreamInput()
+    }
+    Timer {
+        id: focusRestoreTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.restoreStreamFocus()
+    }
+
     onXChanged: publishCaptureRect()
     onYChanged: publishCaptureRect()
     onWidthChanged: publishCaptureRect()
@@ -111,10 +127,10 @@ FocusScope {
         target: root.Window.window
         function onXChanged() { root.resynchronizeStreamInput() }
         function onYChanged() { root.resynchronizeStreamInput() }
-        function onWidthChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onHeightChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onVisibilityChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onWidthChanged() { inputResyncTimer.restart() }
+        function onHeightChanged() { inputResyncTimer.restart() }
+        function onVisibilityChanged() { inputResyncTimer.restart() }
+        function onActiveChanged() { inputResyncTimer.restart() }
     }
 
     StreamVideoItem {
@@ -128,9 +144,16 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
+        macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false
+        onMacPointerLockEnabledChanged: {
+            if (Qt.platform.os === "osx" && macPointerLockEnabled !== (ShellStore.settings.macPointerLockEnabled !== false))
+                ShellStore.setSetting("macPointerLockEnabled", macPointerLockEnabled)
+        }
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
-        frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
+        frameGenerationFactor: ShellStore.frameGenerationFactor()
+        generatedFramesOnly: ShellStore.generatedFramesOnly
+        displayRefreshOverrideHz: Number(ShellStore.settings.frameGenerationDisplayHz || 0)
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
         fsrUpscaling: Qt.platform.os !== "osx" && ShellStore.settings.upscaling === "fsr1"
         upscalingSharpness: Number(ShellStore.settings.upscalingSharpness ?? 10)
@@ -166,6 +189,21 @@ FocusScope {
         z: 3
     }
 
+    StreamPointerLockHint {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        sessionId: root.sessionId
+        streaming: root.streaming
+        active: Qt.platform.os === "osx" && root.streaming && streamVideo.inputEnabled
+            && !root.launchCovered && !clipboardPasteNotice.running
+        pointerLockEnabled: streamVideo.macPointerLockEnabled
+        onEnableRequested: {
+            streamVideo.togglePointerLock()
+            inputResyncTimer.restart()
+        }
+        z: 3
+    }
+
     StreamCaptureStatus {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
@@ -175,7 +213,8 @@ FocusScope {
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {
-            streamVideo.togglePointerLock()
+            if (root.visible && root.streaming)
+                streamVideo.togglePointerLock()
         }
         function onTextInputErrorAnnounced(message) {
             root.clipboardPasteMessage = message
@@ -193,9 +232,9 @@ FocusScope {
     onVisibleChanged: {
         publishCaptureRect()
         if (visible)
-            Qt.callLater(root.restoreStreamFocus)
+            focusRestoreTimer.restart()
     }
-    onLaunchCoveredChanged: if (!launchCovered) Qt.callLater(root.resynchronizeStreamInput)
+    onLaunchCoveredChanged: if (!launchCovered) inputResyncTimer.restart()
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)

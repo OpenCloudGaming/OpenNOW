@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor as IoCursor;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -143,6 +145,8 @@ pub(crate) struct OutputBuffers {
     #[cfg(target_os = "linux")]
     linux_video: Mutex<VecDeque<QueuedLinuxVideoFrame>>,
     audio: Mutex<AudioPlayoutBuffer>,
+    #[cfg(test)]
+    pub(crate) audio_push_barrier: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
     pub(crate) audio_muted: Arc<AtomicBool>,
     captured_input: Arc<CapturedInputQueue>,
     microphone: Mutex<Option<std::sync::Weak<crate::microphone::MicrophoneShared>>>,
@@ -247,6 +251,8 @@ impl OutputBuffers {
             audio: Mutex::new(AudioPlayoutBuffer::new(
                 AUDIO_SAMPLE_RATE as usize * AUDIO_CHANNELS as usize * MAX_AUDIO_LATENCY_MS / 1_000,
             )),
+            #[cfg(test)]
+            audio_push_barrier: Mutex::new(None),
             audio_muted: Arc::new(AtomicBool::new(false)),
             captured_input,
             microphone: Mutex::new(None),
@@ -369,6 +375,18 @@ impl OutputBuffers {
     }
 
     pub(crate) fn push_audio(&self, samples: &[f32]) -> usize {
+        #[cfg(test)]
+        {
+            let barrier = self
+                .audio_push_barrier
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some((arrived, release)) = barrier {
+                arrived.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
         self.audio
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1553,6 +1571,9 @@ impl SoftwareOutput {
         stream: MediaStreamConfig,
         audio_device: &AudioOutputDevice,
     ) -> Result<Self, String> {
+        if crate::HARDWARE_ONLY {
+            return Err(crate::HARDWARE_ONLY_ERROR.to_owned());
+        }
         #[cfg(target_os = "linux")]
         configure_linux_sdl_video_driver();
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
@@ -3125,6 +3146,17 @@ fn aspect_fit(source_width: u32, source_height: u32, width: u32, height: u32) ->
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", feature = "hardware-only"))]
+    #[test]
+    fn hardware_only_rejects_sdl_fallback_before_initialization() {
+        let result = super::SoftwareOutput::initialize(
+            std::sync::Arc::new(super::OutputBuffers::new()),
+            crate::MediaStreamConfig::default(),
+            &opennow_streamer_protocol::AudioOutputDevice::default(),
+        );
+        assert!(result.err().unwrap().contains("hardware-only"));
+    }
+
     use super::*;
 
     #[test]
@@ -3231,6 +3263,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             linux_video: Mutex::new(VecDeque::with_capacity(LINUX_VIDEO_QUEUE_CAPACITY)),
             audio: Mutex::new(AudioPlayoutBuffer::new(4)),
+            audio_push_barrier: Mutex::new(None),
             audio_muted: Arc::new(AtomicBool::new(false)),
             captured_input: Arc::new(CapturedInputQueue::default()),
             microphone: Mutex::new(None),

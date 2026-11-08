@@ -9,42 +9,42 @@ A word on versioning: major and minor versions track major and minor versions of
 
 ## OpenNOW bundled source selection
 
-With the `build` feature, Linux `aarch64` targets fetch
-[`jc-kynesim/rpi-ffmpeg`](https://github.com/jc-kynesim/rpi-ffmpeg) at commit
-`f43bd9dafd9349b6824ee1fdcd967662fcc94c20`, originally resolved from
-`test/9.0/main`. The branch is provenance only: builds fetch and check out the
-commit directly, without updating the branch. Both the source directory and
-installed-library directory include the commit, so changing the pin invalidates
-the bundled cache. Other targets retain the upstream FFmpeg `release/9.0` path.
-System FFmpeg builds are unchanged.
+With the `build` feature, Linux `aarch64` targets build the FFmpeg `n9.0`
+release (or the `OPENNOW_FFMPEG_ARCHIVE` tarball) and apply every
+`patches/v4l2-request/*.patch` in name order with `patch -p1 --fuzz=0`:
 
-For this bundled target, the build script emits `rpi=true` dependency metadata.
-The upstream `ffmpeg-next` build script consumes it to enable its existing
-Raspberry Pi pixel-format variants, preserving the fork's enum values without
-patching the wrapper or changing system FFmpeg bindings.
+- `0001-v4l2-request.patch`: the V4L2 Request API hwaccels for MPEG-2, H.264,
+  HEVC, VP8, VP9 and AV1 (FFmpeg pull request 20847), as carried by LibreELEC
+  and rebased without fuzz onto the 9.0 tarball.
+- `0002-hevc-ext-sps-rps.patch`: the extended SPS RPS controls that Rockchip
+  VDPU381/VDPU383 HEVC decoders require, used only when the driver exposes them.
+- `0003-opennow-uapi-compat.patch`: definitions for the Linux 7.0 HEVC controls
+  and the Raspberry Pi COL128 capture formats, which SDK and distribution UAPI
+  headers lack.
+- `0004-opennow-sand-capture-padding.patch`: reserves 4096 extra bytes per
+  8-bit SAND capture memory plane for Vulkan import alignment and GPU read-ahead.
+  Negotiated sizes, pitches, and DRM descriptor extents remain unchanged, as do
+  OUTPUT allocations, other capture formats, and 10-bit SAND. Overflow is rejected.
 
-The pinned fork provides `--enable-v4l2-request` and `--enable-sand` for Raspberry
-Pi HEVC request decoding. This target also explicitly enables `libdrm` and
-`libudev`; their development headers, libraries, and pkg-config metadata must be
-available for the target architecture. Linux UAPI headers come from the target
-toolchain, while the fork retains its HEVC request compatibility headers. Cross
-builds must use target pkg-config metadata, not host libraries. OpenNOW's
-`build-portable` feature remains enabled and no Raspberry Pi-specific CPU tuning
-is introduced.
+The source and install directories include a hash of the patch contents, so
+editing a patch invalidates the bundled cache. Other targets retain the upstream
+FFmpeg `release/9.0` path. System FFmpeg builds are unchanged.
 
-`--enable-v4l2-m2m` is also required: this fork builds the shared V4L2 pixel-format
-helper used by the request decoder under its M2M configuration. Enabling that
-build dependency does not select an M2M decoder at runtime. The build rejects
-configurations missing request decoding, this helper dependency, or SAND.
+This target configures `--enable-libdrm --enable-libudev --enable-v4l2-request`;
+their development headers, libraries, and pkg-config metadata must be available
+for the target architecture, and `patch` must be on `PATH`. Linux UAPI headers
+come from the target toolchain and must declare the stateless H.264, HEVC and AV1
+controls (Linux 6.5 or newer). The build rejects configurations missing the
+request hwaccel for any of those codecs. Cross builds must use target pkg-config
+metadata, not host libraries. OpenNOW's `build-portable` feature remains enabled
+and no SoC-specific CPU tuning is introduced.
 
-The checkout preserves the fork's original copyright headers, `LICENSE.md`, and
-`COPYING.*` files. Its default combined license is LGPL-2.1-or-later, not the
-binding crate's WTFPL. These changes do not enable FFmpeg's GPL, version3, or
-nonfree build options. See the pinned
-[license description](https://github.com/jc-kynesim/rpi-ffmpeg/blob/f43bd9dafd9349b6824ee1fdcd967662fcc94c20/LICENSE.md)
-and [LGPL text](https://github.com/jc-kynesim/rpi-ffmpeg/blob/f43bd9dafd9349b6824ee1fdcd967662fcc94c20/COPYING.LGPLv2.1).
-Distributors must retain the applicable FFmpeg notices and satisfy its source
-and relinking requirements for the statically linked libraries.
+The patches carry FFmpeg's LGPL-2.1-or-later license headers, not the binding
+crate's WTFPL. These changes do not enable FFmpeg's GPL, version3, or nonfree
+build options. Distributors must retain the applicable FFmpeg notices and satisfy
+its source and relinking requirements for the statically linked libraries.
+
+
 
 ## Feature flags
 

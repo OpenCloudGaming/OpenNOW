@@ -167,7 +167,7 @@ stream without creating another application window or presenter process.
 ### 8. Packaging and migration
 
 - [ ] Windows x64 and ARM64 signed installers and portable packages. Unsigned x64 and cross-compiled ARM64 Qt ZIP validation jobs are implemented; certificate-backed installer signing remains a release gate.
-- [ ] macOS Intel and Apple Silicon signed/notarized DMG and ZIP packages. Separate Apple-Silicon-native ARM64 and Rosetta-validated Intel Qt package jobs are implemented; Developer ID signing and notarization remain release gates.
+- [ ] macOS Intel and Apple Silicon signed/notarized DMG and ZIP packages. Separate native ARM64 and Intel x64 Qt package jobs are implemented; executing Developer ID signing and notarization remains a release gate. Intel ZIPs remain candidate-only; stable Intel releases publish the DMG.
 - [ ] Linux x64/ARM64 AppImage release jobs. Native x64 and ARM64 Qt AppImage/DEB artifact jobs use architecture-matched Qt/SDL/Rust toolchains and checksum-pinned linuxdeploy binaries; the ARM64 job still needs to pass on the release runner before this gate is closed.
 - [x] Add a reviewer-protected Qt production-candidate workflow that propagates one release version,
   Authenticode-signs Windows binaries/installers, Developer-ID signs and notarizes macOS apps and

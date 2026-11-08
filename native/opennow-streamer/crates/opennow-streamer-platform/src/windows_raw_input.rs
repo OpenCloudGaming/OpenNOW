@@ -21,11 +21,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
     RI_MOUSE_BUTTON_5_UP, RI_MOUSE_HWHEEL, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP,
     RI_MOUSE_MIDDLE_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN,
-    RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, RegisterClassW, SetWindowLongPtrW, TranslateMessage,
-    WM_APP, WM_CLOSE, WM_INPUT, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
+    RI_MOUSE_RIGHT_BUTTON_UP, RI_MOUSE_WHEEL, RegisterClassW, SPI_GETMOUSE, SPI_GETMOUSESPEED,
+    SetWindowLongPtrW, SystemParametersInfoW, TranslateMessage, WM_APP, WM_CLOSE, WM_INPUT,
+    WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
 };
 
-use crate::media::{CapturedInput, CapturedInputQueue};
+use crate::media::{CapturedInput, CapturedInputQueue, MouseSettings};
 
 const RAW_INPUT_CLASS: &[u16] = &[
     b'O' as u16,
@@ -231,6 +232,23 @@ unsafe extern "system" fn raw_input_window_proc(
             0
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+pub(crate) fn local_mouse_settings() -> MouseSettings {
+    let mut mouse = [0_i32; 3];
+    let mut speed = 0_u32;
+    let read = unsafe {
+        SystemParametersInfoW(SPI_GETMOUSE, 0, mouse.as_mut_ptr().cast::<c_void>(), 0) != 0
+            && SystemParametersInfoW(SPI_GETMOUSESPEED, 0, (&raw mut speed).cast::<c_void>(), 0)
+                != 0
+    };
+    if !read {
+        return MouseSettings::UNACCELERATED;
+    }
+    MouseSettings {
+        acceleration: mouse[2] != 0,
+        speed,
     }
 }
 

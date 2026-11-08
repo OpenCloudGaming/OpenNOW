@@ -67,14 +67,14 @@ The Windows session's actual stereo encoder/capture conflicts with its merged
 `mic.numChannels:1` config; this is not enough evidence for a universal stereo
 policy, so OpenNOW keeps mono.
 
-The transport reads optional `microphoneOpusPayloadType`,
-`microphoneRedPayloadType`, and `microphoneRedundancyLevel` handoff fields. Missing
-fields preserve plain Opus PT 111. A supplied RED PT and level enable RFC 2198
-encoding with up to three previous frames. Headers use the negotiated Opus PT,
-14-bit timestamp offsets, and 10-bit redundant lengths. Oversized historical
-blocks and packets beyond the payload budget reduce redundancy, not primary
-audio. Explicit toggles clear redundancy history. The reserved RTC registers
-negotiated PTs before DTLS starts instead of dropping unknown PTs at RTP poll.
+The uplink sends plain Opus on the bundle's fixed RTC payload type 111 and SSRC 1.
+It does not take payload types from the DESCRIBE `m=mic` section: those describe
+the legacy RTSP media plane, while Bifrost's RTC SDP hardcodes `a=rtpmap:111` and
+`a=rtpmap:63 red/48000/2`, and downlink audio already arrives on that fixed
+mapping. Upstream RFC 2198 RED is not sent. Windows logs show the official client
+enabling mic RED level 3, but no live OpenNOW session has shown the seat decoding
+OpenNOW's RED, and plain PT 111 is the format verified live by #1014 and
+OpenNOW-Mac. Re-enable RED only after a live seat confirms it.
 
 PCM, encoded, and transport queues each hold at most five frames with a 100 ms
 age limit. Mute closes capture and clears pending audio. The original RTP clock
@@ -86,6 +86,20 @@ encoded packets, and in-flight encoder generations before using the replacement.
 Recovery failure disables only the microphone. No device opens while capture is
 disabled. This is bounded local recovery, not a claim that GFN uses these retry
 timings or that every default-device/format-change notification is handled.
+
+The native diagnostic log records the SDL audio driver and negotiated capture
+format when opening the system default input. Every five seconds, and when the
+uplink worker stops, it reports cumulative captured, encoded and transport-queued
+frame counts, the number of processed input frames containing a nonzero sample,
+and the largest absolute signed-16-bit sample since the preceding report
+(`peak_pcm`, 0–32768). Level calculation runs on the encoder worker, not the
+capture callback. No audio samples, Opus payloads or device names are logged.
+Periodic diagnostics use the bounded asynchronous logger so slow storage cannot
+stall microphone upload.
+Nonzero samples can be noise; these counters do not establish speech detection,
+successful network delivery or remote game reception. Continued capture with
+`signal_pcm` unchanged and `peak_pcm=0` localizes digital silence to the local
+input; a growing `queued_transport` count only confirms local transport admission.
 
 Startup-muted negotiation and the controller/UI capability gates belong to the
 session-negotiation change, not this audio-buffer/packetizer change. No runtime
@@ -107,7 +121,7 @@ partially validated processing stage is enabled by this change.
 
 - Network reordering: `opennow-streamer-transport/src/nvst_audio_jitter.rs`.
 - NVST audio receive/RED recovery: `opennow-streamer-transport/src/nvst.rs`.
-- Microphone queue/RED encoding: `opennow-streamer-transport/src/nvst_microphone.rs`.
+- Microphone queue: `opennow-streamer-transport/src/nvst_microphone.rs`.
 - Capture, encoder, and device recovery: `opennow-streamer-platform/src/microphone.rs`.
 - Decode/PLC: `opennow-streamer-platform/src/media.rs` and platform audio owners.
 - PCM backlog handling: `opennow-streamer-platform/src/audio_playout.rs`.

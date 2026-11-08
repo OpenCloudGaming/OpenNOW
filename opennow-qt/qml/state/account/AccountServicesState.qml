@@ -6,6 +6,7 @@ QtObject {
     required property var appController
     required property bool ready
     required property bool signedIn
+    required property var authScope
     required property var refreshCatalogAfterAccountChange
     required property var refreshAccountServices
     signal accessibilityAnnounced(string message)
@@ -178,11 +179,16 @@ QtObject {
         gameAccountsRequestId = coreClient.request("account.connections.list", {}, 30000)
     }
 
-    function startAccountLink(provider) {
-        if (!ready || accountLinkStartRequestId !== "")
+    function captureAuthScope() {
+        return Object.freeze({generation: authScope.generation, userId: authScope.userId,
+            providerIdpId: authScope.providerIdpId})
+    }
+
+    function startAccountLink(provider, scope) {
+        if (!ready || !signedIn || !scope || !acceptsScope(scope) || accountLinkStartRequestId !== "")
             return
         gameAccountMessage = qsTr("Opening %1 sign-in…").arg(provider)
-        accountLinkStartRequestId = coreClient.request("account.connections.link.start", { provider: provider }, 30000)
+        accountLinkStartRequestId = coreClient.request("account.connections.link.start", { provider: provider, scope: scope }, 30000)
     }
 
     function pollAccountLink() {
@@ -193,11 +199,11 @@ QtObject {
         }, 10000)
     }
 
-    function syncGameAccount(provider) {
-        if (!ready || gameAccountActionRequestId !== "" || syncOperation)
+    function syncGameAccount(provider, scope) {
+        if (!ready || !signedIn || !scope || !acceptsScope(scope) || gameAccountActionRequestId !== "" || syncOperation)
             return
         gameAccountMessage = qsTr("Starting library sync…")
-        gameAccountActionRequestId = coreClient.request("account.connections.sync", { provider: provider }, 30000)
+        gameAccountActionRequestId = coreClient.request("account.connections.sync", { provider: provider, scope: scope }, 30000)
     }
 
     function pollSync() {
@@ -247,11 +253,11 @@ QtObject {
         } else gameAccountMessage = qsTr("Store sync finished, but the library refresh is incomplete: %1").arg(message)
     }
 
-    function unlinkGameAccount(provider) {
-        if (!ready || gameAccountActionRequestId !== "")
+    function unlinkGameAccount(provider, scope) {
+        if (!ready || !signedIn || !scope || !acceptsScope(scope) || gameAccountActionRequestId !== "")
             return
         gameAccountMessage = qsTr("Disconnecting account…")
-        gameAccountActionRequestId = coreClient.request("account.connections.unlink", { provider: provider }, 30000)
+        gameAccountActionRequestId = coreClient.request("account.connections.unlink", { provider: provider, scope: scope }, 30000)
     }
 
     function refreshStorageLocations() {
@@ -267,13 +273,14 @@ QtObject {
         }, 30000)
     }
 
-    function resetPersistentStorage(regionCode) {
-        if (!ready || !signedIn || storageResetRequestId !== "")
+    function resetPersistentStorage(regionCode, scope) {
+        if (!ready || !signedIn || !scope || !acceptsScope(scope) || storageResetRequestId !== "")
             return
         storageMessage = qsTr("Resetting persistent storage…")
         storageResetRequestId = coreClient.request("account.storage.reset", {
             storageRegion: regionCode || null,
-            confirmed: true
+            confirmed: true,
+            scope: scope
         }, 30000)
     }
 

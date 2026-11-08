@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const STREAMER_PROTOCOL_VERSION: u64 = 7;
+const STREAMER_PROTOCOL_VERSION: u64 = 8;
 const CHILD_MESSAGE_LIMIT: usize = 1024 * 1024;
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(90);
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -1344,8 +1344,9 @@ fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool 
         })
 }
 
-const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
+const EMBEDDED_RESOLUTIONS: [(u64, u64); 29] = [
     (1280, 720),
+    (1366, 768),
     (1600, 900),
     (1920, 1080),
     (2560, 1440),
@@ -1358,7 +1359,9 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (1680, 1050),
     (1920, 1200),
     (2560, 1600),
+    (3456, 2160),
     (3840, 2400),
+    (1680, 720),
     (2560, 1080),
     (3440, 1440),
     (3840, 1600),
@@ -1366,6 +1369,11 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (5120, 2160),
     (3840, 1080),
     (5120, 1440),
+    (3640, 1080),
+    (1024, 768),
+    (1112, 834),
+    (1600, 1200),
+    (1280, 1024),
 ];
 
 fn normalize_embedded_mode(
@@ -1445,13 +1453,15 @@ fn normalize_embedded_mode(
     if width.checked_mul(height).is_none() {
         return Ok(());
     }
+    // H.264 stays near the historical pixel cap, with an exception for GFN's
+    // Mac 3.5K mode (3456x2160) which the official client streams as H.264.
     let max_pixels = if codec == "h264" { 4_953_599 } else { u64::MAX };
     let fits = |width: u64, height: u64| {
         width <= max_width
             && height <= max_height
-            && width
-                .checked_mul(height)
-                .is_some_and(|pixels| pixels <= max_pixels)
+            && width.checked_mul(height).is_some_and(|pixels| {
+                pixels <= max_pixels || (codec == "h264" && width == 3456 && height == 2160)
+            })
     };
     if fits(width, height) {
         return Ok(());
@@ -1642,7 +1652,7 @@ fn run_worker(
     if hello["capabilities"]["supportsOwnedNvstNegotiation"].as_bool() != Some(true) {
         return Err(StreamerError {
             code: "streamer_protocol_mismatch",
-            message: "Native streamer cannot start NVST: owned NVST negotiation and protocol 7 are required"
+            message: "Native streamer cannot start NVST: owned NVST negotiation and protocol 8 are required"
                 .to_owned(),
         });
     }
@@ -2496,7 +2506,7 @@ mod tests {
             assert_eq!(output["enableHdr"], false);
             assert_eq!(prepared["context"]["session"], session);
             for available in [false, true] {
-                let capabilities = json!({"protocolVersion":7,"videoBackends":[{
+                let capabilities = json!({"protocolVersion":8,"videoBackends":[{
                     "backend":"videotoolbox","platform":"macos","available":true,
                     "codecs":[{"codec":"h265","available":available,
                         "colorQualities":["8bit_420","10bit_420"]}]}]});
@@ -2598,7 +2608,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":7,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
+            "#!/bin/sh\nread -r _line\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":8,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true}]}]}}'\nexit 23\n",
         )
         .expect("write crash fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -2645,7 +2655,7 @@ mod tests {
                 for hdr in [false, true] {
                     for known in [false, true] {
                         let caps = if known {
-                            json!({"protocolVersion":7,"nativeHdrSupported":true,
+                            json!({"protocolVersion":8,"nativeHdrSupported":true,
                             "videoBackends":[{"backend":backend,"platform":"macos","available":true,
                                 "codecs":[{"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                                     {"codec":"h265","available":true,"hdrSupported":true,
@@ -2692,7 +2702,7 @@ mod tests {
 
     #[test]
     fn codec_descriptors_disable_only_codecs_that_cannot_decode() {
-        let caps = json!({"protocolVersion":7,"nativeHdrSupported":true,
+        let caps = json!({"protocolVersion":8,"nativeHdrSupported":true,
         "videoBackends":[{"backend":"d3d11","available":true,
             "codecs":[{"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"hdrSupported":true,
@@ -2734,7 +2744,7 @@ mod tests {
 
     #[test]
     fn embedded_auto_selects_only_supported_codecs_and_preserves_manual_choices() {
-        let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true}, {"codec":"h265","available":true},
                 {"codec":"av1","available":false}]}]});
@@ -2771,7 +2781,7 @@ mod tests {
 
     #[test]
     fn embedded_mediacodec_preflight_preserves_the_hardware_only_profile() {
-        let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"mediacodec","platform":"linux","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"],"hdrSupported":false},
                 {"codec":"h265","available":false,"colorQualities":[],"hdrSupported":false},
@@ -2816,7 +2826,7 @@ mod tests {
             None,
             Some(json!(["8bit_420", "10bit_420", "8bit_444", "10bit_444"])),
         ] {
-            let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+            let mut caps = json!({"protocolVersion":8,"videoBackends":[{
                 "backend":"d3d11","platform":"windows","available":true,"codecs":[
                     {"codec":"h264","available":true},
                     {"codec":"h265","available":true},
@@ -2854,7 +2864,7 @@ mod tests {
 
     #[test]
     fn hdr_preserves_requested_chroma_only_when_hevc_hdr_444_is_decodable() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["8bit_420","10bit_420","8bit_444","10bit_444"],
@@ -2930,7 +2940,7 @@ mod tests {
 
     #[test]
     fn hdr_444_attachment_preserves_accepted_profile_and_rechecks_capabilities() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["10bit_420","10bit_444"],"hdrColorQualities":["10bit_420","10bit_444"]}
@@ -2970,7 +2980,7 @@ mod tests {
 
     #[test]
     fn explicit_hdr_profiles_gate_hdr_without_affecting_sdr() {
-        let mut capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let mut capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true,
                     "colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]}
@@ -2996,7 +3006,7 @@ mod tests {
 
     #[test]
     fn hdr_requires_explicit_output_and_ten_bit_hardware_support() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]},
@@ -3073,7 +3083,7 @@ mod tests {
 
     #[test]
     fn windows_hdr_capability_gates_hdr_without_changing_unknown_sdr_profiles() {
-        let mut capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let mut capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h265","available":true,"hdrSupported":true}
             ]
@@ -3112,7 +3122,7 @@ mod tests {
 
     #[test]
     fn hdr_resume_uses_accepted_profile_and_rechecks_current_output() {
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
             ]
@@ -3516,7 +3526,7 @@ mod tests {
 
     #[test]
     fn embedded_macos_444_without_probed_hevc_444_falls_back_to_420_keeping_depth() {
-        let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,
             "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420","10bit_444"]}]
         }]});
@@ -3554,7 +3564,7 @@ mod tests {
 
     #[test]
     fn auto_hdr_without_hdr_decode_streams_sdr_and_caps_h264_at_120_fps() {
-        let mut caps = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"hdrSupported":false,
@@ -3632,7 +3642,7 @@ mod tests {
 
     #[test]
     fn embedded_codec_caps_and_decode_dimensions_are_session_local() {
-        let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"av1","available":true,"colorQualities":["8bit_420"]},
@@ -3645,14 +3655,16 @@ mod tests {
             ("h264", "1920x1080", 240, "1920x1080", 120),
             ("h264", "3840x2160", 360, "2560x1440", 120),
             ("h264", "5120x1440", 165, "3840x1080", 120),
+            ("h264", "3640x1080", 165, "3640x1080", 120),
             ("h264", "2560x1600", 90, "2560x1600", 90),
             ("av1", "1920x1080", 240, "1920x1080", 120),
             ("av1", "1920x1080", 360, "1920x1080", 120),
             ("h265", "5120x2880", 165, "3840x2160", 165),
             ("h265", "5120x2160", 165, "2560x1080", 165),
             ("h265", "5120x1440", 165, "3840x1080", 165),
-            ("h265", "3840x2400", 165, "2560x1600", 165),
+            ("h265", "3840x2400", 165, "3456x2160", 165),
             ("h265", "4096x2304", 165, "4096x2304", 165),
+            ("h265", "3640x1080", 165, "3640x1080", 165),
         ] {
             let settings = json!({"codec":codec,"resolution":resolution,"fps":fps});
             let saved = settings.clone();
@@ -3680,8 +3692,95 @@ mod tests {
     }
 
     #[test]
+    fn embedded_added_resolution_presets_respect_decoder_limits() {
+        for (preset, requested, max_width, max_height) in [
+            ("1024x768", "1600x1200", 1024, 768),
+            ("1112x834", "1600x1200", 1112, 834),
+            ("1366x768", "2732x1536", 1366, 768),
+            ("1280x1024", "2560x2048", 1280, 1024),
+            ("1680x720", "3360x1440", 1680, 720),
+            ("1600x1200", "2048x1536", 1600, 1200),
+            ("3456x2160", "3840x2400", 4096, 2304),
+            ("3640x1080", "7280x2160", 3640, 1080),
+        ] {
+            let mut caps = json!({"protocolVersion":8,"videoBackends":[{
+                "backend":"hardware","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420"]}
+                ]
+            }]});
+            let settings = json!({"codec":"h265","resolution":preset,"fps":120});
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset);
+            assert!(fallbacks.is_empty());
+            caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+                json!({"width":max_width,"height":max_height});
+            let settings = json!({"codec":"h265","resolution":requested,"fps":120});
+            let saved = settings.clone();
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset, "{requested}");
+            assert_eq!(resolved["fps"], 120);
+            assert_eq!(settings, saved);
+            assert_eq!(fallbacks.len(), 1);
+            let (width, height) = resolved["resolution"]
+                .as_str()
+                .unwrap()
+                .split_once('x')
+                .unwrap();
+            assert!(width.parse::<u64>().unwrap() <= max_width);
+            assert!(height.parse::<u64>().unwrap() <= max_height);
+        }
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
+            "backend":"hardware","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]}
+            ]
+        }]});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "3456x2160");
+        assert!(fallbacks.is_empty());
+        caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+            json!({"width":2560,"height":1600});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "2560x1600");
+        assert_eq!(fallbacks.len(), 1);
+    }
+
+    #[test]
+    fn embedded_v4l2_request_h264_steps_down_to_the_hantro_limit() {
+        let caps = json!({"protocolVersion":8,"videoBackends":[{
+            "backend":"v4l2","platform":"linux","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"],
+                    "maxDecodeDimensions":{"width":1920,"height":1088}},
+                {"codec":"av1","available":true,"colorQualities":["8bit_420"]}
+            ]
+        }]});
+        for (codec, resolution, expected) in [
+            ("h264", "2560x1440", "1920x1080"),
+            ("h264", "3440x1440", "1680x720"),
+            ("h264", "1920x1080", "1920x1080"),
+            ("av1", "2560x1440", "2560x1440"),
+        ] {
+            let resolved = StreamerService::embedded_session_settings(
+                &json!({"codec":codec,"resolution":resolution,"fps":60}),
+                &caps,
+            )
+            .unwrap();
+            assert_eq!(resolved["resolution"], expected, "{codec} {resolution}");
+        }
+    }
+
+    #[test]
     fn embedded_dimension_preflight_rejects_invalid_limits_and_oversized_resumes() {
-        let mut caps = json!({"protocolVersion":7,"videoBackends":[{
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[{"codec":"h265","available":true,
                 "maxDecodeDimensions":{"width":4096,"height":2304}}]
         }]});
@@ -3718,7 +3817,7 @@ mod tests {
     #[test]
     fn embedded_auto_uses_the_same_priority_for_sdr_and_hdr() {
         for platform in ["windows", "macos", "linux"] {
-            let mut caps = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+            let mut caps = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
                 "backend":"hardware","platform":platform,"available":true,"codecs":[
                     {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                     {"codec":"h265","available":true,"hdrSupported":true,"colorQualities":["8bit_420","10bit_420"],"hdrColorQualities":["10bit_420"]},
@@ -3747,7 +3846,7 @@ mod tests {
 
     #[test]
     fn explicit_undecodable_codec_errors_unless_444_forces_hevc() {
-        let caps = json!({"protocolVersion":7,"videoBackends":[{
+        let caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","platform":"windows","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420","10bit_444"]},
@@ -3792,7 +3891,7 @@ mod tests {
 
     #[test]
     fn color_choices_disable_profiles_that_fall_back_and_name_the_delivered_profile() {
-        let caps = json!({"protocolVersion":7,"videoBackends":[{
+        let caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
@@ -3822,7 +3921,7 @@ mod tests {
         let service = StreamerService::new();
         let params = json!({"session":{"sessionId":"seat","status":2,
         "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported"}},
-        "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+        "runtimeCapabilities":{"protocolVersion":8,"videoBackends":[{
             "backend":"videotoolbox","platform":"macos","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420","10bit_420"]}
@@ -3864,7 +3963,7 @@ mod tests {
     #[test]
     fn embedded_prepare_resolves_auto_for_an_unreported_codec() {
         let service = StreamerService::new();
-        let capabilities = json!({"protocolVersion":7,"nativeHdrSupported":true,"videoBackends":[{
+        let capabilities = json!({"protocolVersion":8,"nativeHdrSupported":true,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"hdrSupported":true,
@@ -3903,7 +4002,7 @@ mod tests {
         let params = json!({"session":{"sessionId":"explicit-attach","status":2,
         "negotiatedStreamProfile":{"codec":null,"codecSource":"unreported",
             "colorQuality":"10bit_420","enableHdr":false}},
-        "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+        "runtimeCapabilities":{"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["10bit_420"]}
@@ -3922,7 +4021,7 @@ mod tests {
         let result = service.prepare_embedded(
             &json!({"session": {
             "sessionId":"resume", "status":2, "negotiatedStreamProfile":{"codec":"AV1"}
-        }, "runtimeCapabilities":{"protocolVersion":7,"videoBackends":[{
+        }, "runtimeCapabilities":{"protocolVersion":8,"videoBackends":[{
             "backend":"d3d11","available":true,"codecs":[{"codec":"h264","available":true}]}]}}),
             &json!({"codec":"auto"}),
         );
@@ -3931,7 +4030,7 @@ mod tests {
 
     #[test]
     fn embedded_color_profiles_gate_auto_and_manual_before_allocation() {
-        let mut capabilities = json!({"protocolVersion":7,"videoBackends":[{
+        let mut capabilities = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"vulkan", "platform":"linux", "available":true, "codecs":[
                 {"codec":"h264","available":true,"colorQualities":["8bit_420"]},
                 {"codec":"h265","available":true,"colorQualities":["8bit_420"]},
@@ -3990,7 +4089,7 @@ mod tests {
                 Some(json!([])),
                 Some(json!("10bit_420")),
             ] {
-                let mut capabilities = json!({"protocolVersion":7,"videoBackends":[{
+                let mut capabilities = json!({"protocolVersion":8,"videoBackends":[{
                     "backend":backend,"platform":"linux","available":true,
                     "codecs":[{"codec":"h265","available":true}]
                 }]});
@@ -4014,7 +4113,7 @@ mod tests {
 
     #[test]
     fn embedded_color_profiles_cannot_be_borrowed_from_another_backend() {
-        let capabilities = json!({"protocolVersion":7,"videoBackends":[
+        let capabilities = json!({"protocolVersion":8,"videoBackends":[
             {"backend":"vulkan","platform":"linux","available":true,
                 "codecs":[{"codec":"h265","available":true,"colorQualities":["8bit_420"]}]},
             {"backend":"other","available":true,
@@ -4031,7 +4130,7 @@ mod tests {
     #[test]
     fn codec_capabilities_require_an_available_backend_and_codec() {
         let capabilities = json!({
-            "protocolVersion":7,
+            "protocolVersion":8,
             "videoBackends":[
                 {"backend":"hardware","available":true,"codecs":[
                     {"codec":"h264","available":true},
@@ -4062,7 +4161,7 @@ mod tests {
         ));
         fs::write(
             &fixture,
-            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":7,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
+            "#!/bin/sh\nread -r _hello\nprintf '%s\\n' '{\"id\":\"hello\",\"type\":\"ready\",\"processId\":1,\"capabilities\":{\"protocolVersion\":8,\"supportsOwnedNvstNegotiation\":true,\"videoBackends\":[{\"backend\":\"software\",\"available\":true,\"codecs\":[{\"codec\":\"h264\",\"available\":true},{\"codec\":\"av1\",\"available\":false,\"reason\":\"not built\"}]}]}}'\nread -r _shutdown\nprintf '%s\\n' '{\"id\":\"shutdown\",\"type\":\"ok\"}'\n",
         )
         .expect("write capability fixture");
         fs::set_permissions(&fixture, fs::Permissions::from_mode(0o700))
@@ -4072,7 +4171,7 @@ mod tests {
         let detected = service
             .detect(&json!({"nativeStreamerExecutablePath":fixture}))
             .expect("capability probe");
-        assert_eq!(detected["protocolVersion"], 7);
+        assert_eq!(detected["protocolVersion"], 8);
         assert_eq!(detected["availableCodecs"], json!(["h264"]));
         assert_eq!(
             detected["capabilities"]["videoBackends"][0]["backend"],

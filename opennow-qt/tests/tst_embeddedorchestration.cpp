@@ -1,3 +1,5 @@
+#include "acceptance/AcceptanceSession.h"
+
 #include <QFile>
 #include <QJSEngine>
 #include <QRegularExpression>
@@ -25,6 +27,8 @@ bool prepareLaunchGuards(QJSEngine &engine)
         var queueSelector={opened:false,begin:function(title){return false}};
         var bugReports={observeTelemetry:function(){},observeFrameDrops:function(){},reportStreamError:function(){}};
         var launchRequestedAtMs=0;
+        var overlayRequestGeneration=0, screenshotRequestGeneration=0;
+        var recordingToggleRequestGeneration=0, shortcutActionGeneration=0;
         function reportSessionStart() {}
         function reportSessionEnd() {}
     )JS")).isError()) return false;
@@ -52,14 +56,28 @@ bool loadShellFunction(QJSEngine &engine, const QString &name, int indentation =
     return !result.isError();
 }
 
+bool loadSettingsFunction(QJSEngine &engine, const QString &name)
+{
+    const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+    const auto match = QRegularExpression(QStringLiteral(
+        "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(name),
+        QRegularExpression::DotMatchesEverythingOption).match(settings);
+    if (!match.hasMatch()) return false;
+    const auto result = engine.evaluate(match.captured());
+    if (result.isError()) qWarning().noquote() << result.toString();
+    return !result.isError();
+}
+
 bool prepareRecordingTeardown(QJSEngine &engine)
 {
     if (engine.evaluate(QStringLiteral(R"JS(
         var mediaRecordingTargetRequestId = '', mediaRecordingTargetSessionId = '';
         var streamRecordingAttempt = null, streamRecordingElapsedMs = 0;
+        var streamRecordingIntentSessionId = '', streamRecordingStartRequestId = '', streamRecordingStopRequestId = '';
     )JS")).isError()) return false;
     return loadShellFunction(engine, QStringLiteral("cancelRecordingTarget"))
-        && loadShellFunction(engine, QStringLiteral("suspendRecordingStart"));
+        && loadShellFunction(engine, QStringLiteral("suspendRecordingStart"))
+        && loadShellFunction(engine, QStringLiteral("resumeStreamRecording"));
 }
 
 bool prepareAuthentication(QJSEngine &engine)
@@ -126,6 +144,108 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void sdrCaptureRequiresAnExplicitScreenshotFixture()
+    {
+        const QStringList production{QStringLiteral("--smoke-sdr-capture"),
+            QStringLiteral("--screenshot"), QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(production));
+        const QStringList regularSmoke{QStringLiteral("--smoke-test"), QStringLiteral("--screenshot"),
+            QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(regularSmoke));
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(
+            {QStringLiteral("--smoke-test"), QStringLiteral("--smoke-sdr-capture")}));
+        auto capture = regularSmoke;
+        capture.append(QStringLiteral("--smoke-sdr-capture"));
+        QVERIFY(AcceptanceSession::sdrCaptureRequested(capture));
+    }
+
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration_data()
+    {
+        QTest::addColumn<bool>("gpuAvailable");
+        QTest::newRow("selected-gpu-available") << true;
+        QTest::newRow("selected-gpu-unavailable") << false;
+    }
+
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration()
+    {
+        QFETCH(bool, gpuAvailable);
+        QJSEngine engine;
+        engine.globalObject().setProperty(QStringLiteral("gpuAvailable"), gpuAvailable);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {}, confirmedSettings = {}, settingWrites = {};
+            var consoleSurfaceRequestId = '', frameGenerationGpu = '', gpuNameCalls = 0;
+            var appController = {}, i18n = {setLocale:function() {}};
+            var FrameGenerationBenchmark = {gpuName:function() {gpuNameCalls++;return gpuAvailable ? 'test-gpu' : '';}};
+            var saved = {resolution:'1920x1080',frameGenerationProfiles:{
+                ['motion|' + (gpuAvailable ? 'test-gpu' : 'unknown-gpu') + '|1920x1080']:
+                    {gpu:'test-gpu',width:1920,height:1080,frames:30,p95Ms:1}
+            }};
+        )JS")).isError());
+        for (const auto &name : {"acceptSettings", "ensureFrameGenerationGpu", "frameGenerationResolution",
+                                 "frameGenerationProfileKey", "frameGenerationProfile"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:{}})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        if (gpuAvailable)
+            QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfile().gpu")).toString(), QStringLiteral("test-gpu"));
+        else
+            QVERIFY(engine.evaluate(QStringLiteral("frameGenerationProfile() === null")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 1);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), gpuAvailable ? 1 : 2);
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution_data()
+    {
+        QTest::addColumn<bool>("currentProfile");
+        QTest::newRow("untested-current-resolution") << false;
+        QTest::newRow("valid-current-four-times-profile") << true;
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution()
+    {
+        QFETCH(bool, currentProfile);
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {resolution:'3840x2160',frameGenerationProfiles:{}}, frameGenerationGpu = '';
+            var FrameGenerationBenchmark = {evaluate:function() {return {allowed:[2]}}};
+            function frameGenerationSourceFps() {return 60;}
+            function frameGenerationDisplayHz() {return 240;}
+            function frameGenerationFactor() {return settings.frameGeneration === '4x' ? 4 : 0;}
+            function writeFrameGenerationSetting(key, value) {settings[key] = value;}
+        )JS")).isError());
+        if (currentProfile) {
+            QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+                settings.frameGeneration = '4x'; settings.frameGenerationTargetFps = 240;
+                settings.frameGenerationProfiles['motion|test-gpu|3840x2160'] = {
+                    width:3840,height:2160,frames:30,p95Ms:1,allowed:[2,3,4]
+                };
+            )JS")).isError());
+        }
+        const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+        for (const auto &name : {"frameGenerationResolution", "frameGenerationProfileKey"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        const auto handler = QRegularExpression(QStringLiteral(
+            "        function onFinished\\(result\\) \\{.*?\\n        \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(settings);
+        QVERIFY(handler.hasMatch());
+        QVERIFY(!engine.evaluate(handler.captured()).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            onFinished({ok:true, engine:'motion',gpu:'test-gpu',width:640,height:360,
+                        p50Ms:1,p95Ms:2,p95Ms3:3,p95Ms4:4,maxMs:5,frames:30});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("Object.keys(settings.frameGenerationProfiles).length")).toInt(),
+                 currentProfile ? 2 : 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationProfiles['motion|test-gpu|640x360'].width")).toInt(), 640);
+        QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfileKey()")).toString(),
+                 QStringLiteral("motion|test-gpu|3840x2160"));
+        if (currentProfile) {
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGeneration")).toString(), QStringLiteral("4x"));
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationTargetFps")).toInt(), 240);
+        }
+    }
+
     void rejectedTextInputNotifiesWithoutChangingStreamOwnership()
     {
         QJSEngine engine;
@@ -932,6 +1052,65 @@ private slots:
         }
     }
 
+    void launchDiscoveryFailure_data()
+    {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<QString>("context");
+        QTest::addColumn<bool>("continuesLaunch");
+        QTest::newRow("unavailable-region") << QStringLiteral("session_discovery_failed") << QString() << true;
+        for (const auto &code : {"http_unauthorized", "authentication_required", "cancelled", "timeout", "network_error"})
+            QTest::newRow(code) << QString::fromLatin1(code) << QString() << false;
+        for (const auto &context : {"launchConflictDetected = true", "conflictSession = {sessionId:'existing'}",
+                 "conflictSessionNeedsRefresh = true", "activeSession = {sessionId:'existing'}",
+                 "pendingLaunchParams = null", "catalogOwner.selectedIdentity = 'changed'", "ready = false",
+                 "signedIn = false", "onboardingReplaying = true"})
+            QTest::newRow(context) << QStringLiteral("session_discovery_failed") << QString::fromLatin1(context) << false;
+    }
+
+    void launchDiscoveryFailure()
+    {
+        QFETCH(QString, code);
+        QFETCH(QString, context);
+        QFETCH(bool, continuesLaunch);
+        QJSEngine engine;
+        QVERIFY(prepareLaunchGuards(engine));
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, ready = true, onboardingReplaying = false, nativeRuntimeReady = true;
+            var activeSession = null, conflictSession = null, conflictSessionNeedsRefresh = false;
+            var launchConflictDetected = false, streamCreateRequestId = '', remoteSessionsRequestId = 'discovery';
+            var pendingLaunchParams = {appId:'123',catalogAppId:'parent',variantId:'123',selectionIdentity:'selection',
+                authGeneration:0,actionGeneration:0,requestContextKey:''};
+            var requests = [], streamState = 'checking', streamMessage = '', lastError = '';
+            var settingsOwner = {acceptFailure:function(){return false;}};
+            var onboardingOwner = {acceptFailure:function(){return false;}};
+            function finishArtworkRequest(){return false;}
+            var CoreClient = {request:function(method,params){
+                requests.push({method:method,params:params});return 'request-' + requests.length;
+            }};
+        )JS")).isError());
+        QVERIFY(loadShellFunction(engine, QStringLiteral("createPendingSession")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("onRequestFailed"), 8));
+        QVERIFY(!engine.evaluate(context).isError());
+        engine.globalObject().setProperty(QStringLiteral("failureCode"), code);
+        const auto result = engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Discovery failed')"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("remoteSessionsRequestId")).toString(), QString());
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), continuesLaunch ? 1 : 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(),
+            continuesLaunch ? QStringLiteral("requesting") : QStringLiteral("error"));
+        if (continuesLaunch) {
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("catalog.launch.inspect"));
+            QCOMPARE(engine.evaluate(QStringLiteral("launchInspectStage")).toString(), QStringLiteral("create"));
+            QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.variantId")).toString(), QStringLiteral("123"));
+            QCOMPARE(engine.evaluate(QStringLiteral("lastError")).toString(), QString());
+            QVERIFY(!engine.evaluate(QStringLiteral("onRequestFailed('discovery',failureCode,'Late failure')")).isError());
+            QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        } else {
+            QVERIFY(!engine.evaluate(QStringLiteral("lastError")).toString().isEmpty());
+        }
+    }
+
     void sessionCreationConflictTriggersDiscoveryInsteadOfAnotherCreate()
     {
         const auto shell = source(QStringLiteral("qml/state/ShellStore.qml"));
@@ -1004,6 +1183,7 @@ private slots:
         QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
             var remoteSessionsRequestId = '', streamCreateRequestId = '', streamPollRequestId = '';
             var streamerPrepareRequestId = 'prepare', streamerStopRequestId = '', streamStopRequestId = '';
+            var streamerStartRequestId = '';
             var activeSession = {sessionId:'seat'}, streamStartedAtMs = 0, streamState = 'starting';
             var streamer = {status:'starting'}, nativeCommands = [], snapshots = 0;
             var negotiatedStreamProfile = {};
@@ -1253,18 +1433,21 @@ private slots:
             var root = this, desktopUiActive = false, requests = 0, captures = 0, announcements = 0;
             var streamCaptureRect = {x:0, y:0, width:1920, height:1080};
             var selectedGame = {title:'Fixture'}, mediaMessage = '', accessibilityMessage = '', lastError = '';
-            var AppController = {route:'stream', overlay:'guide-session', captureScreenRegion:function(){captures++; return '/fixture.png';}};
+            var AppController = {route:'stream', overlay:'guide-session', captureStreamScreenshot:function(){captures++; return true;}};
             function consoleScreenshotRequested() {requests++;}
             function streamCaptureAnnounced(message) {announcements++;}
             function refreshMedia() {}
             function qsTr(value) {return {arg:function(arg){return value.replace('%1',arg);}, toString:function(){return value;}};}
         )JS")).isError());
         QVERIFY(loadShellFunction(engine, QStringLiteral("captureStreamScreenshot")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("acceptStreamScreenshot")));
         QVERIFY(!engine.evaluate(QStringLiteral("captureStreamScreenshot()" )).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("requests")).toInt(), 1);
         QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 0);
         QVERIFY(!engine.evaluate(QStringLiteral("AppController.overlay = ''; captureStreamScreenshot()")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("captures")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("announcements")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptStreamScreenshot('/fixture.png')")).isError());
         QCOMPARE(engine.evaluate(QStringLiteral("announcements")).toInt(), 1);
     }
 
@@ -1739,6 +1922,30 @@ private slots:
         }
     }
 
+    void macPointerLockUsesTheSharedPreferenceAndKeepsErrorsVisible()
+    {
+        const auto controls = source(QStringLiteral(
+            "qml/desktop/settings/pages/DesktopSettingsControlsPage.qml"));
+        QVERIFY(controls.contains(QStringLiteral("objectName: \"macPointerLockToggle\"")));
+        QVERIFY(controls.contains(QStringLiteral("boolSetting(\"macPointerLockEnabled\", true)")));
+        QVERIFY(controls.contains(QStringLiteral("setSetting(\"macPointerLockEnabled\", value)")));
+        const auto menu = source(QStringLiteral("qml/desktop/stream/DesktopInStreamMenu.qml"));
+        QVERIFY(menu.contains(QStringLiteral("objectName: \"streamPointerLockRow\"")));
+        QVERIFY(menu.contains(QStringLiteral("onClicked: ShellStore.pointerLockToggleRequested()")));
+        QVERIFY(menu.contains(QStringLiteral("shortcut(\"shortcutTogglePointerLock\", \"F8\")")));
+        for (const auto &path : {QStringLiteral("qml/screens/StreamScreen.qml"),
+                                QStringLiteral("qml/desktop/stream/DesktopStreamScreen.qml")}) {
+            const auto stream = source(path);
+            QVERIFY(stream.contains(QStringLiteral(
+                "macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false")));
+            QVERIFY(stream.contains(QStringLiteral(
+                "ShellStore.setSetting(\"macPointerLockEnabled\", macPointerLockEnabled)")));
+            QVERIFY(stream.contains(QStringLiteral("StreamPointerLockHint {")));
+            QVERIFY(stream.contains(QStringLiteral("pointerLockEnabled: streamVideo.macPointerLockEnabled")));
+            QVERIFY(stream.contains(QStringLiteral(": streamVideo.relativeMouse ? streamVideo.inputCaptureError : \"\"")));
+        }
+    }
+
     void clipboardPasteUsesTheSharedOptInOnBothSurfaces()
     {
         const auto controls = source(QStringLiteral(
@@ -1895,6 +2102,199 @@ private slots:
         QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
     }
 
+    void nativeStopReconcilesRecording_data()
+    {
+        QTest::addColumn<bool>("recovery");
+        QTest::addColumn<QString>("recording");
+        QTest::addColumn<bool>("stopped");
+        QTest::newRow("recover-saved") << true << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'cut',reason:'interrupted'}}") << false;
+        QTest::newRow("recover-empty-prefix") << true << QStringLiteral(
+            "{requestId:'recording',state:'failed',message:'no keyframe',completion:{kind:'cut',reason:'interrupted'}}") << false;
+        QTest::newRow("recover-no-recorder") << true << QStringLiteral("null") << false;
+        QTest::newRow("already-stopped-saved") << true << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'cut',reason:'interrupted'}}") << true;
+        QTest::newRow("already-stopped-no-recorder") << true << QStringLiteral("null") << true;
+        QTest::newRow("already-stopped-cached-recorder") << true << QStringLiteral(
+            "{requestId:'older-recording',state:'saved',path:'/older.mkv',completion:{kind:'complete'}}") << true;
+        QTest::newRow("user-saved") << false << QStringLiteral(
+            "{requestId:'recording',state:'saved',path:'/first.mkv',videoPackets:3,audioPackets:2,completion:{kind:'complete'}}") << false;
+        QTest::newRow("user-no-recorder") << false << QStringLiteral("null") << false;
+    }
+
+    void nativeStopReconcilesRecording()
+    {
+        QFETCH(bool, recovery);
+        QFETCH(QString, recording);
+        QFETCH(bool, stopped);
+        QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamRecordingIntentSessionId='seat', streamRecordingStartRequestId='recording';
+            var streamRecordingStopRequestId='', streamRecordingActive=true, streamRecordingStartedAtMs=0;
+            var streamRecordingAttempt={requestId:'recording',sessionId:'seat',completed:false,acceptStart:true};
+            var activeSession={sessionId:'seat'}, streamer={status:'streaming'}, selectedGame={title:'Game'};
+            var streamerStopExpected=false, streamerStopRequestId='', streamerStartRequestId='';
+            var streamerPrepareRequestId='';
+            var sessionRecoveryPending=false, sessionRecoveryAwaitingAuth=false, sessionStopIntentId='', streamStopRequestId='';
+            var microphoneRequestId='', sessionMicrophoneMode='disabled', streamIdleWarning=null;
+            var pendingRecordingPath='/first.mkv', pendingRecordingThumbnailPath='';
+            var mediaMessage='', accessibilityMessage='', lastError='', nativeRequestSequence=0, nativeRequests={};
+            var commands=[], calls=[], notices=[], refreshes=0;
+            var streamerRestartTimer={stop:function(){}};
+            var NativeStreamRuntime={running:true,send:function(command){commands.push(command);return true;}};
+            var CoreClient={cancel:function(){},request:function(){calls.push('target');return 'target';}};
+            function qsTr(text){return text;}
+            function updateStreamerFields(fields){streamer=Object.assign({},streamer,fields);}
+            function streamCaptureAnnounced(message){notices.push(message);}
+            function refreshMedia(){refreshes++;}
+            function check(value,message){if(!value)throw Error(message);}
+        )JS")).isError());
+        for (const auto &name : {"stopNativeStreamer", "sendNativeCommand", "takeNativeRequest",
+                                "acceptNativeResponse", "acceptRecordingCompletion"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var recovery=%1, result=%2;
+            var completedCurrent=result && result.requestId === 'recording';
+            streamer.status=%3;
+            stopNativeStreamer('Reconnecting the native media transport',recovery);
+            var stop=commands[0];
+            check(stop.type === 'stop' && stop.recovery === recovery,'stop recovery must be explicit');
+            check(nativeRequests[stop.id].recordingRequestId === 'recording','stop must own the original recording');
+            check(streamRecordingIntentSessionId === (recovery?'seat':''),'user stop must clear intent immediately');
+            acceptNativeResponse({id:stop.id,type:'ok',recording:result});
+            check(!streamRecordingAttempt || streamRecordingAttempt.completed,'stop must reconcile dropped completion');
+            check(!streamRecordingActive && streamRecordingStartRequestId === '' && streamRecordingStopRequestId === '',
+                'stop must release all attempt command ownership');
+            check(pendingRecordingPath === '' && pendingRecordingThumbnailPath === '', 'stop must release the target');
+            check(notices.length === (completedCurrent?1:0) && refreshes === notices.length,'stop must complete once');
+            check(calls.length === 0,'stop must wait for media recovery');
+            streamer.status='streaming';streamerStopExpected=false;
+            resumeStreamRecording();resumeStreamRecording();
+            check(calls.length === (recovery?1:0),'only recovery may resume exactly one recording target');
+            streamRecordingAttempt={requestId:'next',sessionId:'seat',completed:false,acceptStart:true};
+            streamRecordingStartRequestId='next';
+            acceptNativeResponse({id:stop.id,type:'ok',recording:result});
+            nativeRequests['stale-stop']={operation:'stop',recordingRequestId:'recording'};
+            acceptNativeResponse({id:'stale-stop',type:'ok',recording:result});
+            acceptRecordingCompletion({requestId:'recording',state:'saved',path:'/first.mkv',completion:{kind:'complete'}},'');
+            check(!streamRecordingAttempt.completed && streamRecordingStartRequestId === 'next',
+                'duplicates must not complete the next segment');
+            check(notices.length === (completedCurrent?1:0),'duplicates must not announce again');
+        )JS").arg(recovery ? QStringLiteral("true") : QStringLiteral("false"), recording,
+            stopped ? QStringLiteral("'stopped'") : QStringLiteral("'streaming'")));
+        QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
+    }
+
+    void manualRecordingContinuesAcrossReconnect()
+    {
+        QJSEngine engine;
+        QVERIFY(prepareRecordingTeardown(engine));
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var streamRecordingIntentSessionId = '', streamRecordingStartRequestId = '', streamRecordingStopRequestId = '';
+            var streamRecordingActive = false, streamRecordingStartedAtMs = 0;
+            var pendingRecordingPath = '', pendingRecordingThumbnailPath = '', streamCaptureRect = {};
+            var activeSession = {sessionId:'seat'}, streamer = {status:'streaming'};
+            var streamerStopExpected = false, sessionRecoveryPending = false, sessionRecoveryAwaitingAuth = false;
+            var sessionStopIntentId = '', streamStopRequestId = '', selectedGame = {title:'Game'};
+            var mediaMessage = '', accessibilityMessage = '', lastError = '';
+            var NativeStreamRuntime = {running:true}, calls = [], commands = [], cancelled = [], refreshes = 0;
+            var CoreClient = {
+                request:function(method,params) {var id='target-'+calls.length;calls.push(id);return id;},
+                cancel:function(id) {cancelled.push(id);}
+            };
+            var AppController = {showOverlay:function(){}};
+            function sendNativeCommand(type,params) {var id='native-'+commands.length;commands.push({id:id,type:type});return id;}
+            function updateStreamerFields(fields) {streamer=Object.assign({},streamer,fields);}
+            function qsTr(text) {return text;}
+            function refreshMedia() {refreshes++;}
+            function streamCaptureAnnounced() {}
+            function check(value,message) {if (!value) throw Error(message);}
+        )JS")).isError());
+        for (const auto &name : {"toggleStreamRecording", "acceptRecordingTarget", "acceptRecordingResponse",
+                                "acceptRecordingCompletion"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            toggleStreamRecording();
+            check(streamRecordingIntentSessionId === 'seat','manual start must retain session intent');
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/first.mkv'});
+            var first = streamRecordingAttempt.requestId;
+            acceptRecordingResponse({id:first,type:'recording-started'},{operation:'recording-start'});
+            suspendRecordingStart();
+            streamer.status='stopped';
+            acceptRecordingCompletion({requestId:first,state:'saved',path:'/first.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(streamRecordingIntentSessionId === 'seat' && calls.length === 1,'reconnect must retain intent without allocating early');
+            sessionRecoveryPending=true;
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(calls.length === 1,'media cannot resume during session recovery');
+            sessionRecoveryPending=false;
+            resumeStreamRecording();
+            resumeStreamRecording();
+            check(calls.length === 2,'resumed media must allocate exactly one new target');
+            var nextTarget=mediaRecordingTargetRequestId;
+            acceptRecordingTarget(nextTarget,{path:'/second.mkv'});
+            var second=streamRecordingAttempt.requestId;
+            check(second !== first && commands.length === 2,'continuation must start a new segment');
+            acceptRecordingCompletion({requestId:first,state:'failed',message:'stale failure'},'');
+            acceptRecordingResponse({id:first,type:'recording-started'},{operation:'recording-start'});
+            check(!streamRecordingActive && streamRecordingStartRequestId === second,'stale callbacks must not own continuation');
+            acceptRecordingResponse({id:second,type:'recording-started'},{operation:'recording-start'});
+            acceptRecordingResponse({id:second,type:'recording-started'},{operation:'recording-start'});
+            check(streamer.recordingStartCount === 2,'duplicate start acknowledgements must be idempotent');
+            acceptRecordingCompletion({requestId:second,state:'saved',path:'/second.mkv',completion:{kind:'cut',reason:'discontinuity'}},'');
+            check(calls.length === 3 && streamRecordingIntentSessionId === 'seat','native discontinuity must continue without reconnect');
+            var cancelledTarget=mediaRecordingTargetRequestId;
+            toggleStreamRecording();
+            acceptRecordingTarget(cancelledTarget,{path:'/cancelled.mkv'});
+            resumeStreamRecording();
+            check(streamRecordingIntentSessionId === '' && commands.length === 2 && cancelled[0] === cancelledTarget,
+                'user stop must cancel pending continuation and ignore its late target');
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/third.mkv'});
+            var third=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='stopped';
+            toggleStreamRecording();
+            acceptRecordingCompletion({requestId:third,state:'saved',path:'/third.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(streamRecordingIntentSessionId === '' && calls.length === 4,'user stop while reconnecting must cancel intent');
+            for (var failure of ['queue-overflow','storage','normal']) {
+                toggleStreamRecording();
+                acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/failure.mkv'});
+                var id=streamRecordingAttempt.requestId;
+                acceptRecordingCompletion({requestId:id,state:failure === 'storage' ? 'failed' : 'saved',path:'/failure.mkv',
+                    completion:failure === 'normal' ? {kind:'complete'} : {kind:'cut',reason:failure}},'');
+                var before=calls.length;
+                resumeStreamRecording();
+                check(streamRecordingIntentSessionId === '' && calls.length === before,'terminal completion must not retry '+failure);
+            }
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/suspended.mkv'});
+            var suspended=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(mediaRecordingTargetRequestId === '','resume must wait for prior finalization');
+            acceptRecordingCompletion({requestId:suspended,state:'saved',path:'/suspended.mkv',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(mediaRecordingTargetRequestId !== '','late prior finalization must release continuation');
+            toggleStreamRecording();
+            toggleStreamRecording();
+            acceptRecordingTarget(mediaRecordingTargetRequestId,{path:'/empty-prefix.mkv'});
+            var empty=streamRecordingAttempt.requestId;
+            suspendRecordingStart();
+            streamer.status='stopped';
+            acceptRecordingCompletion({requestId:empty,state:'failed',message:'no usable keyframe',completion:{kind:'cut',reason:'interrupted'}},'');
+            check(streamRecordingIntentSessionId === 'seat' && mediaRecordingTargetRequestId === '',
+                'interruption before the first keyframe must retain intent without claiming a saved prefix');
+            streamer.status='streaming';
+            resumeStreamRecording();
+            check(mediaRecordingTargetRequestId !== '','empty-prefix interruption must resume when media returns');
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString() + result.property("stack").toString()));
+    }
+
     void webRtcStartAcknowledgementPreservesMediaProgress_data()
     {
         QTest::addColumn<QString>("transport");
@@ -1905,6 +2305,8 @@ private slots:
         QTest::newRow("webrtc-error-arrived-first") << QStringLiteral("webrtc") << QStringLiteral("error") << QStringLiteral("error");
         QTest::newRow("webrtc-stopped-first") << QStringLiteral("webrtc") << QStringLiteral("stopped") << QStringLiteral("stopped");
         QTest::newRow("nvst-unchanged") << QStringLiteral("nvst") << QStringLiteral("starting") << QStringLiteral("streaming");
+        QTest::newRow("nvst-error-arrived-first") << QStringLiteral("nvst") << QStringLiteral("error") << QStringLiteral("error");
+        QTest::newRow("nvst-stopped-first") << QStringLiteral("nvst") << QStringLiteral("stopped") << QStringLiteral("stopped");
     }
 
     void webRtcStartAcknowledgementPreservesMediaProgress()
@@ -1929,7 +2331,7 @@ private slots:
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QCOMPARE(engine.evaluate(QStringLiteral("streamer.status")).toString(), expectedStatus);
         QCOMPARE(engine.evaluate(QStringLiteral("streamerStartRequestId")).toString(), QString());
-        if (transport == QStringLiteral("webrtc") && initialStatus != QStringLiteral("starting"))
+        if (initialStatus != QStringLiteral("starting"))
             QCOMPARE(engine.evaluate(QStringLiteral("streamer.message")).toString(), QStringLiteral("Earlier media event"));
     }
 
@@ -2014,7 +2416,7 @@ private slots:
 
         QTest::newRow("mac-retina") << 1512 << 982 << 2.0 << true
             << QStringList{QStringLiteral("2560x1600"), QStringLiteral("2560x1440"), QStringLiteral("1920x1200")}
-            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
+            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3456x2160"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
         QTest::newRow("normal-16-9") << 1920 << 1080 << 1.0 << true
             << QStringList{QStringLiteral("1280x720"), QStringLiteral("1600x900"), QStringLiteral("1920x1080")}
             << QStringList{QStringLiteral("1920x1200"), QStringLiteral("2560x1440"), QStringLiteral("2560x1080")};
@@ -2210,6 +2612,7 @@ private slots:
             var ready = true, pendingSessionEnd = null, sessionEndRequestId = '';
             var streamerPrepareRequestId = '', streamPollRequestId = '', streamIdleWarning = null;
             var streamer = {status:'streaming'}, lastError = '', accessibilityMessage = '';
+            var streamEndNotice = null;
             var calls = [], ended = 0;
             var CoreClient = {request:function(method, params) {
                 calls.push({method:method, params:params, sessionBeforeClear:activeSession});
@@ -2239,7 +2642,9 @@ private slots:
                 && calls[0].params.ownerScope.generation === 7
                 && calls[0].sessionBeforeClear !== null
                 && activeSession === null && pendingSessionEnd !== null
-                && sessionEndRequestId === 'end-request';
+                && sessionEndRequestId === 'end-request'
+                && streamEndNotice.kind === 'error' && streamEndNotice.code === null
+                && streamEndNotice.codeText === '';
         )JS"));
         QVERIFY2(!result.isError(), qPrintable(result.toString()));
         QVERIFY(result.toBool());
@@ -2258,6 +2663,24 @@ private slots:
             ready = true; flushPendingSessionEnd();
             calls.length === 2 && calls[1].params.sessionId === 'ended-seat';
         )JS")).toBool());
+        const auto notice = [&](const QString &termination) {
+            return engine.evaluate(QStringLiteral(R"JS(
+                streamEndNotice = null;
+                activeSession = {sessionId:'notice-seat'};
+                finishRemoteSession(%1);
+                JSON.stringify(streamEndNotice);
+            )JS").arg(termination)).toString();
+        };
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'normal',extendedCode:2147680256}")), QStringLiteral("null"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'error',extendedCode:2147680265}")),
+            QStringLiteral("{\"kind\":\"error\",\"code\":2147680265,\"codeText\":\"0x80030009\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'nvst-server',code:'server-terminated',resumable:false,"
+            "disposition:'idle',extendedCode:2147680263}")),
+            QStringLiteral("{\"kind\":\"idle\",\"code\":2147680263,\"codeText\":\"0x80030007\"}"));
+        QCOMPARE(notice(QStringLiteral("{source:'cloudmatch-session-status',status:7,resumable:false}")),
+            QStringLiteral("null"));
     }
 
     void mediaRecoveryIsBoundedUntilVideoActuallyStarts()
@@ -2576,6 +2999,60 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("StreamSurfaceController")));
     }
 
+    void requestedQuitWaitsForTheSessionAndRecorderBeforeClosing()
+    {
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var stops=0, closes=0, overlays=[];
+            var ShellStore={sessionWorkIdle:false, stopStreamingSession:function(){++stops;}};
+            var CoreClient={allocationsSettled:false};
+            var AppController={showOverlay:function(value){overlays.push(value);}};
+            var window={sessionQuitPending:false, sessionQuitStopping:false,
+                applicationCloseConfirmed:false, close:function(){++closes;}};
+        )JS")).isError());
+        const auto main = source(QStringLiteral("qml/Main.qml"));
+        for (const auto &name : {"requestSessionQuit", "confirmApplicationQuit", "finishSessionQuit"}) {
+            const auto match = QRegularExpression(QStringLiteral(
+                "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
+                QRegularExpression::DotMatchesEverythingOption).match(main);
+            QVERIFY2(match.hasMatch(), name);
+            QVERIFY(!engine.evaluate(match.captured()).isError());
+            QVERIFY(!engine.evaluate(QStringLiteral("window.%1=%1").arg(QString::fromLatin1(name))).isError());
+        }
+        QVERIFY(!engine.evaluate(QStringLiteral("requestSessionQuit(); requestSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 0);
+        QCOMPARE(engine.evaluate(QStringLiteral("overlays.join(',')")).toString(), QStringLiteral("application-quit-confirm"));
+        QVERIFY(!engine.evaluate(QStringLiteral("confirmApplicationQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("stops")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("ShellStore.sessionWorkIdle=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("CoreClient.allocationsSettled=true; finishSessionQuit();")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("closes")).toInt(), 1);
+        QVERIFY(engine.evaluate(QStringLiteral("window.applicationCloseConfirmed")).toBool());
+    }
+
+    void quitStopsTheCoreBeforeBoundedPresentationTeardown()
+    {
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        const auto exec = main.indexOf(QStringLiteral("const auto exitCode = application.exec();"));
+        const auto deadline = main.indexOf(QStringLiteral("armTeardownDeadline(exitCode);"));
+        const auto core = main.indexOf(QStringLiteral("coreClient.stop();"));
+        const auto roots = main.indexOf(QStringLiteral("for (auto *root : roots) delete root;"));
+        const auto streamer = main.indexOf(QStringLiteral("nativeStreamRuntime.shutdown()"), exec);
+        const auto completed = main.indexOf(QStringLiteral("singleInstance.finishQuitRequest();"), exec);
+        QVERIFY(exec >= 0);
+        QVERIFY(deadline > exec);
+        QVERIFY(core > deadline);
+        QVERIFY(roots > core);
+        QVERIFY(streamer > roots);
+        QVERIFY(completed > streamer);
+        QVERIFY(main.contains(QStringLiteral("if (exitCode == EXIT_SUCCESS && requestedQuitCompleted)")));
+        QVERIFY(main.contains(QStringLiteral("->property(\"sessionWorkIdle\").toBool()")));
+        QVERIFY(main.contains(QStringLiteral("TerminateProcess(GetCurrentProcess(), UINT(exitCode));")));
+        QVERIFY(main.contains(QStringLiteral("std::_Exit(exitCode);")));
+    }
+
     void windowsUpdateSchedulingIsConfiguredBeforeApplicationCreation()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
@@ -2589,6 +3066,41 @@ private slots:
         QVERIFY(!main.contains(QStringLiteral("qputenv(\"QSG_RENDER_LOOP\", \"basic\")")));
     }
 
+    void windowsFrameReadyUpdatesAvoidAdditionalIdleDelay()
+    {
+        const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
+        const auto guard = main.indexOf(QStringLiteral("if (!qEnvironmentVariableIsSet(\"QT_QPA_UPDATE_IDLE_TIME\"))"));
+        const auto setting = main.indexOf(QStringLiteral("qputenv(\"QT_QPA_UPDATE_IDLE_TIME\", \"0\")"));
+        const auto application = main.indexOf(QStringLiteral("QGuiApplication application"));
+        QVERIFY(guard >= 0);
+        QVERIFY(setting > guard);
+        QVERIFY(application > setting);
+        const auto windows = main.lastIndexOf(QStringLiteral("#ifdef Q_OS_WIN"), guard);
+        const auto end = main.indexOf(QStringLiteral("#endif"), windows);
+        QVERIFY(windows >= 0);
+        QVERIFY(end > setting);
+    }
+
+    void virtualControllerEdgesAreCommittedBeforeFixtureAdvances()
+    {
+        const auto smoke = source(QStringLiteral("src/acceptance/SmokeAcceptance.cpp"));
+        const auto helper = source(QStringLiteral("src/acceptance/VirtualControllerInput.h"));
+        const auto timer = smoke.indexOf(QStringLiteral("controllerRelease = -1, deadline = QDeadlineTimer(15000)"));
+        const auto release = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, controllerRelease, false)"), timer);
+        const auto press = smoke.indexOf(QStringLiteral("setSmokeControllerButton(joystick, button, true)"), release);
+        const auto clear = smoke.indexOf(QStringLiteral("fixture->setProperty(\"padButton\", -1)"), timer);
+        const auto setter = helper.indexOf(QStringLiteral("SDL_SetJoystickVirtualButton"));
+        const auto commit = helper.indexOf(QStringLiteral("SDL_UpdateJoysticks()"));
+        const auto advance = smoke.indexOf(QStringLiteral("QMetaObject::invokeMethod(fixture, \"advance\""), clear);
+        QVERIFY(timer >= 0);
+        QVERIFY(release > timer);
+        QVERIFY(press > release);
+        QVERIFY(clear > press);
+        QVERIFY(advance > clear);
+        QVERIFY(setter >= 0);
+        QVERIFY(commit > setter);
+    }
+
     void linuxVulkanOwnerOutlivesRuntimeAndHiddenRootAdoption()
     {
         const auto main = source(QStringLiteral("src/app/ApplicationStartup.cpp"));
@@ -2598,6 +3110,8 @@ private slots:
         const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
         const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
         const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
+        const auto decorations = main.indexOf(QStringLiteral("WindowTheme::prepareWindow(rootWindow)"));
+        const auto graphicsSetup = main.indexOf(QStringLiteral("graphicsDevices.applyTo(rootWindow)"));
         const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
         const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
         const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
@@ -2608,7 +3122,9 @@ private slots:
         QVERIFY(engine > runtime);
         QVERIFY(hidden > engine);
         QVERIFY(load > hidden);
-        QVERIFY(adopt > load);
+        QVERIFY(decorations > load);
+        QVERIFY(graphicsSetup > decorations);
+        QVERIFY(adopt > graphicsSetup);
         QVERIFY(prepare > adopt);
         QVERIFY(show > prepare);
         const auto graphics = source(QStringLiteral("src/streaming/rendering/LinuxVulkanGraphics.cpp"));
@@ -2876,8 +3392,8 @@ private:
             var Qt = {callLater:function(callback) { callbacks.push(callback); }};
         )JS"));
         if (setup.isError()) return false;
-        for (const auto *name : {"updaterSessionSafe", "updaterBusy", "updaterCanInstall", "updaterNeedsReconciliation",
-                                 "updaterAttention", "updaterDownloadFraction"}) {
+        for (const auto *name : {"sessionWorkIdle", "updaterSessionSafe", "updaterBusy", "updaterCanInstall",
+                                 "updaterNeedsReconciliation", "updaterAttention", "updaterDownloadFraction"}) {
             const auto match = QRegularExpression(QStringLiteral(
                 "    readonly property (?:bool|string|real) %1: (.*?)(?=\\n    (?:property|readonly|on[A-Z]|//))").arg(QString::fromLatin1(name)),
                 QRegularExpression::DotMatchesEverythingOption).match(shell);

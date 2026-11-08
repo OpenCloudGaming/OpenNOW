@@ -2,22 +2,20 @@
 
 #include <QElapsedTimer>
 #include <QCryptographicHash>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QMutexLocker>
 #include <QTimer>
 
 #include <SDL3/SDL_hidapi.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <utility>
 
 #ifdef Q_OS_LINUX
+#include "input/platform/LinuxHidIdentity.h"
 #include <fcntl.h>
 #include <linux/hidraw.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #ifdef Q_OS_WIN
@@ -71,6 +69,11 @@ constexpr std::array<SupportedDevice, 18> supported{{
     {"Saitek X56 Throttle", "throttle", "https://github.com/Chryseus/x56linux", ""}
 }};
 
+QString vidPid(quint16 vendor, quint16 product)
+{
+    return QStringLiteral("%1:%2").arg(vendor, 4, 16, QLatin1Char('0')).arg(product, 4, 16, QLatin1Char('0'));
+}
+
 #ifdef Q_OS_MACOS
 io_service_t hidService(const QByteArray &path)
 {
@@ -91,32 +94,8 @@ struct DeviceIdentity {
 DeviceIdentity deviceIdentity(const GenericHidBackend::Device &device)
 {
 #ifdef Q_OS_LINUX
-    const auto deviceClass = device.path.startsWith("/dev/hidraw") ? QStringLiteral("hidraw")
-        : device.path.startsWith("/dev/input/event") ? QStringLiteral("input") : QString{};
-    if (deviceClass.isEmpty()) return {};
-    auto current = QFileInfo(QStringLiteral("/sys/class/%1/%2/device").arg(deviceClass)
-                                .arg(QFileInfo(QString::fromLocal8Bit(device.path)).fileName())).canonicalFilePath();
-    if (current.isEmpty()) return {};
-    const auto instancePath = current.toUtf8();
-    struct stat instance{};
-    if (::stat(instancePath.constData(), &instance) != 0 || !S_ISDIR(instance.st_mode) || !instance.st_ino) return {};
-    const auto instanceKey = instancePath + char(0) + QByteArray::number(quint64(instance.st_dev), 16)
-        + ':' + QByteArray::number(quint64(instance.st_ino), 16);
-    while (!current.isEmpty() && current != QStringLiteral("/")) {
-        QFile vendor(current + QStringLiteral("/idVendor"));
-        QFile product(current + QStringLiteral("/idProduct"));
-        if (vendor.open(QIODevice::ReadOnly) && product.open(QIODevice::ReadOnly)) {
-            if (vendor.readAll().trimmed().toUShort(nullptr, 16) != device.vendor
-                || product.readAll().trimmed().toUShort(nullptr, 16) != device.product) return {};
-            if (!device.serial.isEmpty()) {
-                QFile serial(current + QStringLiteral("/serial"));
-                if (!serial.open(QIODevice::ReadOnly)
-                    || QString::fromUtf8(serial.readAll().trimmed()) != device.serial) return {};
-            }
-            return {current.toUtf8(), instanceKey};
-        }
-        current = QFileInfo(current).dir().absolutePath();
-    }
+    const auto identity = LinuxHidIdentity::resolve(device);
+    return {identity.physicalKey, identity.instanceKey};
 #elif defined(Q_OS_WIN)
     const GUID hidGuid = {0x4d1e55b2, 0xf16f, 0x11cf, {0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
     const auto set = SetupDiGetClassDevsW(&hidGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -271,6 +250,15 @@ public:
         }
         return entry;
     }
+    bool accessDenied(const Device &device) override
+    {
+#ifdef Q_OS_LINUX
+        return ::access(device.path.constData(), R_OK | W_OK) != 0 && errno == EACCES;
+#else
+        Q_UNUSED(device);
+        return false;
+#endif
+    }
     void close(Handle handle) override
     {
         auto *entry = static_cast<OpenHandle *>(handle);
@@ -402,7 +390,7 @@ QVariantMap GenericHidInput::deviceMetadata(quint16 vendor, quint16 product)
     const auto &entry = supported[std::distance(allowlist.begin(), it)];
     return {{QStringLiteral("name"), QString::fromUtf8(entry.name)},
         {QStringLiteral("type"), QString::fromUtf8(entry.type)},
-        {QStringLiteral("vidPid"), QStringLiteral("%1:%2").arg(vendor, 4, 16, QLatin1Char('0')).arg(product, 4, 16, QLatin1Char('0'))},
+        {QStringLiteral("vidPid"), vidPid(vendor, product)},
         {QStringLiteral("evidence"), QString::fromUtf8(entry.evidence)},
         {QStringLiteral("uncertainty"), QString::fromUtf8(entry.uncertainty)}};
 }
@@ -464,6 +452,10 @@ GenericHidInput::Batch GenericHidInput::drain(int limit)
     QMutexLocker lock(&m_mutex);
     Batch batch;
     batch.inventoryChanged = std::exchange(m_inventoryChanged, false);
+    batch.diagnostics = std::exchange(m_diagnostics, {});
+    batch.scanGeneration = m_scanGeneration;
+    if (m_droppedDiagnostics)
+        batch.diagnostics.append(QStringLiteral("generic-hid %1 diagnostics dropped").arg(std::exchange(m_droppedDiagnostics, 0)));
     for (const auto &lane : m_lanes) if (lane.claim.incarnation) batch.claims.append(lane.claim);
     limit = std::clamp(limit, 0, 32);
     int empty = 0;
@@ -519,6 +511,16 @@ bool GenericHidInput::append(const GenericHidReport &report)
     return true;
 }
 
+void GenericHidInput::diagnose(const QString &message)
+{
+    QMutexLocker lock(&m_mutex);
+    if (m_diagnostics.size() >= 32) {
+        ++m_droppedDiagnostics;
+        return;
+    }
+    m_diagnostics.append(message);
+}
+
 void GenericHidInput::submitOutput(const GenericHidReport &report)
 {
     QMutexLocker lock(&m_mutex);
@@ -546,10 +548,12 @@ void GenericHidInput::run()
 {
     if (!m_backend->initialize()) {
         qWarning("Generic HID initialization failed; allowlisted devices remain excluded from gamepad emulation");
+        diagnose(QStringLiteral("generic-hid initialization failed; allowlisted devices are not forwarded"));
         return;
     }
     QHash<QByteArray, Source> sources;
     QHash<QByteArray, QList<GenericHidBackend::Device>> suppressed;
+    QSet<QByteArray> noAccess;
     QSet<QByteArray> rejectedPaths;
     quint64 nextIncarnation = 1;
     QElapsedTimer discoveryClock;
@@ -564,7 +568,11 @@ void GenericHidInput::run()
             QMutexLocker lock(&m_mutex);
             removeLocked(it->claim.slot, it->claim.incarnation);
         }
-        if (suppress) suppressed.insert(key, it->devices);
+        if (suppress) {
+            suppressed.insert(key, it->devices);
+            diagnose(QStringLiteral("generic-hid %1 slot=%2 removed after a read, output, or queue failure")
+                .arg(vidPid(it->claim.vendor, it->claim.product)).arg(it->claim.slot));
+        }
         for (const auto &collection : it->collections) m_backend->close(collection.handle);
         sources.erase(it);
     };
@@ -585,6 +593,7 @@ void GenericHidInput::run()
         if (workerEpoch != forwardingEpoch || !forwarding) {
             for (const auto &key : sources.keys()) closeSource(key, false);
             suppressed.clear();
+            noAccess.clear();
             firstScan = true;
             workerEpoch = forwardingEpoch;
         }
@@ -611,7 +620,11 @@ void GenericHidInput::run()
                         key, device.serial, device.vendor, device.product});
                 }
                 if (key.isEmpty() || device.instanceKey.isEmpty()) {
-                    if (!rejectedPaths.contains(device.path)) qWarning("Generic HID physical or arrival identity unresolved; refusing device");
+                    if (!rejectedPaths.contains(device.path)) {
+                        qWarning("Generic HID physical or arrival identity unresolved; refusing device");
+                        diagnose(QStringLiteral("generic-hid %1 refused: physical or arrival identity unresolved for %2")
+                            .arg(vidPid(device.vendor, device.product), QString::fromLocal8Bit(device.path)));
+                    }
                     unresolved.insert(device.path);
                     continue;
                 }
@@ -630,7 +643,18 @@ void GenericHidInput::run()
                 if (!groups.contains(key) || !sameDevices(sources[key].devices, groups[key])) closeSource(key, false);
             }
             for (const auto &key : suppressed.keys()) {
-                if (!groups.contains(key) || !sameDevices(suppressed[key], groups[key])) suppressed.remove(key);
+                const auto changed = !groups.contains(key) || !sameDevices(suppressed[key], groups[key]);
+                const auto accessRestored = !changed && noAccess.contains(key)
+                    && std::none_of(groups[key].cbegin(), groups[key].cend(),
+                        [&](const auto &device) { return m_backend->accessDenied(device); });
+                if (accessRestored) {
+                    const auto &device = groups[key].first();
+                    diagnose(QStringLiteral("generic-hid %1 access granted; retrying").arg(vidPid(device.vendor, device.product)));
+                }
+                if (changed || accessRestored) {
+                    suppressed.remove(key);
+                    noAccess.remove(key);
+                }
             }
             for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
                 if (!forwarding) break;
@@ -646,6 +670,7 @@ void GenericHidInput::run()
                 for (const auto &entry : std::as_const(sources)) used[entry.claim.slot] = true;
                 source.claim.slot = std::distance(used.begin(), std::find(used.begin(), used.end(), false));
                 bool valid = source.devices.size() <= 16;
+                QByteArray deniedPath;
                 for (const auto &candidate : source.devices) {
                     if (!valid || candidate.path.isEmpty() || candidate.interfaceNumber < 0 || candidate.interfaceNumber >= 255
                         || candidate.revision != source.claim.revision) {
@@ -658,13 +683,19 @@ void GenericHidInput::run()
                         break;
                     }
                     auto *handle = m_backend->open(candidate);
-                    if (!handle) { valid = false; break; }
+                    if (!handle) {
+                        if (m_backend->accessDenied(candidate)) deniedPath = candidate.path;
+                        valid = false;
+                        break;
+                    }
                     Collection collection{.device = candidate, .handle = handle, .descriptor = m_backend->descriptor(handle)};
                     valid = collection.descriptor.size() <= 4096;
                     if (valid && !reportIds(collection.descriptor, collection.reportIds)) {
                         collection.descriptor.clear();
                         collection.reportIds.clear();
                         qWarning("Generic HID descriptor cannot be parsed; using capture-detach fallback");
+                        diagnose(QStringLiteral("generic-hid %1 descriptor cannot be parsed on interface %2; using capture-detach fallback")
+                            .arg(vidPid(candidate.vendor, candidate.product)).arg(candidate.interfaceNumber));
                     }
                     source.collections.append(collection);
                     if (!valid) break;
@@ -690,7 +721,16 @@ void GenericHidInput::run()
                 if (!valid) {
                     for (const auto &collection : source.collections) m_backend->close(collection.handle);
                     suppressed.insert(it.key(), it.value());
-                    qWarning("Generic HID interface, descriptor, or collection routing unavailable; refusing device");
+                    if (!deniedPath.isEmpty()) {
+                        noAccess.insert(it.key());
+                        qWarning("Generic HID device has no read/write access; refusing device");
+                        diagnose(QStringLiteral("generic-hid %1 refused: no read/write access to %2; grant it with a udev rule")
+                            .arg(vidPid(device.vendor, device.product), QString::fromLocal8Bit(deniedPath)));
+                    } else {
+                        qWarning("Generic HID interface, descriptor, or collection routing unavailable; refusing device");
+                        diagnose(QStringLiteral("generic-hid %1 refused: interface, descriptor, or collection routing unavailable")
+                            .arg(vidPid(device.vendor, device.product)));
+                    }
                     continue;
                 }
                 std::sort(source.claim.interfaces.begin(), source.claim.interfaces.end(), [](const auto &a, const auto &b) { return a.number < b.number; });
@@ -704,10 +744,14 @@ void GenericHidInput::run()
                     m_lanes[source.claim.slot].claim = source.claim;
                     markInventoryChangedLocked();
                 }
+                diagnose(QStringLiteral("generic-hid %1 opened slot=%2 interfaces=%3 collections=%4")
+                    .arg(vidPid(source.claim.vendor, source.claim.product)).arg(source.claim.slot)
+                    .arg(source.claim.interfaces.size()).arg(source.collections.size()));
                 sources.insert(it.key(), source);
             }
             QList<DetectedDevice> inventory;
             for (auto entry : std::as_const(detected)) {
+                entry.noAccess = noAccess.contains(entry.key);
                 if (sources.contains(entry.key)) {
                     entry.slot = sources[entry.key].claim.slot;
                     entry.incarnation = sources[entry.key].claim.incarnation;
@@ -717,6 +761,7 @@ void GenericHidInput::run()
             std::sort(inventory.begin(), inventory.end(), [](const auto &a, const auto &b) { return a.deviceId < b.deviceId; });
             QMutexLocker lock(&m_mutex);
             if (m_forwardingEpoch != forwardingEpoch) for (auto &entry : inventory) entry.incarnation = 0;
+            ++m_scanGeneration;
             if (inventory != m_devices) {
                 m_devices = std::move(inventory);
                 markInventoryChangedLocked();

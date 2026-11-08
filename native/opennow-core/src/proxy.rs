@@ -34,17 +34,27 @@ pub fn client_for_settings_with(
     let Some(config) = config_from_settings(settings)? else {
         return Ok(base.clone());
     };
-    let proxy = Proxy::all(&config.normalized_url).map_err(|_| INVALID_PROXY.to_owned())?;
-    configure(
+    configure(builder_for_config(
         Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(20))
-            .pool_idle_timeout(Duration::from_secs(60))
-            .proxy(proxy),
-    )
+            .pool_idle_timeout(Duration::from_secs(60)),
+        Some(&config),
+    )?)
     .build()
     .map_err(|_| "Could not initialize the configured session proxy".to_owned())
+}
+
+pub fn builder_for_config(
+    builder: ClientBuilder,
+    config: Option<&ProxyConfig>,
+) -> Result<ClientBuilder, String> {
+    let Some(config) = config else {
+        return Ok(builder);
+    };
+    let proxy = Proxy::all(&config.normalized_url).map_err(|_| INVALID_PROXY.to_owned())?;
+    Ok(builder.no_proxy().proxy(proxy))
 }
 
 pub fn normalize_proxy_url(raw: &str) -> Result<ProxyConfig, String> {
@@ -87,6 +97,30 @@ pub fn normalize_proxy_url(raw: &str) -> Result<ProxyConfig, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unconfigured_clients_keep_the_base_without_applying_explicit_configuration() {
+        let base = Client::builder().no_proxy().build().unwrap();
+        for settings in [
+            json!({}),
+            json!({"sessionProxyEnabled":false,"sessionProxyUrl":"invalid"}),
+        ] {
+            assert!(
+                client_for_settings_with(&base, &settings, |_| {
+                    panic!("explicit-only configuration must not run")
+                })
+                .is_ok()
+            );
+        }
+        assert!(
+            client_for_settings_with(
+                &base,
+                &json!({"sessionProxyEnabled":true,"sessionProxyUrl":"invalid"}),
+                |_| { panic!("invalid configuration must fail before client configuration") }
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn proxy_configuration_is_strict_and_credential_safe() {

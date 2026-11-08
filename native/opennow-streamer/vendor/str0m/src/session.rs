@@ -1098,7 +1098,8 @@ impl Session {
     }
 
     pub fn has_mid(&self, mid: Mid) -> bool {
-        self.medias.iter().any(|m| m.mid() == mid)
+        self.app.is_some_and(|(app_mid, _)| app_mid == mid)
+            || self.medias.iter().any(|m| m.mid() == mid)
     }
 
     fn regular_feedback_at(&self) -> Option<Instant> {

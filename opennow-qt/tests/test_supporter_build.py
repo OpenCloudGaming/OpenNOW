@@ -44,13 +44,14 @@ class SupporterBuildTest(unittest.TestCase):
         source = self.root / "artifacts"
         destination = self.root / "complete"
         for arch in ("x64", "arm64"):
-            for platform, extension in (("Windows", "msi"), ("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "AppImage.zsync"), ("Linux", "deb"), ("Linux", "flatpak")):
+            for platform, extension in (("Windows", "zip"), ("Linux", "AppImage"), ("Linux", "AppImage.zsync"), ("Linux", "deb"), ("Linux", "flatpak")):
                 package = source / arch / f"OpenNOW-Qt-{self.version}-{platform}-{arch}.{extension}"
                 package.parent.mkdir(parents=True, exist_ok=True)
                 package.write_bytes(f"fixture {platform} {arch}".encode())
             package = source / arch / f"OpenNOW-Qt-{self.version}-Windows-{arch}-setup.exe"
             package.write_bytes(f"fixture setup {arch}".encode())
-        (source / f"OpenNOW-Qt-{self.version}-Darwin-arm64.dmg").write_bytes(b"fixture Darwin arm64")
+        for arch in ("x64", "arm64"):
+            (source / f"OpenNOW-Qt-{self.version}-Darwin-{arch}.dmg").write_bytes(f"fixture Darwin {arch}".encode())
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "assemble", "--source", str(source),
              "--destination", str(destination), "--version", self.version,
@@ -63,13 +64,13 @@ class SupporterBuildTest(unittest.TestCase):
         self.assertEqual(metadata["sourceCommit"], self.commit)
         self.assertEqual(metadata["platformSigning"], "unsigned")
         self.assertEqual(metadata["updates"], "manual-download")
-        self.assertEqual(len(metadata["assets"]), 15)
+        self.assertEqual(len(metadata["assets"]), 14)
         self.assertEqual(
             [asset["name"] for asset in metadata["assets"] if asset["name"].endswith("-setup.exe")],
             [f"OpenNOW-Qt-{self.version}-Windows-arm64-setup.exe",
              f"OpenNOW-Qt-{self.version}-Windows-x64-setup.exe"])
         sums = (destination / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(sums), 16)
+        self.assertEqual(len(sums), 15)
         for line in sums:
             digest, name = line.split("  ")
             self.assertEqual(digest, hashlib.sha256((destination / name).read_bytes()).hexdigest())

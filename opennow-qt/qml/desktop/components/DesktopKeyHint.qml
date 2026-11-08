@@ -7,11 +7,11 @@ Row {
     property string shortcut: keyText
     property string label: qsTr("Play")
     property bool compact: false
-    spacing: compact ? 6 : 8
+    spacing: DesktopTokens.px(compact ? 6 : 8)
 
     KeyboardGlyph {
         shortcut: root.shortcut
-        keySize: root.compact ? 18 : 24
+        keySize: DesktopTokens.px(root.compact ? 18 : 24)
         ink: DesktopTokens.textBody
         Accessible.name: root.keyText
     }
@@ -20,7 +20,7 @@ Row {
         text: root.label
         color: DesktopTokens.textMuted
         font.family: DesktopTokens.bodyFont
-        font.pixelSize: root.compact ? 11 : 14
+        font.pixelSize: root.compact ? DesktopTokens.smallSize : DesktopTokens.captionSize
         font.weight: Font.DemiBold
     }
 }

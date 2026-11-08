@@ -1,0 +1,64 @@
+name: Persistent Rust build cache
+description: Preserve complete Cargo targets and downloads with trusted-branch writers
+inputs:
+  shared-key:
+    description: Caller namespace shared by compatible build jobs
+    required: true
+  workspaces:
+    description: Newline-separated workspace -> relative target path mappings
+    required: true
+  save-if:
+    description: Allow saving on push or workflow_dispatch from dev/main only; false disables saving
+    required: false
+    default: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+runs:
+  using: composite
+  steps:
+    - name: Identify Rust cache environment
+      id: identity
+      shell: python
+      env:
+        RUST_CACHE_SHARED_KEY: ${{ inputs.shared-key }}
+        RUST_CACHE_WORKSPACES: ${{ inputs.workspaces }}
+        RUST_CACHE_SAVE_IF: ${{ inputs.save-if }}
+      run: |
+        import runpy
+        import sys
+        sys.argv = ["rust-build-cache.py", "prepare"]
+        runpy.run_path(".github/scripts/rust-build-cache.py", run_name="__main__")
+    - name: Mount Linux Rust Sticky Disk
+      if: runner.os == 'Linux'
+      uses: useblacksmith/stickydisk@3f6be1451e3cad893b778bc93495c80452a5da26
+      with:
+        key: ${{ steps.identity.outputs.disk-key }}
+        path: ${{ runner.temp }}/opennow-rust-cache
+        commit: ${{ steps.identity.outputs.save }}
+    - name: Hydrate Rust targets and verified source timestamps
+      if: runner.os == 'Linux'
+      shell: python
+      run: |
+        import runpy
+        import sys
+        sys.argv = ["rust-build-cache.py", "link"]
+        runpy.run_path(".github/scripts/rust-build-cache.py", run_name="__main__")
+    - name: Restore and register post-job Rust archive save
+      if: runner.os != 'Linux' && steps.identity.outputs.save == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.identity.outputs.paths }}
+        key: ${{ steps.identity.outputs.archive-key }}
+        restore-keys: ${{ steps.identity.outputs.restore-keys }}
+    - name: Restore read-only Rust archive
+      if: runner.os != 'Linux' && steps.identity.outputs.save != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.identity.outputs.paths }}
+        key: ${{ steps.identity.outputs.archive-key }}
+        restore-keys: ${{ steps.identity.outputs.restore-keys }}
+    - name: Report Rust cache setup timing
+      shell: python
+      run: |
+        import runpy
+        import sys
+        sys.argv = ["rust-build-cache.py", "diagnostics"]
+        runpy.run_path(".github/scripts/rust-build-cache.py", run_name="__main__")

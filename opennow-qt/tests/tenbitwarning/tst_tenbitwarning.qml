@@ -84,6 +84,9 @@ TestCase {
     function test_optOut(data) {
         dialog.notifySelection("8bit_420", "10bit_420")
         tryCompare(dialog, "opened", true)
+        // Popup opening precedes the Column's deferred layout. Hit-test the
+        // checkbox only after its final position has reached the scene.
+        verify(waitForPolish(dialog.contentItem))
         const checkbox = findChild(dialog, "tenBitWarningDontNotify")
         verify(checkbox)
         mouseClick(checkbox)

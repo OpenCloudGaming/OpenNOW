@@ -181,6 +181,10 @@ class UbuntuAptHttpsTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 text = path.read_text()
+                if path.name == "qt-build.yml":
+                    call = "uses: ./.github/actions/linux-dependencies"
+                    self.assertLess(text.index(command), text.index(call))
+                    text = text.replace(call, (ROOT / ".github/actions/linux-dependencies/action.yml").read_text())
                 self.assertEqual(text.count(command), 1)
                 setup = text.split("name: Prepare Ubuntu HTTPS mirrors", 1)[1].split("run: " + command, 1)[0]
                 self.assertIn(condition, setup)

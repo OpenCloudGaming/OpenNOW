@@ -67,6 +67,7 @@ Item {
         onExpansionRequested: root.expanded = !root.expanded
         DesktopSettingsStepper {
             id: stepper
+            objectName: "settingsResolutionStepper"
             visible: !root.expanded
             text: root.current ? root.current.label : root.value.replace("x","×")
             previousEnabled: root.available.length > 1; nextEnabled: previousEnabled

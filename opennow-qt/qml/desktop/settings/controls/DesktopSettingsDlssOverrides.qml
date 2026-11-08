@@ -193,7 +193,7 @@ Column {
                 x: DesktopTokens.settingsInset
                 width: parent.width - DesktopTokens.settingsInset * 2
                 spacing: DesktopTokens.px(8)
-                readonly property int columns: Math.max(1, Math.min(root.tiles.length, Math.floor((width + spacing) / (DesktopTokens.px(150) + spacing))))
+                readonly property int columns: Math.max(1, Math.min(3, Math.floor((width + spacing) / (DesktopTokens.px(220) + spacing))))
                 Repeater {
                     model: root.tiles
                     delegate: AbstractButton {
@@ -202,7 +202,7 @@ Column {
                         readonly property bool chosen: root.selectedTile === modelData.key
                         objectName: "dlssTile-" + modelData.key
                         width: Math.floor((tileFlow.width - (tileFlow.columns - 1) * tileFlow.spacing) / tileFlow.columns)
-                        height: DesktopTokens.px(60)
+                        height: Math.max(DesktopTokens.px(76), tileCopy.implicitHeight + DesktopTokens.px(28))
                         enabled: modelData.enabled
                         opacity: enabled ? 1 : 0.45
                         hoverEnabled: true
@@ -227,17 +227,18 @@ Column {
                             ink: tile.chosen ? Theme.focusText : Theme.label
                         }
                         Column {
+                            id: tileCopy
                             anchors.verticalCenter: parent.verticalCenter
                             x: tileIcon.x + tileIcon.width + DesktopTokens.px(12)
                             width: parent.width - x - DesktopTokens.px(10)
                             spacing: DesktopTokens.px(2)
                             Text {
-                                width: parent.width; text: tile.modelData.label; elide: Text.ElideRight
+                                width: parent.width; text: tile.modelData.label; wrapMode: Text.WordWrap
                                 color: tile.chosen ? Theme.focusText : Theme.label
                                 font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.captionSize; font.weight: Font.ExtraBold
                             }
                             Text {
-                                width: parent.width; text: tile.modelData.detail; elide: Text.ElideRight
+                                width: parent.width; text: tile.modelData.detail; wrapMode: Text.WordWrap
                                 color: tile.chosen ? Theme.focusText : Theme.textMuted
                                 font.family: Theme.bodyFont; font.pixelSize: DesktopTokens.px(12)
                             }

@@ -21,8 +21,21 @@ FocusScope {
     readonly property bool compactNavigation: width < DesktopTokens.px(1050)
     readonly property int selectedGroup: sections.findIndex(section => section.page ===
         ([0,1,2].indexOf(selectedSection) >= 0 ? 0 : selectedSection === 10 ? 5 : selectedSection === 7 ? 8 : selectedSection))
-    onSelectedSectionChanged: { advancedOpen = false }
+    onSelectedSectionChanged: {
+        advancedOpen = false
+        navigationRevealTimer.restart()
+    }
+    onCompactNavigationChanged: navigationRevealTimer.restart()
     signal requestConsoleMode(bool enabled)
+
+    // Navigation belongs to this page. Cancel pending layout work when a route
+    // change destroys it instead of retaining a method on a deleted wrapper.
+    Timer {
+        id: navigationRevealTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.revealSelectedNavigation()
+    }
 
     TenBitWarningDialog { id: tenBitWarning; settingsStore: ShellStore }
 
@@ -46,6 +59,28 @@ FocusScope {
         return !query || (section.label + " " + section.detail + " " + section.keywords).toLowerCase().indexOf(query) >= 0
     }
 
+    function revealNavigation(button) {
+        if (!button) return
+        const position = button.mapToItem(railFlick.contentItem, 0, 0)
+        if (root.compactNavigation) {
+            if (position.x < railFlick.contentX)
+                railFlick.contentX = Math.max(0, position.x - DesktopTokens.px(8))
+            else if (position.x + button.width > railFlick.contentX + railFlick.width)
+                railFlick.contentX = Math.min(Math.max(0, railFlick.contentWidth - railFlick.width),
+                    position.x + button.width - railFlick.width + DesktopTokens.px(8))
+        } else {
+            if (position.y < railFlick.contentY)
+                railFlick.contentY = Math.max(0, position.y - DesktopTokens.px(8))
+            else if (position.y + button.height > railFlick.contentY + railFlick.height)
+                railFlick.contentY = Math.min(Math.max(0, railFlick.contentHeight - railFlick.height),
+                    position.y + button.height - railFlick.height + DesktopTokens.px(8))
+        }
+    }
+
+    function revealSelectedNavigation() {
+        root.revealNavigation(navigationButtons.itemAt(root.selectedGroup))
+    }
+
     Component.onCompleted: {
         ShellStore.refreshRegions()
         ShellStore.refreshGameAccounts()
@@ -64,7 +99,8 @@ FocusScope {
     function setSetting(key, value) {
         ShellStore.setSetting(key, value)
         if (key === "resolution")
-            Qt.callLater(root.clampFpsToEntitlement)
+            // Keep the persisted setting correction even if this page closes.
+            Qt.callLater(ShellStore.clampFpsToEntitlement)
     }
 
     function setChoice(key, value) {
@@ -377,13 +413,14 @@ FocusScope {
     }
 
     function runStoreAction(account) {
+        const scope = ShellStore.captureAccountScope()
         const action = ShellStore.gameAccountAction(account)
         if (action === "sync")
-            ShellStore.syncGameAccount(account.provider)
+            ShellStore.syncGameAccount(account.provider, scope)
         else if (action === "unlink")
-            ShellStore.unlinkGameAccount(account.provider)
+            ShellStore.unlinkGameAccount(account.provider, scope)
         else if (action === "link")
-            ShellStore.startAccountLink(account.provider)
+            ShellStore.startAccountLink(account.provider, scope)
     }
 
     function projectLinks() {
@@ -442,25 +479,35 @@ FocusScope {
         }
         Flickable {
             id: railFlick
+            objectName: "settingsNavigationScroll"
+            readonly property bool horizontalNavigation: root.compactNavigation
             width: parent.width
-            height: root.compactNavigation ? navigation.implicitHeight : Math.max(0, root.height - settingsRail.y - settingsSearch.height - 36)
-            contentWidth: width
+            height: root.compactNavigation ? DesktopTokens.px(52) : Math.max(0, root.height - settingsRail.y - settingsSearch.height - DesktopTokens.px(36))
+            contentWidth: root.compactNavigation ? navigation.implicitWidth : width
             contentHeight: navigation.implicitHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: root.compactNavigation ? Flickable.HorizontalFlick : Flickable.VerticalFlick
             // Entry heights scale with the interface scale, so the rail can be
             // taller than its viewport. AsNeeded also hides the bar while the
             // user is not scrolling, which would leave the overflow invisible.
             ScrollBar.vertical: ScrollBar {
                 objectName: "settingsRailScroll"
-                policy: railFlick.contentHeight > railFlick.height + 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                policy: !root.compactNavigation && railFlick.contentHeight > railFlick.height + 1 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
             }
-            Flow {
+            ScrollBar.horizontal: ScrollBar {
+                policy: root.compactNavigation && railFlick.contentWidth > railFlick.width + 1
+                    ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+            }
+            Grid {
                 id: navigation
-                width: parent.width
+                width: root.compactNavigation ? implicitWidth : parent.width
                 height: implicitHeight
-                spacing: DesktopTokens.px(6)
+                columns: root.compactNavigation ? root.sections.length : 1
+                columnSpacing: DesktopTokens.px(6)
+                rowSpacing: DesktopTokens.px(6)
                 Repeater {
+                    id: navigationButtons
                     model: root.sections
                     delegate: Button {
                         required property var modelData
@@ -469,24 +516,11 @@ FocusScope {
                         Accessible.name: modelData.label
                         visible: root.matchesSection(modelData)
                         width: root.compactNavigation ? Math.max(DesktopTokens.px(104), navLabel.implicitWidth + DesktopTokens.px(40)) : settingsRail.width
-                        height: DesktopTokens.px(root.compactNavigation ? 48 : 64)
+                        height: DesktopTokens.px(root.compactNavigation ? 44 : 64)
                         padding: 12
                         hoverEnabled: true
                         onClicked: root.selectedSection = modelData.page
-                        // Keyboard focus must not land on an entry the rail is
-                        // scrolled away from. Flickable.ensureVisible only accepts
-                        // a direct child of its contentItem, and these buttons sit
-                        // inside the navigation Flow, so scroll explicitly.
-                        onFocusChanged: if (focus) {
-                            const top = mapToItem(railFlick.contentItem, 0, 0).y
-                            const bottom = top + height
-                            if (top < railFlick.contentY) {
-                                railFlick.contentY = Math.max(0, top - DesktopTokens.px(8))
-                            } else if (bottom > railFlick.contentY + railFlick.height) {
-                                railFlick.contentY = Math.min(railFlick.contentHeight - railFlick.height,
-                                                             bottom - railFlick.height + DesktopTokens.px(8))
-                            }
-                        }
+                        onFocusChanged: if (focus) root.revealNavigation(this)
                         background: Rectangle {
                             radius: 16
                             color: root.selectedGroup === index ? DesktopTokens.raisedStrong : parent.hovered ? DesktopTokens.raised : "transparent"

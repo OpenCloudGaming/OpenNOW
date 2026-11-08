@@ -55,11 +55,11 @@ FocusScope {
     onVideoReadyChanged: {
         if (!videoReady) {
             if (!failed && visible && AppController.overlay === "")
-                Qt.callLater(root.forceActiveFocus)
+                focusRestoreTimer.restart()
             return
         }
         presentedSessionId = sessionId
-        Qt.callLater(root.resynchronizeStreamInput)
+        inputResyncTimer.restart()
     }
     onReconnectBannerVisibleChanged: {
         reconnectStartedMs = reconnectBannerVisible ? Date.now() : 0
@@ -103,6 +103,28 @@ FocusScope {
         streamVideo.resynchronizeInput()
     }
 
+    // Deferred window work must end with this surface, including when a
+    // fullscreen/console transition replaces it before the next event turn.
+    Timer {
+        id: inputResyncTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.resynchronizeStreamInput()
+    }
+    Timer {
+        id: focusRestoreTimer
+        interval: 0
+        repeat: false
+        onTriggered: {
+            if (!root.visible || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+                return
+            if (root.failed)
+                retryMediaButton.forceActiveFocus()
+            else if (!root.videoReady && AppController.overlay === "")
+                root.forceActiveFocus()
+        }
+    }
+
     onXChanged: publishCaptureRect()
     onYChanged: publishCaptureRect()
     onWidthChanged: publishCaptureRect()
@@ -114,10 +136,10 @@ FocusScope {
         target: root.Window.window
         function onXChanged() { root.resynchronizeStreamInput() }
         function onYChanged() { root.resynchronizeStreamInput() }
-        function onWidthChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onHeightChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onVisibilityChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onWidthChanged() { inputResyncTimer.restart() }
+        function onHeightChanged() { inputResyncTimer.restart() }
+        function onVisibilityChanged() { inputResyncTimer.restart() }
+        function onActiveChanged() { inputResyncTimer.restart() }
     }
 
     Timer { interval: 1000; repeat: true; running: root.streaming || root.reconnectBannerVisible; onTriggered: root.nowMs = Date.now() }
@@ -135,9 +157,16 @@ FocusScope {
             && !ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay)
         shortcutBindings: ShellStore.streamShortcutBindings()
         clipboardPaste: ShellStore.settings.clipboardPaste === true
+        macPointerLockEnabled: ShellStore.settings.macPointerLockEnabled !== false
+        onMacPointerLockEnabledChanged: {
+            if (Qt.platform.os === "osx" && macPointerLockEnabled !== (ShellStore.settings.macPointerLockEnabled !== false))
+                ShellStore.setSetting("macPointerLockEnabled", macPointerLockEnabled)
+        }
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
-        frameGeneration: String(ShellStore.settings.frameGeneration || 'off') === '2x'
+        frameGenerationFactor: ShellStore.frameGenerationFactor()
+        generatedFramesOnly: ShellStore.generatedFramesOnly
+        displayRefreshOverrideHz: Number(ShellStore.settings.frameGenerationDisplayHz || 0)
         metalFxUpscaling: Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx"
         fsrUpscaling: Qt.platform.os !== "osx" && ShellStore.settings.upscaling === "fsr1"
         upscalingSharpness: Number(ShellStore.settings.upscalingSharpness ?? 10)
@@ -173,6 +202,21 @@ FocusScope {
         z: 3
     }
 
+    StreamPointerLockHint {
+        layer.enabled: HdrOutput.chromeRequired
+        layer.effect: HdrChromeEffect {}
+        sessionId: root.sessionId
+        streaming: root.videoReady
+        active: Qt.platform.os === "osx" && root.videoReady && streamVideo.inputEnabled
+            && !clipboardPasteNotice.running
+        pointerLockEnabled: streamVideo.macPointerLockEnabled
+        onEnableRequested: {
+            streamVideo.togglePointerLock()
+            inputResyncTimer.restart()
+        }
+        z: 3
+    }
+
     StreamCaptureStatus {
         layer.enabled: HdrOutput.chromeRequired
         layer.effect: HdrChromeEffect {}
@@ -182,7 +226,8 @@ FocusScope {
     Connections {
         target: ShellStore
         function onPointerLockToggleRequested() {
-            streamVideo.togglePointerLock()
+            if (root.visible && root.videoReady)
+                streamVideo.togglePointerLock()
         }
         function onTextInputErrorAnnounced(message) {
             root.clipboardPasteMessage = message
@@ -382,42 +427,6 @@ FocusScope {
     }
 
     GlassPanel {
-        visible: root.videoReady && AppController.overlay === ""
-        layer.enabled: HdrOutput.chromeRequired
-        layer.effect: HdrChromeEffect {}
-        z: 12
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 34
-        width: streamHints.implicitWidth + 34
-        height: 52
-        panelRadius: 26
-        strong: true
-
-        Row {
-            id: streamHints
-            objectName: "streamControlHints"
-            anchors.centerIn: parent
-            spacing: 22
-            SessionGlyphs.Hint { objectName: "streamSessionHint"; prompts: glyphs; button: "GUIDE"; label: qsTr("Session") }
-            SessionGlyphs.Hint {
-                objectName: "streamStatsKeyHint"
-                visible: glyphs.keyboard && button !== ""
-                prompts: glyphs
-                button: String(ShellStore.settings.shortcutToggleStats ?? "Ctrl+N")
-                label: qsTr("Stats")
-            }
-            SessionGlyphs.Hint {
-                objectName: "streamFullscreenKeyHint"
-                visible: glyphs.keyboard && button !== ""
-                prompts: glyphs
-                button: String(ShellStore.settings.shortcutToggleFullscreen ?? "F11")
-                label: qsTr("Fullscreen")
-            }
-        }
-    }
-
-    GlassPanel {
         MotionProgress {
             id: afkMotion
             shown: root.videoReady && ShellStore.antiAfkIndicatorShown(root.elapsedSeconds)
@@ -445,6 +454,6 @@ FocusScope {
         }
     }
 
-    onFailedChanged: if (failed) Qt.callLater(() => retryMediaButton.forceActiveFocus())
+    onFailedChanged: if (failed) focusRestoreTimer.restart()
 
 }

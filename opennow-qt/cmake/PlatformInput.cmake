@@ -1,10 +1,16 @@
 add_library(opennow-platform-input STATIC
+    "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WindowsWindowMoveLoop.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WindowsWindowMoveLoop.h"
     "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/MacPointerCapture.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/MacPointerCapture.h"
     "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WaylandPointerCapture.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../src/input/platform/WaylandPointerCapture.h")
 target_link_libraries(opennow-platform-input PUBLIC Qt6::Gui PRIVATE Qt6::GuiPrivate)
 target_include_directories(opennow-platform-input PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../src")
+
+if(WIN32)
+    target_link_libraries(opennow-platform-input PRIVATE comctl32 user32)
+endif()
 
 if(APPLE)
     enable_language(OBJCXX)

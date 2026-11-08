@@ -60,12 +60,12 @@ LTR mode or recovery-mode protocol. The evidence is the macOS configuration
 field registrations and defaults, plus Windows `transport-feedback.md` config
 values tagged L.
 
-The handoff also carries `microphoneOpusPayloadType` and
-`microphoneRedPayloadType` when an offered `m=mic` section explicitly maps those
-payloads. `microphoneRedundancyLevel` comes from
-`aqos.enableRedundancyForMic` and `aqos.redundancyLevelForMic`, with supported
-depths 0..3; disabled redundancy is 0. Missing payload mappings stay absent.
-No unproven `m=audio` microphone identification is added. Microphone negotiation
+The handoff carries no microphone payload types. The `m=mic` section's rtpmap
+describes the legacy RTSP media plane; the native bundle uses the fixed RTC
+mapping (Opus 111, RED 63) that Bifrost hardcodes, so the transport sends the mic
+as plain Opus on PT 111. `aqos.enableRedundancyForMic` and
+`aqos.redundancyLevelForMic` are not applied to the uplink until a live seat
+confirms it decodes OpenNOW's RED. Microphone negotiation
 depends on the server's bundle offer, not whether local capture starts muted.
 Negotiation does not enable capture. Windows `audio.md`, `sdp-attributes.md`,
 and the mic-stream strings establish separate mic handling and RED depth 3;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QImage>
 #include <QMargins>
 #include <QObject>
 #include <QRect>
@@ -54,8 +55,9 @@ public:
     Q_INVOKABLE bool copyScreenshotTo(const QString &sourcePath,
                                       const QString &destinationUrlOrPath) const;
     Q_INVOKABLE bool openThemeDirectory() const;
-    Q_INVOKABLE QString captureScreenRegion(int x, int y, int width, int height,
-                                            const QString &gameTitle) const;
+    Q_INVOKABLE bool captureStreamScreenshot(const QString &gameTitle);
+    void setScreenshotCapture(std::function<bool()> capture);
+    void saveStreamScreenshot(const QImage &image);
     Q_INVOKABLE bool captureScreenRegionTo(int x, int y, int width, int height,
                                            const QString &outputPath) const;
     Q_INVOKABLE bool ensureDirectLaunchAssociation() const;
@@ -73,12 +75,16 @@ public:
 
     void setOverlayTransitionGuard(std::function<bool(bool)> guard);
 
+    // Physical DPI of the window's screen (or primary). Used for remote UI scale.
+    Q_INVOKABLE int screenDpi(QWindow *window = nullptr) const;
+
 public slots:
     void setReducedMotion(bool reducedMotion);
     void setControllerCount(int count);
     void setInputMode(const QString &mode);
 
 signals:
+    void streamScreenshotSaved(const QString &path);
     void routeChanged();
     void overlayChanged();
     void reducedMotionChanged();
@@ -107,4 +113,7 @@ private:
     QString m_inputMode = QStringLiteral("keyboard");
     QVector<QString> m_routeHistory;
     std::function<bool(bool)> m_overlayTransitionGuard;
+    std::function<bool()> m_screenshotCapture;
+    QString m_screenshotTitle;
+    bool m_screenshotPending = false;
 };

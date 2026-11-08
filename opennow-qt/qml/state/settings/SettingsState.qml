@@ -17,6 +17,8 @@ QtObject {
     signal consoleSurfaceRequested(bool enabled)
     signal accessibilityAnnounced(string message)
     signal errorReported(string message)
+    signal settingWriteFinished(string token, var result, string message)
+    signal resetStarted()
     property var settings: ({})
     property var confirmedSettings: ({})
     readonly property bool forwardFlightControls: confirmedSettings.forwardFlightControls !== false
@@ -46,6 +48,11 @@ QtObject {
     }
     property string previewThemePack: ""
     property string settingsRequestId: ""
+    property var settingsReadProtected: ({})
+    property bool resetting: false
+    property string resetRequestId: ""
+    property var deferredSettingWrites: ({})
+    property var deferredShortcuts: null
     property string consoleSurfaceRequestId: ""
     property bool consoleSurfaceConfirmedValue: false
     property bool consoleSurfaceDesiredValue: false
@@ -188,11 +195,34 @@ QtObject {
     onSettingsActiveChanged: if (settingsActive) ensureGameLanguages()
     onReadyChanged: {
         if (!ready) {
+            resetting = false
+            resetRequestId = ""
+            settingsRequestId = ""
+            settingsReadProtected = ({})
+            shortcutUpdateRequestId = ""
+            const consoleWrite = settingWrites.launchInConsoleMode
+            const consolePending = consoleSurfaceRequestId !== ""
+                || (consoleWrite && consoleWrite.queued && consoleWrite.nextSource === "console")
+            consoleSurfaceRequestId = ""
+            consoleSurfaceDesiredValue = consoleSurfaceConfirmedValue
+            if (consolePending) {
+                applySetting("launchInConsoleMode", consoleSurfaceConfirmedValue)
+                consoleSurfaceRequested(consoleSurfaceConfirmedValue)
+            }
+            const deferred = deferredSettingWrites
+            deferredSettingWrites = ({})
+            deferredShortcuts = null
             const writes = settingWrites
             settingWrites = ({})
             for (const key of Object.keys(writes)) {
                 if (!ownsConfirmedSetting(key) && key !== "gameCollections")
                     reconcileSetting(key, writes[key].coupledKeys)
+                settingWriteFinished(writes[key].token, null, qsTr("The OpenNOW core is not ready"))
+            }
+            for (const key of Object.keys(deferred)) {
+                if (!ownsConfirmedSetting(key) && key !== "gameCollections")
+                    reconcileSetting(key, Object.keys(settingValues(key, deferred[key].value)).filter(changedKey => changedKey !== key))
+                settingWriteFinished(deferred[key].token, null, qsTr("The OpenNOW core is not ready"))
             }
         }
     }
@@ -247,7 +277,8 @@ QtObject {
             "forwardFlightControls"].includes(key)
     }
 
-    function beginSettingWrite(key, value, previousWrite, source) {
+    function beginSettingWrite(key, value, previousWrite, source, token) {
+        protectSettingsRead(Object.keys(settingValues(key, value)))
         const writes = Object.assign({}, settingWrites)
         if (writes[key]) {
             writes[key] = Object.assign({}, writes[key], {next:value, nextSource:source, queued:true,
@@ -267,7 +298,7 @@ QtObject {
                 baseline[changedKey] = settings[changedKey]
         }
         confirmedSettings = baseline
-        writes[key] = {id:id, value:value, queued:false, providerIdpId:providerIdpId,
+        writes[key] = {id:id, token:token || id, source:source, value:value, queued:false, providerIdpId:providerIdpId,
             scopeGeneration:scopeGeneration,
             sequence:previousWrite ? previousWrite.sequence : ++settingWriteSequence,
             coupledKeys:coupledKeys,
@@ -280,30 +311,46 @@ QtObject {
         const key = Object.keys(settingWrites).find(key => settingWrites[key].id === id)
         if (!key) return false
         const write = settingWrites[key]
-        const confirmed = ownsConfirmedSetting(key)
-        const dispatchNext = write.queued && ready && (key !== "region"
+        const confirmed = ownsConfirmedSetting(key) || write.source === "onboarding"
+        const dispatchNext = !resetting && write.queued && ready && (key !== "region"
             || (write.nextProviderIdpId === providerIdpId && write.nextScopeGeneration === scopeGeneration))
+        const consoleTail = dispatchNext && key === "launchInConsoleMode"
+            && write.source === "onboarding" && write.nextSource === "console"
         const writes = Object.assign({}, settingWrites)
         delete writes[key]
         settingWrites = writes
         if (result) {
+            protectSettingsRead([key].concat(Object.keys(result.changes || {})))
             confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {[key]:result.value})
             write.coupledKeys = Array.from(new Set(write.coupledKeys.concat(Object.keys(result.changes || {}))))
+            if (key === "launchInConsoleMode" && write.source === "onboarding") {
+                consoleSurfaceConfirmedValue = Boolean(result.value)
+                consoleSurfaceDesiredValue = consoleTail ? Boolean(write.next) : consoleSurfaceConfirmedValue
+                consoleSurfaceInitialized = true
+            }
         }
         if (result && confirmed) {
             // Coupled values first (per protocol): core repairs persisted together
             // with the primary key, e.g. an explicit codec the new color mode
             // cannot use is healed toward Auto in the same save.
             applyCoupledSettings(result.changes)
-            applySetting(key, result.value)
+            if (!consoleTail) applySetting(key, result.value)
         } else if (!result && confirmed && !dispatchNext) errorReported(message)
-        const nextId = dispatchNext ? beginSettingWrite(key, write.next, write, write.nextSource) : ""
+        let nextId = ""
+        if (dispatchNext) {
+            if (consoleTail) {
+                beginConsoleSurfacePersistence()
+                nextId = consoleSurfaceRequestId
+            } else nextId = beginSettingWrite(key, write.next, write, write.nextSource)
+        }
         if (!nextId) {
             if (!confirmed && key !== "gameCollections")
                 reconcileSetting(key, write.coupledKeys)
             if (key === "identifyAsSteamDeck" && confirmedSettings[key] !== write.initialValue)
                 Qt.callLater(root.refreshAccountServices)
         }
+        settingWriteFinished(write.token, result, message)
+        continueSettingsReset()
         return confirmed
     }
 
@@ -322,11 +369,27 @@ QtObject {
                     values[changedKey] = changes[changedKey]
             }
         }
+        for (const deferredKey of Object.keys(deferredSettingWrites)) {
+            if (ownsConfirmedSetting(deferredKey) || deferredKey === "gameCollections") continue
+            const changes = settingValues(deferredKey, deferredSettingWrites[deferredKey].value)
+            for (const changedKey of keys) {
+                if (Object.prototype.hasOwnProperty.call(changes, changedKey))
+                    values[changedKey] = changes[changedKey]
+            }
+        }
         for (const changedKey of keys)
             applySetting(changedKey, values[changedKey])
     }
 
     function acceptResponse(id, result) {
+        if (id !== "" && id === resetRequestId) {
+            resetRequestId = ""
+            acceptSettings({settings:result.settings, keyboardLayouts:keyboardLayouts})
+            finishSettingsReset()
+            syncDiscordPresence()
+            Qt.callLater(refreshStreamerDetection)
+            return true
+        }
         if (id !== "" && id === languageRequestId) {
             languageRequestId = ""
             languageDeadline.stop()
@@ -349,8 +412,11 @@ QtObject {
             return true
         }
         if (id !== "" && id === shortcutUpdateRequestId) {
+            protectSettingsRead(Object.keys(result.bindings || {}))
+            confirmedSettings = Object.assign({}, confirmedSettings, result.bindings || {})
             applyCoupledSettings(result.bindings)
             shortcutUpdateRequestId = ""
+            continueSettingsReset()
             return true
         }
         return finishSettingWrite(id, result, "")
@@ -358,10 +424,18 @@ QtObject {
 
     function acceptFailure(id, message) {
         if (id !== "" && id === cancellingRequestId) return true
+        if (id !== "" && id === resetRequestId) {
+            resetRequestId = ""
+            errorReported(message)
+            finishSettingsReset()
+            refreshSettings()
+            return true
+        }
         if (id !== "" && id === shortcutUpdateRequestId) {
             shortcutUpdateError = message || qsTr("The shortcut could not be saved.")
             shortcutUpdateRequestId = ""
             accessibilityAnnounced(shortcutUpdateError)
+            continueSettingsReset()
             return true
         }
         if (id !== "" && id === languageRequestId) {
@@ -382,9 +456,20 @@ QtObject {
     }
 
     function refreshSettings() {
-        if (!ready)
+        if (!ready || resetting)
             return
+        const previous = settingsRequestId
+        settingsRequestId = ""
+        cancelOwnedRequest(previous)
+        settingsReadProtected = ({})
         settingsRequestId = coreClient.request("settings.get", {})
+    }
+
+    function protectSettingsRead(keys) {
+        if (settingsRequestId === "") return
+        const protectedKeys = Object.assign({}, settingsReadProtected)
+        for (const key of keys) protectedKeys[key] = true
+        settingsReadProtected = protectedKeys
     }
 
     function codecNamesFromCapabilities(capabilities, hdrOnly) {
@@ -459,6 +544,370 @@ QtObject {
     function hdrDecoderAvailable() {
         return nativeRuntimeReady && settings.decoderPreference !== "software"
             && codecNamesFromCapabilities(nativeRuntimeCapabilities, true).length > 0
+    }
+
+    // ---- Frame generation: levels, target FPS, display refresh and capability profiles ----
+    // The shell window binds the refresh rate of the screen OpenNOW is on; a saved
+    // frameGenerationDisplayHz overrides it when detection is wrong or reports 0.
+    property real detectedDisplayHz: 0
+    property string frameGenerationGpu: ""
+    property string frameGenerationTestError: ""
+    readonly property var frameGenerationLevels: ["2x", "3x", "4x"]
+    readonly property var frameGenerationDisplayChoices: [60, 75, 90, 100, 120, 144, 165, 180, 240, 360]
+
+    function frameGenerationLevelFactor(value) {
+        const index = frameGenerationLevels.indexOf(String(value || "off"))
+        return index < 0 ? 0 : index + 2
+    }
+    function frameGenerationResolution() {
+        const text = String(settings.resolution || "1920x1080")
+        const match = text.match(/^(\d+)x(\d+)$/)
+        return match ? {width: Number(match[1]), height: Number(match[2]), text: text}
+                     : {width: 1920, height: 1080, text: "1920x1080"}
+    }
+    // The stream frame rate generation works against: the selected FPS, or for Auto the
+    // highest rate the membership allows at the selected resolution.
+    function frameGenerationSourceFps() {
+        const fps = Number(settings.fps || 0)
+        if (fps > 0) return fps
+        const selectable = selectableFpsValues(frameGenerationResolution().text)
+        return selectable.length ? selectable[selectable.length - 1] : 60
+    }
+    function frameGenerationDisplayHz() {
+        const override = Number(settings.frameGenerationDisplayHz || 0)
+        return override > 0 ? override : Number(detectedDisplayHz || 0)
+    }
+    function frameGenerationTargetFps() { return Number(settings.frameGenerationTargetFps || 0) }
+    // The level the saved settings ask for (0 = off); with a target FPS the level follows
+    // the stream rate (round(target / source)).
+    readonly property var frameGenerationModes: ["off", "multiplier", "target", "display"]
+    // How the output rate is chosen: off, a fixed multiplier, a target FPS, or the display.
+    function frameGenerationMode() {
+        const mode = String(settings.frameGenerationMode || "")
+        if (frameGenerationModes.indexOf(mode) >= 0) return mode
+        return frameGenerationLevelFactor(settings.frameGeneration) ? "multiplier" : "off"
+    }
+    function frameGenerationTargetFactor(target) {
+        const factor = Math.round(Number(target) / frameGenerationSourceFps())
+        return factor >= 2 ? Math.min(4, factor) : 0
+    }
+    // Largest allowed multiplier the display can show for the stream rate (0 = none).
+    function frameGenerationDisplayFactor() {
+        const source = frameGenerationSourceFps(), display = frameGenerationDisplayHz()
+        if (display <= 0) return 0
+        for (let factor = 4; factor >= 2; --factor)
+            if (source * factor <= display * 1.025 && frameGenerationAllowed(factor)) return factor
+        return 0
+    }
+    function frameGenerationRequestedFactor() {
+        switch (frameGenerationMode()) {
+        case "multiplier": return frameGenerationLevelFactor(settings.frameGeneration)
+        case "target": return frameGenerationTargetFactor(frameGenerationTargetFps())
+        case "display": return frameGenerationDisplayFactor()
+        default: return 0
+        }
+    }
+    // The level that actually runs: frame generation is unavailable until the capability
+    // test has passed for the current preset, and only the factors it allowed run.
+    function frameGenerationFactor() {
+        const factor = frameGenerationRequestedFactor()
+        return factor >= 2 && frameGenerationAllowed(factor) ? factor : 0
+    }
+    // True once this GPU has been measured at the selected resolution and at least one
+    // level fits the selected frame rate on the current display.
+    function frameGenerationUnlocked() {
+        return (frameGenerationVerdict().allowed || []).length > 0
+    }
+    function frameGenerationReasonText(reason) {
+        switch (String(reason || "")) {
+        case "display": return qsTr("Needs a faster display for this level")
+        case "gpu": return qsTr("Too slow on this GPU for this level")
+        case "engine": return qsTr("This engine generates 2× only")
+        default: return ""
+        }
+    }
+    function frameGenerationOutputFps() { return frameGenerationSourceFps() * frameGenerationFactor() }
+    function ensureFrameGenerationGpu() {
+        if (frameGenerationGpu === "") frameGenerationGpu = String(FrameGenerationBenchmark.gpuName() || "")
+    }
+    // The saved profile is keyed by the GPU name. Until that name is known the
+    // profile is invisible and a saved 4× comes up as off.
+    Component.onCompleted: ensureFrameGenerationGpu()
+    // The measured cost depends on the engine, the GPU and the stream resolution only;
+    // whether a level fits is decided live from the selected frame rate and the display.
+    function frameGenerationProfileKey() {
+        return ["motion", frameGenerationGpu || "unknown-gpu", frameGenerationResolution().text].join("|")
+    }
+    function frameGenerationProfile() {
+        if (frameGenerationGpu === "") return null
+        const profiles = settings.frameGenerationProfiles || {}
+        const key = frameGenerationProfileKey()
+        if (profiles[key]) return profiles[key]
+        // Measurements saved while the key still carried the frame rate stay valid.
+        const legacy = Object.keys(profiles).find(name => name.indexOf(key + "|") === 0)
+        return legacy ? profiles[legacy] : null
+    }
+    // {measured, allowed: [..], reasons: {"2": ""|"gpu"|"display"|"engine", ...}, costMs, budgetMs}
+    function frameGenerationVerdictFor(fps) {
+        const profile = frameGenerationProfile()
+        if (!profile) return {measured: false, allowed: [], reasons: {}, costMs: {}, budgetMs: 0}
+        // The engine maximum belongs to the installed engine: a profile measured by an older
+        // engine keeps its 2x cost and extrapolates the levels it never timed.
+        const verdict = FrameGenerationBenchmark.evaluate(
+            Object.assign({ok: true}, profile, {engineMaxFactor: FrameGenerationBenchmark.engineMaxFactor()}),
+            Number(fps), frameGenerationDisplayHz())
+        verdict.measured = true
+        return verdict
+    }
+    function frameGenerationVerdict() { return frameGenerationVerdictFor(frameGenerationSourceFps()) }
+    // One row per canonical stream rate: which levels fit on this GPU and display. The cost
+    // per source frame is the same for every rate, so one measurement fills the table.
+    function frameGenerationMatrix() {
+        const locked = lockedFpsValues(frameGenerationResolution().text)
+        return canonicalFpsValues().map(fps => {
+            const verdict = frameGenerationVerdictFor(fps)
+            return {fps: fps, locked: locked.indexOf(fps) >= 0,
+                    cells: [2, 3, 4].map(factor => ({
+                        factor: factor, output: fps * factor,
+                        allowed: (verdict.allowed || []).indexOf(factor) >= 0,
+                        reason: String((verdict.reasons || {})[String(factor)] || ""),
+                        costMs: Number((verdict.costMs || {})[String(factor)] || 0),
+                        budgetMs: Number(verdict.budgetMs || 0)}))}
+        })
+    }
+    function frameGenerationAllowed(factor) {
+        return (frameGenerationVerdict().allowed || []).indexOf(Number(factor)) >= 0
+    }
+    function frameGenerationLockedValues() {
+        return frameGenerationLevels.filter(value => !frameGenerationAllowed(frameGenerationLevelFactor(value)))
+    }
+    function frameGenerationLockedHint() {
+        const verdict = frameGenerationVerdict()
+        if (!verdict.measured) return qsTr("Run the capability test to unlock this level")
+        for (let factor = 2; factor <= 4; ++factor) {
+            const text = frameGenerationReasonText((verdict.reasons || {})[String(factor)])
+            if (text !== "") return text
+        }
+        return ""
+    }
+    // Output rates the display can show at 2x..4x the stream rate.
+    function frameGenerationTargetOptions() {
+        const source = frameGenerationSourceFps(), display = frameGenerationDisplayHz()
+        const options = []
+        canonicalFpsValues().forEach(rate => {
+            const factor = Math.round(rate / source)
+            if (factor < 2 || factor > 4 || Math.abs(rate - factor * source) > source * 0.1) return
+            if (display > 0 && rate > display * 1.025) return
+            options.push({value: rate, label: String(rate), enabled: frameGenerationAllowed(factor), factor: factor})
+        })
+        return options
+    }
+    // Frame generation choices persist through the core like every other setting; fixtures
+    // that run without a core keep the local map so the UI still follows the choice.
+    function writeFrameGenerationSetting(key, value) {
+        if (ready) setSetting(key, value)
+        else applySetting(key, value)
+    }
+    // Keeps the stored level in step with the mode's factor so overlays and older readers agree.
+    function storeFrameGenerationLevel(factor) {
+        writeFrameGenerationSetting("frameGeneration", factor >= 2 ? frameGenerationLevels[Math.min(4, factor) - 2] : "off")
+    }
+    function selectFrameGenerationMode(mode) {
+        mode = frameGenerationModes.indexOf(String(mode)) >= 0 ? String(mode) : "off"
+        if (mode === "off") {
+            writeFrameGenerationSetting("frameGeneration", "off")
+            writeFrameGenerationSetting("frameGenerationMode", "off")
+            return
+        }
+        if (mode === "multiplier") {
+            if (frameGenerationLevelFactor(settings.frameGeneration) === 0) {
+                const first = frameGenerationLevels.find(value => frameGenerationAllowed(frameGenerationLevelFactor(value)))
+                if (first) writeFrameGenerationSetting("frameGeneration", first)
+            }
+        } else if (mode === "target") {
+            const options = frameGenerationTargetOptions().filter(option => option.enabled)
+            let target = frameGenerationTargetFps()
+            if (!options.some(option => option.value === target)) {
+                target = options.length ? options[0].value : 0
+                writeFrameGenerationSetting("frameGenerationTargetFps", target)
+            }
+            storeFrameGenerationLevel(frameGenerationTargetFactor(target))
+        } else {
+            storeFrameGenerationLevel(frameGenerationDisplayFactor())
+        }
+        writeFrameGenerationSetting("frameGenerationMode", mode)
+    }
+    function selectFrameGenerationLevel(value) {
+        const known = frameGenerationLevels.indexOf(String(value)) >= 0
+        writeFrameGenerationSetting("frameGeneration", known ? String(value) : "off")
+        writeFrameGenerationSetting("frameGenerationMode", known ? "multiplier" : "off")
+    }
+    function selectFrameGenerationTarget(value) {
+        const target = Number(value) > 0 ? Number(value) : 0
+        writeFrameGenerationSetting("frameGenerationTargetFps", target)
+        storeFrameGenerationLevel(frameGenerationTargetFactor(target))
+        writeFrameGenerationSetting("frameGenerationMode", target > 0 ? "target" : "off")
+    }
+    function selectFrameGenerationDisplayHz(value) {
+        writeFrameGenerationSetting("frameGenerationDisplayHz", Number(value) > 0 ? Number(value) : 0)
+    }
+    // In-stream quick toggle (Ctrl+G menu). Off keeps the configured mode, level and
+    // target in memory so On restores them; after a restart On takes the first level that fits.
+    property string frameGenerationResumeMode: ""
+    property string frameGenerationResumeLevel: ""
+    property int frameGenerationResumeTarget: 0
+    function toggleFrameGeneration() {
+        if (frameGenerationMode() !== "off") {
+            frameGenerationResumeMode = frameGenerationMode()
+            frameGenerationResumeLevel = String(settings.frameGeneration || "off")
+            frameGenerationResumeTarget = frameGenerationTargetFps()
+            selectFrameGenerationMode("off")
+            return
+        }
+        if (!frameGenerationUnlocked()) return
+        const mode = frameGenerationResumeMode || (frameGenerationResumeTarget > 0 ? "target" : "multiplier")
+        const level = frameGenerationLevelFactor(frameGenerationResumeLevel)
+        if (mode === "target" && frameGenerationResumeTarget > 0)
+            selectFrameGenerationTarget(frameGenerationResumeTarget)
+        else if (mode === "multiplier" && level >= 2 && frameGenerationAllowed(level))
+            selectFrameGenerationLevel(frameGenerationResumeLevel)
+        else
+            selectFrameGenerationMode(mode === "target" ? "multiplier" : mode)
+    }
+    // The in-stream tile only appears while frame generation is in use: on, or switched
+    // off from the stream in this session so it can be switched back on.
+    function frameGenerationQuickVisible() {
+        return frameGenerationUnlocked() && (frameGenerationMode() !== "off" || frameGenerationResumeMode !== "")
+    }
+    // One line for the in-stream menu tile.
+    function frameGenerationQuickText() {
+        if (!frameGenerationUnlocked()) return qsTr("Run the capability test in Settings first")
+        if (frameGenerationMode() === "off") return qsTr("Off")
+        const factor = frameGenerationFactor()
+        if (factor < 2) return qsTr("On · no level fits this frame rate")
+        return qsTr("%1× · %2 FPS").arg(factor).arg(frameGenerationSourceFps() * factor)
+    }
+    // "2× 0.8 ms · 3× 1.1 ms · 4× 1.4 ms": p95 GPU time per source frame at each measured level.
+    function frameGenerationCostText(profile) {
+        const costs = {2: profile.p95Ms, 3: profile.p95Ms3, 4: profile.p95Ms4}
+        const parts = []
+        for (const factor of [2, 3, 4]) {
+            const cost = Number(costs[factor] || 0)
+            if (cost > 0) parts.push(qsTr("%1× %2 ms").arg(factor).arg(cost.toFixed(1)))
+        }
+        return parts.join(" · ")
+    }
+    // Status of the capability test for the current preset (its own settings row).
+    function frameGenerationTestDescription() {
+        const resolution = frameGenerationResolution().text.replace("x", "×")
+        const source = frameGenerationSourceFps()
+        if (FrameGenerationBenchmark.running)
+            return qsTr("Testing frame generation at %1 and %2 FPS…").arg(resolution).arg(source)
+        if (frameGenerationTestError !== "")
+            return qsTr("Capability test failed: %1").arg(frameGenerationTestError)
+        const profile = frameGenerationProfile()
+        if (!profile)
+            return qsTr("Not tested for %1 on this GPU. Run the test to unlock frame generation.").arg(resolution)
+        const verdict = frameGenerationVerdict()
+        const display = Math.round(frameGenerationDisplayHz())
+        const p95 = Number(profile.p95Ms || 0).toFixed(1)
+        const allowed = verdict.allowed || []
+        if (allowed.length)
+            return qsTr("Tested on %1 (%2 per source frame): up to %3× at %4 FPS on this %5 Hz display.")
+                .arg(profile.gpu || frameGenerationGpu).arg(frameGenerationCostText(profile)).arg(Math.max.apply(null, allowed)).arg(source).arg(display)
+        // Nothing fits: name the real reason for 2x, the cheapest level.
+        switch (String((verdict.reasons || {})["2"] || "")) {
+        case "display":
+            return display > 0
+                ? qsTr("Your %1 Hz display cannot show %2 FPS (2× of the %3 FPS stream). Lower the stream frame rate or move OpenNOW to a faster display.").arg(display).arg(source * 2).arg(source)
+                : qsTr("Display refresh unknown. Set the override under Advanced.")
+        case "gpu":
+            return qsTr("Too slow on this GPU: %1 ms per source frame at 2×, budget %2 ms at %3 FPS.")
+                .arg(p95).arg(Number(verdict.budgetMs || 0).toFixed(1)).arg(source)
+        default:
+            return qsTr("Tested on %1 (%2 per source frame), but no level fits %3 FPS right now.")
+                .arg(profile.gpu || frameGenerationGpu).arg(frameGenerationCostText(profile)).arg(source)
+        }
+    }
+    function frameGenerationEngineNotice() {
+        return qsTr("Experimental motion interpolation can show artifacts. Run the capability test for your GPU, resolution, and frame rate. FlyHigh is currently unavailable.")
+    }
+    // Description of the mode control: what will run for the selected mode.
+    function frameGenerationDescription() {
+        if (!frameGenerationUnlocked())
+            return qsTr("Unavailable until the capability test passes for the selected resolution and frame rate.")
+        const factor = frameGenerationFactor(), source = frameGenerationSourceFps(), display = frameGenerationDisplayHz()
+        switch (frameGenerationMode()) {
+        case "multiplier":
+            return factor >= 2 ? qsTr("Fixed multiplier: %1× → %2 FPS.").arg(factor).arg(source * factor)
+                               : qsTr("Pick a multiplier below.")
+        case "target":
+            return factor >= 2 ? qsTr("Target %1 FPS → %2× of the %3 FPS stream.").arg(frameGenerationTargetFps()).arg(factor).arg(source)
+                               : qsTr("Pick an output rate below.")
+        case "display":
+            if (factor >= 2)
+                return qsTr("Follows the display: %1 Hz → %2× (%3 FPS).").arg(Math.round(display)).arg(factor).arg(source * factor)
+            return display > 0
+                ? qsTr("The %1 Hz display cannot show 2× the %2 FPS stream.").arg(Math.round(display)).arg(source)
+                : qsTr("Display refresh unknown. Set the override under Advanced.")
+        default:
+            return qsTr("Off. The stream is shown at its own %1 FPS.").arg(source)
+        }
+    }
+    function frameGenerationOutputDescription() { return frameGenerationDescription() }
+    function frameGenerationMultiplierDescription() {
+        return qsTr("Displayed frames per source frame. Adds latency and artifacts.")
+    }
+    function frameGenerationTargetDescription() {
+        return frameGenerationTargetOptions().length
+            ? qsTr("Output rate for the %1 FPS stream; the multiplier follows.").arg(frameGenerationSourceFps())
+            : qsTr("No output rate between 2× and 4× of the stream fits this display.")
+    }
+    function frameGenerationDisplayDescription() {
+        const detected = Math.round(Number(detectedDisplayHz || 0))
+        const override = Number(settings.frameGenerationDisplayHz || 0)
+        if (override > 0)
+            return qsTr("Override: %1 Hz (detected %2 Hz). Auto uses the display OpenNOW is on.").arg(override).arg(detected)
+        return detected > 0
+            ? qsTr("Auto: %1 Hz detected on the current display. Only override this when detection is wrong.").arg(detected)
+            : qsTr("Display refresh could not be detected. Choose it so the pacer can schedule frames.")
+    }
+    function runFrameGenerationTest() {
+        if (FrameGenerationBenchmark.running) return
+        ensureFrameGenerationGpu()
+        frameGenerationTestError = ""
+        const resolution = frameGenerationResolution()
+        if (!FrameGenerationBenchmark.start({engine: "motion", width: resolution.width, height: resolution.height, factor: 2, seconds: 3}))
+            frameGenerationTestError = qsTr("already running")
+    }
+    property Connections frameGenerationBenchmarkConnections: Connections {
+        target: FrameGenerationBenchmark
+        function onFinished(result) {
+            if (!result || result.ok !== true) {
+                root.frameGenerationTestError = String((result && result.error) || "unknown")
+                return
+            }
+            if (result.gpu) root.frameGenerationGpu = String(result.gpu)
+            const source = root.frameGenerationSourceFps()
+            const display = root.frameGenerationDisplayHz()
+            const verdict = FrameGenerationBenchmark.evaluate(result, source, display)
+            const profiles = Object.assign({}, root.settings.frameGenerationProfiles || {})
+            const key = ["motion", root.frameGenerationGpu || "unknown-gpu", result.width + "x" + result.height].join("|")
+            profiles[key] = {
+                engine: "motion", gpu: String(result.gpu || root.frameGenerationGpu),
+                width: result.width, height: result.height, fps: source, refreshHz: display,
+                p50Ms: result.p50Ms, p95Ms: result.p95Ms, maxMs: result.maxMs, frames: result.frames,
+                p95Ms3: Number(result.p95Ms3 || 0), p95Ms4: Number(result.p95Ms4 || 0),
+                gpuTimed: result.gpuTimed === true, engineMaxFactor: Number(result.engineMaxFactor || 2),
+                allowed: verdict.allowed, testedAt: result.testedAt, version: 1
+            }
+            root.writeFrameGenerationSetting("frameGenerationProfiles", profiles)
+            const factor = root.frameGenerationFactor()
+            if (key === root.frameGenerationProfileKey() && factor >= 2 && verdict.allowed.indexOf(factor) < 0) {
+                root.writeFrameGenerationSetting("frameGenerationTargetFps", 0)
+                root.writeFrameGenerationSetting("frameGeneration", "off")
+            }
+        }
     }
 
     function canonicalFpsValues() {
@@ -627,10 +1076,14 @@ QtObject {
 
     function resolutionItems() {
         const groups = [
-            ["16:9 STANDARD", [["720p","1280x720"],["900p","1600x900"],["1080p","1920x1080"],["1440p","2560x1440"],["1800p","3200x1800"],["4K","3840x2160"],["5K","5120x2880"],["8K","7680x4320"]]],
-            ["16:10 WIDESCREEN", [["800p","1280x800"],["900p","1440x900"],["1050p","1680x1050"],["1200p","1920x1200"],["1600p","2560x1600"],["2400p","3840x2400"]]],
-            ["21:9 ULTRAWIDE", [["UW 1080p","2560x1080"],["UW 1440p","3440x1440"],["UW 1600p","3840x1600"],["UW 1800p","3840x1800"],["UW 2160p","5120x2160"]]],
-            ["32:9 SUPER ULTRAWIDE", [["Dual 1080p","3840x1080"],["Dual 1440p","5120x1440"]]]
+            ["16:9 STANDARD", [["720p","1280x720"],["768p","1366x768"],["900p","1600x900"],["1080p","1920x1080"],["1440p","2560x1440"],["1800p","3200x1800"],["4K","3840x2160"],["5K","5120x2880"],["8K","7680x4320"]]],
+            // 3456x2160 is GFN's documented Mac "3.5K" (16:10).
+            ["16:10 WIDESCREEN", [["800p","1280x800"],["900p","1440x900"],["1050p","1680x1050"],["1200p","1920x1200"],["1600p","2560x1600"],["3.5K","3456x2160"],["2400p","3840x2400"]]],
+            ["21:9 ULTRAWIDE", [["UW 720p","1680x720"],["UW 1080p","2560x1080"],["UW 1440p","3440x1440"],["UW 1600p","3840x1600"],["UW 1800p","3840x1800"],["UW 2160p","5120x2160"]]],
+            ["32:9 SUPER ULTRAWIDE", [["Dual 1080p","3840x1080"],["Dual 1440p","5120x1440"]]],
+            ["CUSTOM ULTRAWIDE", [["3640×1080","3640x1080"]]],
+            ["4:3 STANDARD", [["768p","1024x768"],["834p","1112x834"],["1200p","1600x1200"]]],
+            ["5:4 STANDARD", [["1024p","1280x1024"]]]
         ]
         const items = []
         for (const group of groups) {
@@ -670,6 +1123,7 @@ QtObject {
     }
 
     function requestConsoleSurface(enabled) {
+        protectSettingsRead(["launchInConsoleMode"])
         const requested = Boolean(enabled)
         const previous = consoleSurfaceInitialized
             ? consoleSurfaceConfirmedValue : Boolean(settings.launchInConsoleMode)
@@ -686,6 +1140,10 @@ QtObject {
             accessibilityAnnounced(lastError)
             return ""
         }
+        if (resetting)
+            return deferSettingWrite("launchInConsoleMode", requested, "console")
+        if (settingWrites.launchInConsoleMode)
+            return beginSettingWrite("launchInConsoleMode", requested, null, "console")
         if (consoleSurfaceRequestId === "")
             beginConsoleSurfacePersistence()
         return consoleSurfaceRequestId
@@ -709,7 +1167,7 @@ QtObject {
     }
 
     function setSetting(key, value, source) {
-        if (key === "launchInConsoleMode")
+        if (key === "launchInConsoleMode" && source !== "onboarding")
             return requestConsoleSurface(Boolean(value))
         if (!ready) {
             if (!ownsConfirmedSetting(key) && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
@@ -717,8 +1175,14 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return ""
         }
+        if (resetting) {
+            const token = deferSettingWrite(key, value, source)
+            if (!ownsConfirmedSetting(key) && key !== "gameCollections" && source !== "onboarding")
+                applySetting(key, value)
+            return token
+        }
         const id = beginSettingWrite(key, value, null, source)
-        if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections")
+        if (id !== "" && !ownsConfirmedSetting(key) && key !== "gameCollections" && source !== "onboarding")
             applySetting(key, value)
         else if (id === "" && !ownsConfirmedSetting(key)
                  && Object.prototype.hasOwnProperty.call(confirmedSettings, key))
@@ -727,6 +1191,10 @@ QtObject {
     }
 
     function updateShortcuts(bindings) {
+        if (resetting && ready) {
+            deferredShortcuts = Object.assign({}, deferredShortcuts || {}, bindings)
+            return "settings-reset-shortcuts"
+        }
         if (shortcutUpdateRequestId !== "")
             return ""
         shortcutUpdateError = ""
@@ -735,6 +1203,7 @@ QtObject {
             return ""
         }
         shortcutUpdateRequestId = coreClient.request("settings.shortcuts.update", {bindings: bindings}, 15000)
+        protectSettingsRead(Object.keys(bindings))
         if (shortcutUpdateRequestId === "")
             shortcutUpdateError = qsTr("The shortcut could not be saved.")
         return shortcutUpdateRequestId
@@ -745,7 +1214,67 @@ QtObject {
             errorReported(qsTr("The OpenNOW core is not ready"))
             return
         }
-        coreClient.request("settings.reset", {})
+        if (resetting) return
+        resetting = true
+        resetStarted()
+        const read = settingsRequestId
+        settingsRequestId = ""
+        cancelOwnedRequest(read)
+        const writes = Object.assign({}, settingWrites)
+        for (const key of Object.keys(writes)) {
+            writes[key] = Object.assign({}, writes[key], {queued:false})
+            if (!ownsConfirmedSetting(key) && key !== "gameCollections")
+                applySetting(key, writes[key].value)
+        }
+        settingWrites = writes
+        consoleSurfaceDesiredValue = consoleSurfaceRequestId !== ""
+            ? consoleSurfaceRequestValue : consoleSurfaceConfirmedValue
+        continueSettingsReset()
+    }
+
+    function deferSettingWrite(key, value, source) {
+        protectSettingsRead(Object.keys(settingValues(key, value)))
+        const deferred = Object.assign({}, deferredSettingWrites)
+        const token = deferred[key] ? deferred[key].token : "settings-deferred-" + (++settingWriteSequence)
+        delete deferred[key]
+        deferred[key] = {token:token, value:value, source:source,
+            providerIdpId:providerIdpId, scopeGeneration:scopeGeneration}
+        deferredSettingWrites = deferred
+        return token
+    }
+
+    function continueSettingsReset() {
+        if (!resetting || !ready || resetRequestId !== "" || Object.keys(settingWrites).length
+                || consoleSurfaceRequestId !== "" || shortcutUpdateRequestId !== "") return
+        resetRequestId = coreClient.request("settings.reset", {}, 15000)
+        if (resetRequestId === "") {
+            errorReported(qsTr("The setting could not be saved."))
+            finishSettingsReset()
+        }
+    }
+
+    function finishSettingsReset() {
+        const deferred = deferredSettingWrites
+        const shortcuts = deferredShortcuts
+        deferredSettingWrites = ({})
+        deferredShortcuts = null
+        resetting = false
+        for (const key of Object.keys(deferred)) {
+            const write = deferred[key]
+            if (key === "region" && (write.providerIdpId !== providerIdpId || write.scopeGeneration !== scopeGeneration)) {
+                settingWriteFinished(write.token, null, qsTr("The setting could not be saved."))
+                continue
+            }
+            if (key === "launchInConsoleMode" && write.source === "console") {
+                requestConsoleSurface(write.value)
+                continue
+            }
+            const id = beginSettingWrite(key, write.value, null, write.source, write.token)
+            if (id === "") settingWriteFinished(write.token, null, qsTr("The setting could not be saved."))
+            else if (!ownsConfirmedSetting(key) && key !== "gameCollections" && write.source !== "onboarding")
+                applySetting(key, write.value)
+        }
+        if (shortcuts) updateShortcuts(shortcuts)
     }
 
     function applyCoupledSettings(changes) {
@@ -777,9 +1306,15 @@ QtObject {
             syncDiscordPresence()
     }
 
-    function acceptSettings(result) {
+    function acceptSettings(result, fromRead) {
         const confirmed = Object.assign({}, result.settings)
         const displayed = Object.assign({}, result.settings)
+        if (fromRead) {
+            for (const key of Object.keys(settingsReadProtected)) {
+                confirmed[key] = confirmedSettings[key]
+                displayed[key] = settings[key]
+            }
+        }
         for (const key of Object.keys(settingWrites)) {
             confirmed[key] = confirmedSettings[key]
             displayed[key] = settings[key]
@@ -792,12 +1327,14 @@ QtObject {
             confirmed.launchInConsoleMode = consoleSurfaceConfirmedValue
             displayed.launchInConsoleMode = consoleSurfaceDesiredValue
         } else {
-            root.consoleSurfaceConfirmedValue = Boolean(result.settings.launchInConsoleMode)
+            root.consoleSurfaceConfirmedValue = Boolean(confirmed.launchInConsoleMode)
             root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
             root.consoleSurfaceInitialized = true
         }
         root.confirmedSettings = confirmed
         root.settings = displayed
+        if (Object.keys(displayed.frameGenerationProfiles || {}).length > 0)
+            root.ensureFrameGenerationGpu()
         root.keyboardLayouts = result.keyboardLayouts || []
         appController.reducedMotion = Boolean(displayed.reducedMotion)
         i18n.setLocale(String(displayed.appLanguage || "system"))
@@ -805,10 +1342,16 @@ QtObject {
     }
 
     function acceptConsoleSurface(result) {
+        protectSettingsRead(["launchInConsoleMode"].concat(Object.keys(result.changes || {})))
+        confirmedSettings = Object.assign({}, confirmedSettings, result.changes || {}, {launchInConsoleMode:Boolean(result.value)})
         root.applyCoupledSettings(result.changes)
         root.consoleSurfaceRequestId = ""
         root.consoleSurfaceConfirmedValue = Boolean(result.value)
         root.consoleSurfaceInitialized = true
+        if (resetting) {
+            continueSettingsReset()
+            return
+        }
         if (root.consoleSurfaceDesiredValue === root.consoleSurfaceConfirmedValue) {
             root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
             root.consoleSurfaceError = ""
@@ -821,6 +1364,10 @@ QtObject {
 
     function failConsoleSurface(message) {
         root.consoleSurfaceRequestId = ""
+        if (resetting) {
+            continueSettingsReset()
+            return
+        }
         root.consoleSurfaceDesiredValue = root.consoleSurfaceConfirmedValue
         root.applySetting("launchInConsoleMode", root.consoleSurfaceConfirmedValue)
         root.consoleSurfaceRequested(root.consoleSurfaceConfirmedValue)
@@ -830,8 +1377,9 @@ QtObject {
     }
 
     function acceptSettingsChange(payload) {
+        protectSettingsRead([payload.key].concat(Object.keys(payload.changes || {})))
         const write = root.settingWrites[payload.key]
-        if (write) return
+        if (write || deferredSettingWrites[payload.key]) return
         confirmedSettings = Object.assign({}, confirmedSettings, payload.changes || {}, {[payload.key]:payload.value})
         // Coupled preferences are saved atomically by the core.
         root.applyCoupledSettings(payload.changes)

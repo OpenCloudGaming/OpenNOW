@@ -32,13 +32,16 @@ Item {
             clockPill.visible && clockPill.x + clockPill.width > width - 408 ? clockPill.y + clockPill.height + 12 : inset)
     readonly property color surface: Qt.rgba(14 / 255, 16 / 255, 24 / 255,
         Math.max(0.4, Math.min(1, Number(ShellStore.settings.statsOverlayOpacity || 85) / 100)))
-    readonly property bool degraded: telemetryActive && ShellStore.connectionHealth.status === "unstable"
-    readonly property bool healthKnown: telemetryActive && ShellStore.connectionHealth.status !== "unknown"
+    readonly property bool connectionUnstable: telemetryActive && ShellStore.connectionHealth.status === "unstable"
+    readonly property bool decoderLimited: telemetryActive && ShellStore.connectionHealth.decoderLimited
+    readonly property bool degraded: connectionUnstable || decoderLimited
+    readonly property bool healthKnown: telemetryActive && (decoderLimited || ShellStore.connectionHealth.status !== "unknown")
     readonly property color accent: degraded ? "#F5A623" : "#6EE7B7"
     readonly property color statusColor: !healthKnown || degraded ? "#F5A623" : "#1DB954"
     readonly property color metricColor: degraded ? accent : "white"
     readonly property string healthText: !telemetryActive ? qsTr("Waiting for stream")
-        : degraded ? qsTr("Connection unstable") : healthKnown ? qsTr("Stream healthy") : qsTr("Stream statistics")
+        : connectionUnstable ? qsTr("Connection unstable") : decoderLimited ? qsTr("Decoder can't keep up")
+        : healthKnown ? qsTr("Stream healthy") : qsTr("Stream statistics")
     readonly property real allocatedBitrateMbps: Math.max(0, numeric(ShellStore.runtimeStreamProfile.maxBitrateMbps)
         || numeric(profile.maxBitrateMbps) || numeric(ShellStore.settings.maxBitrateMbps) || 0)
     readonly property real bitrateUsage: allocatedBitrateMbps > 0 && read("bitrateMbps") !== null
@@ -51,14 +54,16 @@ Item {
     readonly property var featureBadges: {
         const badges = []
         if (shown("Video") && (profile.enableHdr === true || profile.hdr === true)) badges.push({text:"HDR", ink:"#C6A46A"})
-        if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN 2×"), ink:"#F5A623"})
+        if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN %1×").arg(ShellStore.frameGenerationFactor()), ink:"#F5A623"})
+        if (generatedFramesOnly) badges.push({text:qsTr("GENERATED ONLY"), ink:"#FF6B6B"})
         if (shown("Video") && Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx") badges.push({text:"METALFX", ink:"#7FD4FF"})
         if (flightVisible) badges.push({text:qsTr("FLIGHT") + " " + activeFlightDevices.length
             + (activeFlightDevices.length === flightDevices.length ? "" : "/" + flightDevices.length), ink:flightColor, glyph:"stick"})
         return badges
     }
     readonly property bool telemetryActive: live.status === "streaming"
-    readonly property bool frameGenerationEnabled: String(ShellStore.settings.frameGeneration || "off") === "2x"
+    readonly property bool frameGenerationEnabled: ShellStore.frameGenerationFactor() >= 2
+    readonly property bool generatedFramesOnly: frameGenerationEnabled && ShellStore.generatedFramesOnly
     readonly property var cards: metricCards()
     readonly property var compactMetrics: compactItems()
     property var history: ({})
@@ -90,11 +95,28 @@ Item {
         case "warming-up": return qsTr("Warming up")
         case "active": return qsTr("Active")
         case "display-refresh": return qsTr("Display refresh")
-        case "source-rate-limit": return qsTr("120 FPS generation limit")
+        case "source-rate-limit": return qsTr("Source rate too high")
         case "hdr-unavailable": return qsTr("Unavailable with HDR")
-        case "overloaded": return qsTr("Overloaded")
-        case "discontinuity": return qsTr("Discontinuity")
+        case "overloaded": return qsTr("Paused") + " · " + qsTr("the display stopped taking frames")
+        case "discontinuity": return qsTr("Discontinuity") + frameGenerationReasonSuffix()
         default: return qsTr("Unavailable")
+        }
+    }
+    function frameGenerationLine() {
+        const ms = Number(frameGenerationStats.engineMs || 0)
+        const cost = ms > 0 ? " · " + ms.toFixed(1) + " ms" : ""
+        return frameGenerationState() + cost + (generatedFramesOnly ? " · " + qsTr("generated frames only") : "")
+    }
+    // Why the pacer re-warmed, from the render callback's last decision.
+    function frameGenerationReasonSuffix() {
+        const skipped = Math.max(0, Number(frameGenerationStats.sequenceDelta || 0) - 1)
+        switch (String(frameGenerationStats.rejectionReason || "none")) {
+        case "sequence-gap": return " · " + qsTr("%1 source frames skipped").arg(skipped)
+        case "arrival-gap": return " · " + qsTr("%1 ms between frames").arg(Math.round(Number(frameGenerationStats.arrivalDeltaMs || 0)))
+        case "timestamp-regression": return " · " + qsTr("timestamp went backwards")
+        case "timestamp-jump": return " · " + qsTr("timestamp jumped %1 ms").arg(Math.round(Number(frameGenerationStats.timestampDeltaMs || 0)))
+        case "cadence-unavailable": return " · " + qsTr("no usable frame cadence")
+        default: return ""
         }
     }
     function sample(card) {
@@ -162,11 +184,13 @@ Item {
             for (const device of flightDevices.filter(device => device.status !== "active")) {
                 const types = {stick:qsTr("STICK"), throttle:qsTr("THROTTLE"), pedals:qsTr("PEDALS"), wheel:qsTr("WHEEL")}
                 const states = {ready:qsTr("ready"), declined:qsTr("declined"),
+                    "no-hid-path":qsTr("NO HID PATH"), "no-access":qsTr("NO PERMISSION"),
                     controller:qsTr("controller P%1").arg(device.player), ignored:qsTr("ignored")}
                 cards.push({key:"FlightDevice", label:types[device.type] || qsTr("STICK"), unit:"", value:null,
                     textValue:device.status === "declined" ? qsTr("IDLE") : String(states[device.status] || qsTr("ready")).toUpperCase(),
                     detail:device.name + " · " + String(states[device.status] || qsTr("ready")),
-                    ink:device.status === "declined" ? "#FF8A80" : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
+                    ink:["declined", "no-hid-path", "no-access"].includes(device.status) ? "#FF8A80"
+                        : device.status === "controller" ? "#F5A623" : "#A3FFFFFF"})
             }
         }
         return cards.filter(item => shown(item.key === "Receive" ? "Bitrate" : item.key)
@@ -176,7 +200,7 @@ Item {
     function compactItems() {
         const items = cards.map(item => ({text:item.label + " " + metricValue(item) + (item.unit ? " " + item.unit : "")}))
         if (frameGenerationEnabled)
-            items.push({text:qsTr("FRAME GENERATION") + " " + frameGenerationState()})
+            items.push({text:qsTr("FRAME GENERATION") + " " + frameGenerationLine()})
         if (shown("Video")) items.push({text:videoText})
         if (shown("Region")) items.push({text:region})
         return items
@@ -185,7 +209,7 @@ Item {
         const lines = cards.map(item => item.label + ": " + metricValue(item) + (item.unit ? " " + item.unit : "")
             + (item.detail ? " · " + item.detail : ""))
         if (frameGenerationEnabled)
-            lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationState())
+            lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationLine())
         if (swapGated)
             lines.push(qsTr("SWAP GATE") + ": " + swapGateText())
         if (shown("Region")) lines.unshift(region + (rig ? " · " + rig : ""))
@@ -453,7 +477,7 @@ Item {
                             Mono {
                                 text: root.metricValue(ledger.modelData)
                                     + (ledger.modelData.field === "videoDropCount" ? "" : ledger.modelData.unit === "%" ? "%" : " " + ledger.modelData.unit)
-                                color: ledger.modelData.ink || (root.degraded && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
+                                color: ledger.modelData.ink || (root.connectionUnstable && ledger.modelData.key === "PacketLoss" ? "#D15A2C"
                                     : ledger.modelData.key === "Decode" || ledger.modelData.key === "Residence"
                                         || ledger.modelData.key === "Swap" ? "white" : root.metricColor)
                             }
@@ -464,7 +488,7 @@ Item {
                     visible: root.frameGenerationEnabled
                     width: parent.width; height: 33
                     Rule { width: parent.width }
-                    Mono { objectName: "expandedFrameGenerationState"; x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationState(); font.pixelSize: 10; color: "#8CFFFFFF" }
+                    Mono { objectName: "expandedFrameGenerationState"; x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationLine(); font.pixelSize: 10; color: "#8CFFFFFF" }
                 }
                 Item {
                     width: parent.width; height: Math.max(41, footer.implicitHeight + 22)

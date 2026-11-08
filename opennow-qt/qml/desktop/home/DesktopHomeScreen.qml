@@ -6,6 +6,7 @@ import OpenNOW
 
 FocusScope {
     id: root
+    objectName: "desktopHomeScreen"
 
     readonly property string pageTitle: qsTr("Home")
     readonly property string pageSubtitle: ShellStore.catalogTotalCount
@@ -57,9 +58,11 @@ FocusScope {
     readonly property int railGap: 14
     readonly property int railInnerWidth: Math.max(200, contentFlick.width - 48)
     readonly property int homeTileCount: {
-        const fit = Math.max(5, Math.floor((root.railInnerWidth + root.railGap) / (112 + root.railGap)))
+        const fit = Math.max(1, Math.floor((root.railInnerWidth + root.railGap) / (112 + root.railGap)))
         return Math.max(1, Math.min(fit, 10))
     }
+    onHomeTileCountChanged: root.focusIndex = Math.min(root.focusIndex,
+        root.focusZone === 0 ? 1 : Math.max(0, root.zoneGames(root.focusZone).length - 1))
     readonly property int homeTileWidth: Math.max(112, Math.floor((root.railInnerWidth - root.railGap * (root.homeTileCount - 1)) / root.homeTileCount))
     readonly property int homeTileHeight: Math.round(root.homeTileWidth * 168 / 112)
 
@@ -107,9 +110,8 @@ FocusScope {
     }
 
     function zoneGames(zone) {
-        if (zone === 1) return root.jumpGames
-        if (zone === 2) return root.favoriteGames
-        return root.newGames
+        const games = zone === 1 ? root.jumpGames : zone === 2 ? root.favoriteGames : root.newGames
+        return root.takeGames(games, 0, root.homeTileCount)
     }
 
     function setSelection(zone, index) {
@@ -273,6 +275,7 @@ FocusScope {
                         Image {
                             anchors.fill: parent
                             source: heroArtworkSource.resolvedUrl
+                            onStatusChanged: heroArtworkSource.reportImageStatus(status, source)
                             fillMode: Image.PreserveAspectCrop
                             sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
                             asynchronous: true
