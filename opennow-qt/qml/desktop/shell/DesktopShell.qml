@@ -6,12 +6,13 @@ FocusScope {
     id: root
     default property alias contentData: contentHost.data
     property string route: "home"
-    readonly property bool settingsPage: route.indexOf("settings") === 0
+    readonly property bool settingsPage: route.indexOf("settings") === 0 || route === "controllers"
+    readonly property bool catalogPage: route === "home" || route === "library" || route === "store"
     readonly property int headerHeight: settingsPage ? DesktopTokens.px(60) : DesktopTokens.topBarHeight
     readonly property int footerHeight: DesktopTokens.px(40)
     property string title: qsTr("Home")
     property string subtitle: qsTr("Your library")
-    property bool searchVisible: route !== "settings" && route.indexOf("settings-") !== 0 && route !== "friends"
+    property bool searchVisible: !settingsPage && route !== "friends"
     property string searchText: ""
     readonly property bool railCollapsed: ShellStore.settings.desktopRailCollapsed !== false
     // A pinned sidebar reserves space; only transient hover expansion overlays.
@@ -178,14 +179,14 @@ FocusScope {
             height: root.footerHeight
             color: DesktopTokens.statusBar
             clip: true
-            readonly property bool compactHints: true
+            readonly property bool compactHints: width < DesktopTokens.px(1050)
             Rectangle { width: parent.width; height: 1; color: DesktopTokens.seam }
-            Row { id: shortcutHints; x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(footer.compactHints ? 8 : 16)
-                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Arrows"); shortcut: "Arrows"; label: qsTr("Move") }
-                DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Enter"); shortcut: "Enter"; label: qsTr("Play") }
-                DesktopKeyHint { compact: footer.compactHints; keyText: "/"; label: qsTr("Search") }
+            Row { id: shortcutHints; x: DesktopTokens.px(24); anchors.verticalCenter: parent.verticalCenter; spacing: DesktopTokens.px(footer.compactHints ? 14 : 20)
+                DesktopKeyHint { visible: root.catalogPage && footer.width >= DesktopTokens.px(680); compact: footer.compactHints; keyText: qsTr("Arrows"); shortcut: "Arrows"; label: qsTr("Move") }
+                DesktopKeyHint { visible: root.catalogPage; compact: footer.compactHints; keyText: qsTr("Enter"); shortcut: "Enter"; label: qsTr("Play") }
+                DesktopKeyHint { visible: root.catalogPage && footer.width >= DesktopTokens.px(760); compact: footer.compactHints; keyText: "/"; label: qsTr("Search") }
                 DesktopKeyHint { compact: footer.compactHints; keyText: qsTr("Ctrl K"); shortcut: "Ctrl K"; label: qsTr("Commands") }
-                DesktopKeyHint { compact: footer.compactHints; keyText: "?"; label: qsTr("All shortcuts") }
+                DesktopKeyHint { visible: footer.width >= DesktopTokens.px(450); compact: footer.compactHints; keyText: "?"; label: qsTr("All shortcuts") }
             }
             DesktopUpdateChip {
                 id: updateChip
@@ -216,8 +217,6 @@ FocusScope {
                 Rectangle { visible: ShellStore.remainingPlaytimeHours !== null; width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
                 Rectangle { width: 8; height: 8; radius: 4; color: DesktopTokens.green }
                 Text { text: root.regionStatusText(); color: DesktopTokens.textBody; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-                Rectangle { width: 1; height: DesktopTokens.px(16); color: DesktopTokens.seam }
-                Text { text: String(ShellStore.settings.themePack || "nocturne").toUpperCase() + qsTr(" THEME"); color: DesktopTokens.textMuted; font.family: DesktopTokens.monoFont; font.pixelSize: DesktopTokens.px(11); font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
             }
         }
     }
