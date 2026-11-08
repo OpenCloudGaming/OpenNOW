@@ -834,8 +834,13 @@ private slots:
                 QVERIFY(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
                         != QStringLiteral("active"));
             } else if (callback->needsFrame()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                QVERIFY(present({}, image.pixelColor(0, 0)));
+                // Readback and the previous pair's drain can make arrival cadence slower
+                // than the synthetic 20 ms timestamps. Drain the actual bounded schedule
+                // rather than assuming its original frame is due after exactly 10 ms.
+                for (int drained = 0; callback->needsFrame() && drained < 24; ++drained) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    QVERIFY(present({}, image.pixelColor(0, 0)));
+                }
                 QVERIFY(!callback->needsFrame());
                 QCOMPARE(producer.releaseCount, producer.sourceCount);
             }

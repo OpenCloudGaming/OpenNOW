@@ -1551,6 +1551,9 @@ if(BUILD_TESTING)
         opennow-controllersources-tests
         opennow-controllermetadata-tests
     )
+    if(TARGET opennow-nativeframegeneration-tests)
+        list(APPEND OPENNOW_CI_UNIT_TEST_TARGETS opennow-nativeframegeneration-tests)
+    endif()
     if(WIN32)
         list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)
         list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-queueselector-tests)
