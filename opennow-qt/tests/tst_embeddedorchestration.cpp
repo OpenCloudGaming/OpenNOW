@@ -1,3 +1,5 @@
+#include "acceptance/AcceptanceSession.h"
+
 #include <QFile>
 #include <QJSEngine>
 #include <QRegularExpression>
@@ -142,6 +144,21 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void sdrCaptureRequiresAnExplicitScreenshotFixture()
+    {
+        const QStringList production{QStringLiteral("--smoke-sdr-capture"),
+            QStringLiteral("--screenshot"), QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(production));
+        const QStringList regularSmoke{QStringLiteral("--smoke-test"), QStringLiteral("--screenshot"),
+            QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(regularSmoke));
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(
+            {QStringLiteral("--smoke-test"), QStringLiteral("--smoke-sdr-capture")}));
+        auto capture = regularSmoke;
+        capture.append(QStringLiteral("--smoke-sdr-capture"));
+        QVERIFY(AcceptanceSession::sdrCaptureRequested(capture));
+    }
+
     void savedFrameGenerationProfilesResolveIdentityDuringHydration_data()
     {
         QTest::addColumn<bool>("gpuAvailable");

@@ -376,7 +376,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qCritical("Could not select the graphics adapter before scene-graph initialization");
         return EXIT_FAILURE;
     }
-    hdrOutput.attach(rootWindow);
+    // Qt's grabWindow path interprets HDR swapchain readback as 8-bit pixels.
+    // Only explicit SDR smoke captures bypass HDR negotiation; production and
+    // ordinary HDR acceptance workloads retain the native output path.
+    if (!AcceptanceSession::sdrCaptureRequested(arguments))
+        hdrOutput.attach(rootWindow);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     streamPresentation.attach(rootWindow);
 #endif
