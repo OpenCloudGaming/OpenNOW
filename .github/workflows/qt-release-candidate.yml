@@ -646,6 +646,16 @@ jobs:
           ctest --test-dir build/opennow-qt-release --output-on-failure --parallel ${{ matrix.arch == 'x64' && 2 || 3 }} --no-tests=error -LE interactive-desktop \
             -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
 
+      # GitHub's Intel runner intermittently drops Apple's HTTP/3 ticket lookups.
+      # Force HTTPS over TCP only on this disposable runner; retain ticket validation.
+      # https://github.com/actions/runner-images/issues/14924
+      - name: Use reliable notarization transport on Intel runners
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: |
+          printf '%s\n' 'block return out quick proto udp from any to any port 443' | sudo pfctl -f -
+          sudo pfctl -E
+
       - name: Sign and notarize deployed macOS app and final packages
         shell: bash
         env:
@@ -686,7 +696,8 @@ jobs:
             identity=$(/usr/bin/codesign --display --verbose=4 "$app" 2>&1)
             printf '%s\n' "$identity" | grep -Fx 'Identifier=io.github.opencloudgaming.OpenNOW'
             printf '%s\n' "$identity" | grep -F 'Authority=Developer ID Application:'
-            xcrun stapler validate "$app"
+            PYTHONPATH=opennow-qt/packaging python3 -c \
+              'import sys; from macos_release import run; run("xcrun", "stapler", "validate", sys.argv[1])' "$app"
             spctl --assess --type execute --verbose=4 "$app"
             bin="$app/Contents/MacOS"
             for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-update-helper opennow-streamer; do

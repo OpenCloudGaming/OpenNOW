@@ -317,6 +317,78 @@ class MacOSUnsignedIntelBundleTest(unittest.TestCase):
 
 
 class MacOSSigningCommandTest(unittest.TestCase):
+    def test_stapler_recovers_from_transient_ticket_service_failures(self):
+        for action in ("staple", "validate"):
+            with self.subTest(action=action):
+                results = [subprocess.CompletedProcess([], 68, "CloudKit lookup failed", "connection lost"),
+                           subprocess.CompletedProcess([], 0, "ticket valid", "")]
+                with patch.object(RELEASE.subprocess, "run", side_effect=results) as command, \
+                        patch.object(RELEASE.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(RELEASE.run("xcrun", "stapler", action, "app"), "ticket valid")
+                self.assertEqual(command.call_count, 2)
+                self.assertEqual(command.call_args_list[0], command.call_args_list[1])
+                self.assertEqual(command.call_args.kwargs["timeout"], 60)
+                sleep.assert_called_once_with(RELEASE.STAPLER_RETRY_DELAYS[0])
+
+    def test_stapler_retry_exhaustion_fails_with_both_diagnostic_streams(self):
+        result = subprocess.CompletedProcess([], 68, "CloudKit lookup failed", "connection lost")
+        for action in ("staple", "validate"):
+            with self.subTest(action=action), patch.object(RELEASE.subprocess, "run", return_value=result) as command, \
+                    patch.object(RELEASE.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, f"stapler {action} failed.*CloudKit lookup failed connection lost"):
+                    RELEASE.run("xcrun", "stapler", action, "app")
+                self.assertEqual(command.call_count, len(RELEASE.STAPLER_RETRY_DELAYS) + 1)
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], list(RELEASE.STAPLER_RETRY_DELAYS))
+
+    def test_invalid_missing_or_revoked_tickets_are_not_retried(self):
+        for action in ("staple", "validate"):
+            for status in (64, 65, 66, 73, 77):
+                with self.subTest(action=action, status=status):
+                    result = subprocess.CompletedProcess([], status, "ticket rejected", "")
+                    with patch.object(RELEASE.subprocess, "run", return_value=result) as command, \
+                            patch.object(RELEASE.time, "sleep") as sleep:
+                        with self.assertRaisesRegex(RuntimeError, f"exit {status}"):
+                            RELEASE.run("xcrun", "stapler", action, "app")
+                    command.assert_called_once()
+                    sleep.assert_not_called()
+
+    def test_other_commands_do_not_retry_exit_68(self):
+        result = subprocess.CompletedProcess([], 68, "", "failure")
+        for args in (("codesign", "--verify", "app"), ("xcrun", "notarytool", "submit", "app"),
+                     ("xcrun", "stapler", "unknown", "app")):
+            with self.subTest(command=args), patch.object(RELEASE.subprocess, "run", return_value=result) as command, \
+                    patch.object(RELEASE.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "exit 68"):
+                    RELEASE.run(*args)
+                command.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_stapler_timeout_fails_without_retry_or_sensitive_diagnostics(self):
+        args = ["xcrun", "stapler", "validate", "app"]
+        timeout = subprocess.TimeoutExpired(args, 60, output="private output", stderr="private error")
+        with patch.object(RELEASE.subprocess, "run", side_effect=timeout) as command, \
+                patch.object(RELEASE.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "^xcrun stapler validate timed out$"):
+                RELEASE.run(*args)
+        command.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_stapler_retry_and_terminal_diagnostics_redact_signing_secrets(self):
+        values = {name: f"private-fixture-{index}" for index, name in enumerate(RELEASE.SECRET_NAMES)}
+        detail = "\n".join(values.values())
+        result = subprocess.CompletedProcess([], 68, "CloudKit failure\n" + detail, "network error\n" + detail)
+        output = io.StringIO()
+        with patch.dict(os.environ, values), patch.object(RELEASE.subprocess, "run", return_value=result) as command, \
+                patch.object(RELEASE.time, "sleep"), contextlib.redirect_stdout(output):
+            with self.assertRaises(RuntimeError) as error:
+                RELEASE.run("xcrun", "stapler", "validate", "app")
+        combined = output.getvalue() + str(error.exception)
+        self.assertIn("CloudKit failure", combined)
+        self.assertIn("network error", combined)
+        for value in values.values():
+            self.assertNotIn(value, combined)
+        self.assertFalse(set(RELEASE.SECRET_NAMES) & command.call_args.kwargs["env"].keys())
+
     def test_codesign_failure_keeps_diagnostics_without_signing_secrets(self):
         values = {name: f"private-fixture-{index}" for index, name in enumerate(RELEASE.SECRET_NAMES)}
         detail = "unable to build chain to self-signed root\n" + "\n".join(values.values())
