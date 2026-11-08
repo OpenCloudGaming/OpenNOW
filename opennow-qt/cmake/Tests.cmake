@@ -1222,10 +1222,12 @@ if(BUILD_TESTING)
             PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
         if(OPENNOW_XVFB_RUN)
             add_test(NAME opennow-nativeframegeneration-tests
-                COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-nativeframegeneration-tests>" -o -,txt)
+                COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-nativeframegeneration-tests>" -o -,txt
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-frame-generation-results.xml,junitxml")
             set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
         else()
-            add_test(NAME opennow-nativeframegeneration-tests COMMAND opennow-nativeframegeneration-tests -o -,txt)
+            add_test(NAME opennow-nativeframegeneration-tests COMMAND opennow-nativeframegeneration-tests -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-frame-generation-results.xml,junitxml")
             set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         endif()
         set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES TIMEOUT 60)
