@@ -87,6 +87,20 @@ Recovery failure disables only the microphone. No device opens while capture is
 disabled. This is bounded local recovery, not a claim that GFN uses these retry
 timings or that every default-device/format-change notification is handled.
 
+The native diagnostic log records the SDL audio driver and negotiated capture
+format when opening the system default input. Every five seconds, and when the
+uplink worker stops, it reports cumulative captured, encoded and transport-queued
+frame counts, the number of processed input frames containing a nonzero sample,
+and the largest absolute signed-16-bit sample since the preceding report
+(`peak_pcm`, 0–32768). Level calculation runs on the encoder worker, not the
+capture callback. No audio samples, Opus payloads or device names are logged.
+Periodic diagnostics use the bounded asynchronous logger so slow storage cannot
+stall microphone upload.
+Nonzero samples can be noise; these counters do not establish speech detection,
+successful network delivery or remote game reception. Continued capture with
+`signal_pcm` unchanged and `peak_pcm=0` localizes digital silence to the local
+input; a growing `queued_transport` count only confirms local transport admission.
+
 Startup-muted negotiation and the controller/UI capability gates belong to the
 session-negotiation change, not this audio-buffer/packetizer change. No runtime
 RTSP renegotiation is added here.

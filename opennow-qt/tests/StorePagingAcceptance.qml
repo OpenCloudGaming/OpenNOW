@@ -1,20 +1,20 @@
 import QtQuick
 import OpenNOW
+import OpenNOW.Acceptance 1.0
 
 QtObject {
+    property QtObject productionBoundary: null
     property Component paletteComponent: Component { DesktopCommandPalette {} }
     property Component hostComponent: Component { Item {} }
     property Component shellComponent: Component { DesktopShell {} }
     property Component cardComponent: Component { DesktopStoreCard {} }
     property Component shelfComponent: Component { DesktopStoreShelf {} }
-    property QtObject client: QtObject {
+    property Component homeComponent: Component { DesktopHomeScreen {} }
+    property AcceptanceCoreClient client: AcceptanceCoreClient {
         property string state: "ready"
         property string lastError: ""
         property int sequence: 0
         property var requests: []
-        signal responseReceived(string requestId, var result)
-        signal requestFailed(string requestId, string code, string message)
-        signal eventReceived(string name, var payload)
         function markUiReady() {}
         function logShellDiagnostic(message) {} // No filesystem writes from the isolated mock.
         function request(method, params, timeout) {
@@ -41,6 +41,19 @@ QtObject {
         return {games:games, totalCount:2500, nextCursor:cursor, hasNextPage:more}
     }
     function run(screen, status, retry, emptyStatus) {
+        function preservesJsonArrays(boundary) {
+            let preserved = false
+            function observeResponse(id, result) {
+                if (id === "verify-json-boundary") preserved = Array.isArray(result.games)
+            }
+            boundary.responseReceived.connect(observeResponse)
+            boundary.responseReceived("verify-json-boundary", {games:[game("boundary")]})
+            boundary.responseReceived.disconnect(observeResponse)
+            return preserved
+        }
+        check(productionBoundary !== null && preservesJsonArrays(productionBoundary),
+            "CoreClient's JSON response did not preserve arrays")
+        check(preservesJsonArrays(client), "the mock did not preserve CoreClient's JSON array response boundary")
         const artworkSources = []
         for (let i = 0; i < 6; ++i) {
             const source = "https://artwork.test/" + i
@@ -75,8 +88,13 @@ QtObject {
         check(client.requests.find(r => r.id === first).params.limit === 40, "unbounded page requested")
         check(client.requests.find(r => r.id === first).method === "catalog.store.local", "Store did not use its local index")
         client.responseReceived(first, page([game("a"),game("b")], "cursor-one", true))
-        check(ShellStore.storeGames.length === 2 && !ShellStore.storeLoading && ShellStore.storeHasMore, "Store automatically continued instead of waiting for demand")
+        check(ShellStore.storeGames.length === 2 && !ShellStore.storeLoading && ShellStore.storeHasMore,
+            "Store automatically continued instead of waiting for demand (games=" + ShellStore.storeGames.length
+            + ", loading=" + ShellStore.storeLoading + ", more=" + ShellStore.storeHasMore
+            + ", error=" + ShellStore.storeError + ")")
         check(status.text.indexOf("2") >= 0, "progress not visible")
+        const retainedShelf = namedChild(screen, "storeShelf-new")
+        check(retainedShelf !== null, "the first Store shelf was not created")
         ShellStore.requestStorePage()
         const second = ShellStore.storeRequestId
         check(client.requests.find(r => r.id === second).params.cursor === "cursor-one", "cursor not forwarded")
@@ -87,6 +105,8 @@ QtObject {
         check(client.requests.find(r => r.id === retryId).params.cursor === "cursor-one", "retry skipped failed page")
         client.responseReceived(retryId, page([game("b"),game("c")], "cursor-two", true))
         check(ShellStore.storeGames.length === 3, "overlapping pages not deduplicated")
+        check(namedChild(screen, "storeShelf-new") === retainedShelf,
+            "appending a catalog page destroyed an existing shelf and its interaction state")
         ShellStore.requestStorePage()
         client.responseReceived(ShellStore.storeRequestId, page([], "", false))
         check(!ShellStore.storeHasMore && !ShellStore.storeLoading && ShellStore.storeGames.length === 3, "final page did not settle")
@@ -324,6 +344,28 @@ QtObject {
         shelf.games = [ranked]
         check(shelf.tileWidth < 160, "short final row stretched its posters")
         shelf.destroy()
+
+        // A pinned/scaled sidebar can leave fewer than five posters' worth of
+        // room. Rows and keyboard navigation must use the same visible bounds.
+        const originalLibrary = ShellStore.catalogGames
+        const homeGames = []
+        for (let i = 0; i < 14; ++i) homeGames.push(game("home-" + i))
+        ShellStore.catalogGames = homeGames
+        const homeHost = hostComponent.createObject(screen, {width:600,height:500,visible:false})
+        const home = homeComponent.createObject(homeHost, {active:false})
+        check(home !== null, "the Home navigation fixture did not load")
+        check(home.homeTileWidth * home.homeTileCount + home.railGap * (home.homeTileCount - 1)
+            <= home.railInnerWidth, "Home forced clipped posters into a narrow content column")
+        home.setSelection(1, 0)
+        for (let i = 0; i < 20; ++i) home.moveHorizontal(1)
+        check(home.focusIndex === home.homeTileCount - 1,
+            "Home keyboard navigation moved to a card that was not displayed")
+        homeHost.width = 380
+        check(home.focusIndex < home.homeTileCount,
+            "shrinking Home left keyboard selection beyond the visible cards")
+        home.destroy()
+        homeHost.destroy()
+        ShellStore.catalogGames = originalLibrary
 
         // An account switch cancels both channels, and late results cannot leak.
         ShellStore.retryStore()

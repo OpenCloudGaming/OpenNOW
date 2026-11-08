@@ -62,6 +62,7 @@ qt_add_executable(opennow-qt
     src/acceptance/AcceptanceProfiler.h
     src/acceptance/AcceptanceSession.cpp
     src/acceptance/AcceptanceSession.h
+    src/acceptance/AcceptanceCoreClient.h
     src/acceptance/MotionAcceptance.cpp
     src/acceptance/MotionAcceptance.h
     src/acceptance/SmokeAcceptance.cpp

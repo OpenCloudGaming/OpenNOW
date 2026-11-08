@@ -527,6 +527,15 @@ short final row and confirm its posters remain the same size as those in a full 
 
 ## Desktop settings layout and screenshots
 
+For SDR UI layout evidence on HDR-capable displays, add `--smoke-sdr-capture` to
+an invocation that already includes `--smoke-test` and `--screenshot <path>`.
+This keeps the native graphics backend but skips HDR output negotiation for that
+explicit fixture. Qt 6.8 and 6.12 `grabWindow()` interpret floating-point HDR
+swapchain readback as 8-bit pixels, so direct HDR PNG captures can look corrupted
+even when the displayed window is correct. This flag does not exercise HDR;
+run HDR acceptance separately without it. It has no effect outside screenshot
+smoke workloads.
+
 Run `ctest --test-dir build/opennow-qt -R qml-settings-layout --output-on-failure`
 to check all nine settings pages at desktop width, compact width, and 1.25 interface
 scale. The checks open Advanced and reject overlapping or overflowing row content.

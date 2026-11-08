@@ -103,6 +103,17 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
+    readonly property var filters: [
+        {key:"all", label:qsTr("All"), count:root.countWhere(function(game) { return !root.isHiddenGame(game) })},
+        {key:"cloud-favorites", label:qsTr("GeForce NOW favorites"), count:ShellStore.remoteFavorites.length},
+        {key:"ready", label:qsTr("Available versions"), count:root.countWhere(root.isReady)},
+        {key:"rtx", label:"RTX", count:root.countWhere(root.hasRtx)},
+        {key:"controller", label:qsTr("Controller"), count:root.countWhere(root.hasController)},
+        {key:"steam", label:"Steam", count:root.countStore("steam")},
+        {key:"epic", label:"Epic", count:root.countStore("epic")},
+        {key:"gog", label:"GOG", count:root.countStore("gog")},
+        {key:"hidden", label:qsTr("Hidden"), count:root.countHidden()}
+    ]
     readonly property real tileScale: Math.max(0.75, Math.min(1.5, Number(ShellStore.settings.posterSizeScale || 1.05))) / 1.05
     readonly property int libraryColumns: Math.max(1, Math.floor((grid.width + 10) / (156 * tileScale)))
     readonly property int libraryCellW: Math.max(1, Math.floor(grid.width / libraryColumns))
@@ -210,21 +221,15 @@ FocusScope {
         width: parent.width - 48
         spacing: 8
         Repeater {
-            model: [
-                {key:"all", label:qsTr("All"), count:root.countWhere(function(game) { return !root.isHiddenGame(game) })},
-                {key:"cloud-favorites", label:qsTr("GeForce NOW favorites"), count:ShellStore.remoteFavorites.length},
-                {key:"ready", label:qsTr("Available versions"), count:root.countWhere(root.isReady)},
-                {key:"rtx", label:"RTX", count:root.countWhere(root.hasRtx)},
-                {key:"controller", label:qsTr("Controller"), count:root.countWhere(root.hasController)},
-                {key:"steam", label:"Steam", count:root.countStore("steam")},
-                {key:"epic", label:"Epic", count:root.countStore("epic")},
-                {key:"gog", label:"GOG", count:root.countStore("gog")},
-                {key:"hidden", label:qsTr("Hidden"), count:root.countHidden()}
-            ]
+            // Count changes must update labels without destroying focused or
+            // hovered controls while the library refreshes.
+            model: root.filters.length
             delegate: Button {
                 id: filterButton
-                required property var modelData
-                visible: modelData.key !== "hidden" || root.countHidden() > 0
+                required property int index
+                readonly property var modelData: root.filters[index]
+                objectName: "libraryFilter-" + modelData.key
+                visible: modelData.key !== "hidden" || modelData.count > 0
                 height: 40
                 implicitHeight: 40
                 implicitWidth: Math.max(84, chipRow.implicitWidth + 28)

@@ -69,7 +69,7 @@ Item {
                     required property int index
                     readonly property var launcher: root.launchers[index]
                     objectName: "desktopGameLauncher" + index
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.verticalCenter: launcherRow.verticalCenter
                     width: root.glyphSize
                     height: root.glyphSize
                     opacity: launcher.owned ? 1 : 0.5
@@ -131,7 +131,7 @@ Item {
                 Image {
                     required property int index
                     objectName: "desktopGameFeature-" + root.features[index]
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.verticalCenter: featureRow.verticalCenter
                     width: root.glyphSize
                     height: root.glyphSize
                     source: DesktopTokens.featureIconUrl(root.features[index])

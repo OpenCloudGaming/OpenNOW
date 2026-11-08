@@ -128,6 +128,18 @@ jobs:
           cat > release-notes.md <<EOF
           OpenNOW $RELEASE_VERSION uses Qt Quick and a native Rust streaming engine.
 
+          This release includes:
+          - A macOS app icon created in Apple's Icon Composer, using the OpenNOW cloud on a native dark tile.
+          - More room for settings, responsive controls and Home rows, and Store/Library updates that retain existing navigation controls.
+          - Correct connected-store status when GeForce NOW omits optional linking metadata, and library sync that waits for a newly linked account.
+          - Restored German keyboard mappings, Windows modifier/AltGr handling, and window dragging and resizing while streaming.
+          - Correct persistent in-game settings, cleanup of completed launch requests, and HTTPS-based region latency measurements.
+          - Additional resolution presets, default macOS pointer lock, Windows installation-directory selection, and Intel Mac packages.
+          - Linux HID identity fixes for wheels, mouse-button release recovery after capture loss, and Wayland Vulkan teardown fixes.
+          - Stream startup and session-end callbacks that survive diagnostic queue pressure, and catalog tooltips that stay out of active streams.
+          - Microphone signal and uplink diagnostics to help investigate silent input. These diagnostics do not establish that every microphone report is resolved.
+          - Motion frame generation remains the default on Windows; experimental FlyHigh is unavailable pending a verified bridge.
+
           Updates are authenticated with signed Ed25519 manifests.
           The macOS DMGs require macOS 13+ and are Developer ID-signed and notarized.
           Use \`OpenNOW-Qt-$RELEASE_VERSION-Darwin-arm64.dmg\` for Apple Silicon (arm64) or \`OpenNOW-Qt-$RELEASE_VERSION-Darwin-x64.dmg\` for Intel (x64).

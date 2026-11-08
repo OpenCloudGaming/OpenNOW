@@ -57,6 +57,8 @@ QtObject {
             {id: "game-b", title: "Second game", availableStores: ["Epic"]},
             {launchAppId: "game-c", title: "Third game", availableStores: ["Steam"]}
         ]
+        const retainedFilter = find(screen, "libraryFilter-all")
+        check(retainedFilter !== null, "library filter was not created")
         check(ShellStore.gameCollections.length === 0 && screen.games.length === 3, "default collections must be empty")
         check(!ShellStore.createCollection("  ", null) && ShellStore.collectionError !== "", "blank name accepted")
         check(!ShellStore.createCollection("x".repeat(81), null), "long name accepted")
@@ -95,6 +97,8 @@ QtObject {
         screen.activeFilter = "all"
         ShellStore.applySetting("hiddenGameIds", ["game-b"])
         check(screen.games.length === 0, "hidden game leaked into collection")
+        check(find(screen, "libraryFilter-all") === retainedFilter,
+            "updating library counts destroyed an existing filter control")
         screen.activeFilter = "hidden"
         check(screen.games.length === 1, "hidden collection member cannot be recovered")
         ShellStore.applySetting("hiddenGameIds", [])

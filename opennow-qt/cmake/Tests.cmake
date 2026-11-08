@@ -1372,6 +1372,7 @@ if(BUILD_TESTING)
         tests/tst_embeddedorchestration.cpp
     )
     target_link_libraries(opennow-embedded-orchestration-tests PRIVATE Qt6::Test Qt6::Core Qt6::Qml)
+    target_include_directories(opennow-embedded-orchestration-tests PRIVATE src)
     target_compile_definitions(opennow-embedded-orchestration-tests PRIVATE
         OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME opennow-embedded-orchestration-tests

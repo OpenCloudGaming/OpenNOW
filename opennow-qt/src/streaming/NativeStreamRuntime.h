@@ -230,7 +230,6 @@ private:
     static void enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                 std::size_t length, bool event);
     static void enqueueFrameAvailable(CallbackState *state);
-    static bool isTerminalEvent(const QByteArray &payload);
     static void scheduleDrain(const std::shared_ptr<CallbackState> &state);
     void drainCallbacks(const std::shared_ptr<CallbackState> &state);
     void setLastError(const QString &error);

@@ -4,6 +4,7 @@ import OpenNOW
 
 Item {
     id: root
+    objectName: "settingsSegmentedControl"
     property var options: []
     property int selectedIndex: 0
     property int optionWidth: 72
@@ -18,8 +19,22 @@ Item {
     property var disabledHint: ""
     signal selected(int index, var value)
 
-    implicitWidth: options.reduce((total, option) => total + root.widthFor(option), DesktopTokens.px(8))
-    implicitHeight: DesktopTokens.px(40)
+    readonly property real optionSpacing: DesktopTokens.px(4)
+    readonly property real naturalWidth: options.reduce((total, option) => total + root.widthFor(option), DesktopTokens.px(8))
+        + Math.max(0, options.length - 1) * optionSpacing
+    readonly property real availableWidth: parent && parent.availableWidth !== undefined
+        ? parent.availableWidth : naturalWidth
+    readonly property bool uniformWidths: options.length > 0
+        && options.every(option => root.widthFor(option) === root.widthFor(options[0]))
+    readonly property int columns: {
+        if (!options.length || !uniformWidths || naturalWidth <= width)
+            return Math.max(1, options.length)
+        const fitting = Math.max(1, Math.floor((width - DesktopTokens.px(8) + optionSpacing)
+            / (root.widthFor(options[0]) + optionSpacing)))
+        return Math.ceil(options.length / Math.ceil(options.length / fitting))
+    }
+    implicitWidth: Math.min(naturalWidth, Math.max(0, availableWidth))
+    implicitHeight: optionFlow.implicitHeight + DesktopTokens.px(8)
 
     function optionValue(option) {
         return (typeof option === "object" && option !== null && option.value !== undefined)
@@ -65,10 +80,13 @@ Item {
         return false
     }
 
-    Rectangle { anchors.fill: parent; radius: height / 2; color: Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35); border.width: 1; border.color: Theme.seam }
-    Row {
+    Rectangle { anchors.fill: parent; radius: Math.min(height / 2, DesktopTokens.px(20)); color: Theme.lightMode ? Qt.rgba(0,0,0,0.04) : Qt.rgba(0,0,0,0.35); border.width: 1; border.color: Theme.seam }
+    Flow {
+        id: optionFlow
+        objectName: "settingsSegmentedOptions"
         x: DesktopTokens.px(4); y: DesktopTokens.px(4)
-        spacing: 0
+        width: Math.max(0, root.width - DesktopTokens.px(8))
+        spacing: root.optionSpacing
         Repeater {
             id: optionsRepeater
             model: root.options
@@ -80,8 +98,10 @@ Item {
                 readonly property bool locked: root.isDisabled(modelData)
                 objectName: root.optionObjectNamePrefix + String(root.optionValue(modelData))
                 readonly property string label: root.optionLabel(modelData)
-                width: root.widthFor(modelData)
-                height: root.height - DesktopTokens.px(8)
+                width: root.uniformWidths
+                    ? (optionFlow.width - (root.columns - 1) * optionFlow.spacing) / root.columns
+                    : Math.min(root.widthFor(modelData), optionFlow.width)
+                height: DesktopTokens.px(32)
                 hoverEnabled: true
                 enabled: !locked
                 onClicked: root.selected(chip.index, chip.modelData)

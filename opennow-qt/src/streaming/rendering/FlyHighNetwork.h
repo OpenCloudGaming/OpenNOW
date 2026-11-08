@@ -23,7 +23,11 @@ public:
     FlyHighNetwork(const FlyHighNetwork &) = delete;
     FlyHighNetwork &operator=(const FlyHighNetwork &) = delete;
 
+    // Explicit engine selection, not a claim of bridge/bundle availability.
+    // Current releases reject FlyHigh initialization until its GPU completion
+    // and resource-lifetime contract can be verified.
     static bool enabled();
+    static QString unavailableReason();
     static QString weightsPath();
 
     bool initialize(QRhi *rhi);

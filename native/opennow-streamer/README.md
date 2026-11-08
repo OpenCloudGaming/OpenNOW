@@ -199,7 +199,7 @@ catch-up target are unchanged. These are separate queues, so the addition is
 end-to-end latency cap. OS endpoint buffering is outside the network buffer's
 bound.
 
-The local JSON protocol is version 7; the C ABI is unchanged. `hello` exposes
+The local JSON protocol is version 8; the C ABI is unchanged. `hello` exposes
 `supportsMicrophone` for runtime capture support, while the `start` response
 reports the negotiated session capability. `microphone-set` requires a boolean
 `enabled`; `microphone-toggle` toggles the current capture state. Both require an

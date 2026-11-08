@@ -220,6 +220,13 @@ QVariantMap FrameGenerationBenchmark::measure(const QVariantMap &request,
     const double seconds = std::clamp(request.value(QStringLiteral("seconds"), 3.0).toDouble(), 0.5, 15.0);
     const QString engineName = request.value(QStringLiteral("engine"), QStringLiteral("motion")).toString();
 
+    if (engineName != QStringLiteral("motion"))
+        return failure(QStringLiteral("Unsupported frame-generation benchmark engine: %1. Select motion.").arg(engineName));
+
+    if (FlyHighNetwork::enabled()) {
+        const auto unavailable = FlyHighNetwork::unavailableReason();
+        if (!unavailable.isEmpty()) return failure(unavailable);
+    }
     auto device = createPrivateRhi(adapterLuid);
     if (!device.rhi) return failure(device.error);
     auto &rhi = device.rhi;
@@ -330,6 +337,8 @@ int FrameGenerationBenchmark::flyHighSelfTest(const QString &directory)
         fprintf(stderr, "flyhigh selftest: %s\n", qUtf8Printable(message));
         return EXIT_FAILURE;
     };
+    const auto unavailable = FlyHighNetwork::unavailableReason();
+    if (!unavailable.isEmpty()) return fail(unavailable);
     const QImage first = QImage(directory + QStringLiteral("/a.png")).convertToFormat(QImage::Format_RGBA8888);
     const QImage second = QImage(directory + QStringLiteral("/b.png")).convertToFormat(QImage::Format_RGBA8888);
     if (first.isNull() || second.isNull() || first.size() != second.size())

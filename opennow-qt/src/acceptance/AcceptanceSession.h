@@ -21,6 +21,12 @@ public:
     [[nodiscard]] int measureStartup(const QElapsedTimer &startupTimer, qint64 qmlReadyMs);
     [[nodiscard]] int startWorkload();
     static QString coreProgram(const QStringList &arguments);
+    static bool sdrCaptureRequested(const QStringList &arguments)
+    {
+        return arguments.contains(QStringLiteral("--smoke-test"))
+            && arguments.contains(QStringLiteral("--smoke-sdr-capture"))
+            && arguments.contains(QStringLiteral("--screenshot"));
+    }
 
 private:
     [[nodiscard]] int startSmokeWorkload();

@@ -22,6 +22,13 @@
 #endif
 
 namespace {
+#if defined(Q_OS_WIN)
+// No reviewed bridge currently establishes asynchronous Vulkan completion and
+// imported D3D11 texture lifetime. Keep the prototype unreachable, including
+// direct benchmark calls, until that contract and its implementation are supplied.
+constexpr bool VerifiedAsynchronousBridgeAvailable = false;
+#endif
+
 QString modelDirectory()
 {
     const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/flyhigh");
@@ -339,13 +346,10 @@ FlyHighNetwork::~FlyHighNetwork() = default;
 bool FlyHighNetwork::enabled()
 {
 #if defined(Q_OS_WIN)
-    const QString flag = qEnvironmentVariable("OPENNOW_FLYHIGH");
-    if (flag == QLatin1String("0")
-        || qEnvironmentVariable("OPENNOW_FRAME_GENERATION_ENGINE") == QLatin1String("motion"))
-        return false;
-    const bool app = QFileInfo(QCoreApplication::applicationFilePath()).completeBaseName()
-        .compare(QLatin1String("OpenNOW"), Qt::CaseInsensitive) == 0;
-    return app || flag == QLatin1String("1");
+    // Selection is explicit; an application filename or model directory must
+    // never take over the release's working motion interpolator.
+    return qEnvironmentVariable("OPENNOW_FLYHIGH") == QLatin1String("1")
+        && qEnvironmentVariable("OPENNOW_FRAME_GENERATION_ENGINE") != QLatin1String("motion");
 #else
     return false;
 #endif
@@ -357,6 +361,17 @@ QString FlyHighNetwork::weightsPath()
     return dir.isEmpty() ? QString() : dir + QStringLiteral("/flyhighfg.bin");
 }
 
+QString FlyHighNetwork::unavailableReason()
+{
+#if defined(Q_OS_WIN)
+    if (!VerifiedAsynchronousBridgeAvailable)
+        return QStringLiteral("Experimental FlyHigh is unavailable until its GPU completion and resource-lifetime bridge is verified. Unset OPENNOW_FLYHIGH or select the motion engine.");
+    return {};
+#else
+    return QStringLiteral("FlyHigh engine bridge is Windows only");
+#endif
+}
+
 bool FlyHighNetwork::initialize(QRhi *rhi)
 {
     release();
@@ -366,6 +381,11 @@ bool FlyHighNetwork::initialize(QRhi *rhi)
     m_error = QStringLiteral("FlyHigh engine bridge is Windows only");
     return false;
 #else
+    const auto unavailable = unavailableReason();
+    if (!unavailable.isEmpty()) {
+        m_error = unavailable;
+        return false;
+    }
     if (!rhi || rhi->backend() != QRhi::D3D11) {
         m_error = QStringLiteral("FlyHigh engine needs the D3D11 presenter");
         return false;
