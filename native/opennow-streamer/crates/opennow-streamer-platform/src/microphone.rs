@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -26,6 +26,16 @@ pub struct MicrophoneStatus {
     pub error: Option<String>,
     pub dropped_pcm_frames: u64,
     pub dropped_encoded_frames: u64,
+}
+
+/// Payload-free counters for distinguishing silent capture from encoder/uplink failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneDiagnostics {
+    pub captured_pcm_frames: u64,
+    pub encoded_frames: u64,
+    pub signal_pcm_frames: u64,
+    /// Largest absolute signed-16-bit sample since the previous diagnostic read.
+    pub peak_pcm: u32,
 }
 
 #[derive(Debug)]
@@ -58,6 +68,10 @@ pub(crate) struct MicrophoneShared {
     ready: Condvar,
     dropped_pcm: AtomicU64,
     dropped_encoded: AtomicU64,
+    captured_pcm: AtomicU64,
+    encoded_frames: AtomicU64,
+    signal_pcm: AtomicU64,
+    peak_pcm: AtomicU32,
     stopped: AtomicBool,
     device: Mutex<Option<u32>>,
 }
@@ -76,6 +90,10 @@ impl MicrophoneShared {
             ready: Condvar::new(),
             dropped_pcm: AtomicU64::new(0),
             dropped_encoded: AtomicU64::new(0),
+            captured_pcm: AtomicU64::new(0),
+            encoded_frames: AtomicU64::new(0),
+            signal_pcm: AtomicU64::new(0),
+            peak_pcm: AtomicU32::new(0),
             stopped: AtomicBool::new(false),
             device: Mutex::new(None),
         })
@@ -139,6 +157,10 @@ impl MicrophoneShared {
         timestamp: u32,
         captured_at: Instant,
     ) {
+        if self.stopped() {
+            return;
+        }
+        self.captured_pcm.fetch_add(1, Ordering::Relaxed);
         let Ok(mut state) = self.state.try_lock() else {
             self.dropped_pcm.fetch_add(1, Ordering::Relaxed);
             return;
@@ -284,15 +306,30 @@ fn encoder() -> Result<opus::Encoder, String> {
 fn run_encoder(shared: Arc<MicrophoneShared>, mut encoder: opus::Encoder) {
     let mut packet = [0_u8; 1275];
     while let Some(frame) = shared.pop_pcm() {
+        // Keep the sample scan off the real-time SDL callback. A nonzero sample
+        // indicates captured signal, not necessarily speech or a usable level.
+        let peak = frame
+            .samples
+            .iter()
+            .map(|sample| u32::from(sample.unsigned_abs()))
+            .max()
+            .unwrap_or_default();
+        if peak > 0 {
+            shared.signal_pcm.fetch_add(1, Ordering::Relaxed);
+            shared.peak_pcm.fetch_max(peak, Ordering::Relaxed);
+        }
         match encoder.encode(&frame.samples, &mut packet) {
-            Ok(size) => shared.push_encoded(
-                EncodedMicrophoneFrame {
-                    opus: packet[..size].to_vec(),
-                    timestamp: frame.timestamp,
-                },
-                frame.captured_at,
-                frame.generation,
-            ),
+            Ok(size) => {
+                shared.encoded_frames.fetch_add(1, Ordering::Relaxed);
+                shared.push_encoded(
+                    EncodedMicrophoneFrame {
+                        opus: packet[..size].to_vec(),
+                        timestamp: frame.timestamp,
+                    },
+                    frame.captured_at,
+                    frame.generation,
+                );
+            }
             Err(error) => {
                 shared.close(Some(format!("microphone Opus encoding failed: {error}")));
                 break;
@@ -372,6 +409,20 @@ impl CaptureDevice {
                 "microphone device did not provide signed 16-bit mono 48 kHz PCM".to_owned(),
             );
         }
+        let driver = unsafe { sys::SDL_GetCurrentAudioDriver() };
+        let driver = if driver.is_null() {
+            "unknown".into()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(driver) }.to_string_lossy()
+        };
+        opennow_streamer_protocol::log::log_line(
+            "INFO",
+            "microphone",
+            &format!(
+                "capture_open driver={driver} device=system-default rate={} channels={} callback_samples={}",
+                obtained.freq, obtained.channels, obtained.samples
+            ),
+        );
         {
             let mut current = device
                 .shared
@@ -578,6 +629,17 @@ pub struct MicrophoneReceiver {
 }
 
 impl MicrophoneReceiver {
+    /// Frame counters are cumulative for this capture session; only the peak resets.
+    /// This never exports samples, device names, or encoded audio.
+    pub fn take_diagnostics(&self) -> MicrophoneDiagnostics {
+        MicrophoneDiagnostics {
+            captured_pcm_frames: self.shared.captured_pcm.load(Ordering::Relaxed),
+            encoded_frames: self.shared.encoded_frames.load(Ordering::Relaxed),
+            signal_pcm_frames: self.shared.signal_pcm.load(Ordering::Relaxed),
+            peak_pcm: self.shared.peak_pcm.swap(0, Ordering::Relaxed),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn capture_device_open(&self) -> bool {
         self.shared.device_status().is_some()
@@ -894,6 +956,62 @@ mod tests {
         session.stop();
         worker.join().unwrap();
         assert_eq!(receiver.try_recv(), Ok(None));
+    }
+
+    #[test]
+    fn diagnostics_distinguish_silent_capture_and_signal_without_exposing_audio() {
+        let shared = MicrophoneShared::new();
+        let mut session = MicrophoneSession::from_shared(Arc::clone(&shared));
+        let receiver = session.receiver();
+        let worker_shared = Arc::clone(&shared);
+        let worker = thread::spawn(move || run_encoder(worker_shared, encoder().unwrap()));
+        shared.push_pcm(&[0; MICROPHONE_FRAME_SAMPLES], 0, Instant::now());
+        wait_for_packet(&receiver);
+        assert_eq!(
+            receiver.take_diagnostics(),
+            MicrophoneDiagnostics {
+                captured_pcm_frames: 1,
+                encoded_frames: 1,
+                signal_pcm_frames: 0,
+                peak_pcm: 0,
+            }
+        );
+
+        let mut signal = [0; MICROPHONE_FRAME_SAMPLES];
+        signal[37] = i16::MIN;
+        shared.push_pcm(&signal, 480, Instant::now());
+        wait_for_packet(&receiver);
+        assert_eq!(
+            receiver.take_diagnostics(),
+            MicrophoneDiagnostics {
+                captured_pcm_frames: 2,
+                encoded_frames: 2,
+                signal_pcm_frames: 1,
+                peak_pcm: 32_768,
+            }
+        );
+        // Reading the level must retain throughput totals and reset only the peak.
+        let diagnostics = receiver.take_diagnostics();
+        assert_eq!(diagnostics.encoded_frames, 2);
+        assert_eq!(diagnostics.signal_pcm_frames, 1);
+        assert_eq!(diagnostics.peak_pcm, 0);
+        session.stop();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn diagnostics_count_capture_when_busy_queue_drops_a_frame() {
+        let shared = MicrophoneShared::new();
+        let session = MicrophoneSession::from_shared(Arc::clone(&shared));
+        let receiver = session.receiver();
+        let guard = shared.state.lock().unwrap();
+        shared.push_pcm(&[1; MICROPHONE_FRAME_SAMPLES], 0, Instant::now());
+        drop(guard);
+        assert_eq!(receiver.take_diagnostics().captured_pcm_frames, 1);
+        assert_eq!(receiver.status().dropped_pcm_frames, 1);
+        session.receiver().stop();
+        shared.push_pcm(&[1; MICROPHONE_FRAME_SAMPLES], 480, Instant::now());
+        assert_eq!(receiver.take_diagnostics().captured_pcm_frames, 1);
     }
 
     #[test]
