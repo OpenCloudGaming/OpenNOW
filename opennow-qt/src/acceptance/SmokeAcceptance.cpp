@@ -802,6 +802,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                      || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                      || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s))) {
+        qmlRegisterType<AcceptanceCoreClient>("OpenNOW.Acceptance", 1, 0, "AcceptanceCoreClient");
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-library-error"_s)
             ? u"qrc:/acceptance/LibraryErrorAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-command-search"_s)

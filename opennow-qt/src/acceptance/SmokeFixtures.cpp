@@ -102,10 +102,22 @@ int AcceptanceSession::prepareWindow()
             const QVariantMap alliance{{u"idpId"_s, u"alliance-fixture"_s}, {u"displayName"_s, u"Alliance fixture"_s}, {u"code"_s, u"ALLIANCE"_s}};
             store->setProperty("providers", QVariantList{nvidia, alliance});
             store->setProperty("selectedProviderIdpId", u"alliance-fixture"_s);
-            const auto selected = store->property("selectedProvider").value<QJSValue>();
-            if (selected.property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            // A provider selected from the QVariantList remains a QVariantMap on
+            // newer Qt. Convert through the engine instead of extracting only
+            // an already-wrapped QJSValue (which silently yields undefined).
+            const auto selectedId = [this, store] {
+                return m_engine.toScriptValue(store->property("selectedProvider"))
+                    .property(u"idpId"_s).toString();
+            };
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: selecting the alliance provider did not retain its ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providers", QVariantList{alliance, nvidia});
-            if (store->property("selectedProvider").value<QJSValue>().property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: reordering providers changed the selected provider ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providerDiscoveryDegraded", true);
             store->setProperty("authRestorePending", false);
             store->setProperty("authSession", QVariant());

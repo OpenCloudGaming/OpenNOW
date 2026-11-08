@@ -1,19 +1,17 @@
 import QtQuick
 import OpenNOW
+import OpenNOW.Acceptance 1.0
 
 QtObject {
     property Component gameAccountsComponent: Component { GameAccountsScreen {} }
     property Component persistentStorageComponent: Component { PersistentStorageScreen {} }
-    property QtObject client: QtObject {
+    property AcceptanceCoreClient client: AcceptanceCoreClient {
         property string state: "ready"
         property string lastError: ""
         property int sequence: 0
         property var requests: []
         property var cancellations: []
         property var cancelledResponse: null
-        signal responseReceived(string requestId, var result)
-        signal requestFailed(string requestId, string code, string message)
-        signal eventReceived(string name, var payload)
         function markUiReady() {}
         function logShellDiagnostic(message) {}
         function request(method, params, timeout) {
