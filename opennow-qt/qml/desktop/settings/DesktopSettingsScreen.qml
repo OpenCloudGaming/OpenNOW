@@ -23,10 +23,19 @@ FocusScope {
         ([0,1,2].indexOf(selectedSection) >= 0 ? 0 : selectedSection === 10 ? 5 : selectedSection === 7 ? 8 : selectedSection))
     onSelectedSectionChanged: {
         advancedOpen = false
-        Qt.callLater(root.revealSelectedNavigation)
+        navigationRevealTimer.restart()
     }
-    onCompactNavigationChanged: Qt.callLater(root.revealSelectedNavigation)
+    onCompactNavigationChanged: navigationRevealTimer.restart()
     signal requestConsoleMode(bool enabled)
+
+    // Navigation belongs to this page. Cancel pending layout work when a route
+    // change destroys it instead of retaining a method on a deleted wrapper.
+    Timer {
+        id: navigationRevealTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.revealSelectedNavigation()
+    }
 
     TenBitWarningDialog { id: tenBitWarning; settingsStore: ShellStore }
 
@@ -90,7 +99,8 @@ FocusScope {
     function setSetting(key, value) {
         ShellStore.setSetting(key, value)
         if (key === "resolution")
-            Qt.callLater(root.clampFpsToEntitlement)
+            // Keep the persisted setting correction even if this page closes.
+            Qt.callLater(ShellStore.clampFpsToEntitlement)
     }
 
     function setChoice(key, value) {
