@@ -75,6 +75,9 @@ install(FILES "${OPENNOW_GENERATED_NOTICES}"
 install(DIRECTORY packaging/licenses/
     DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
 )
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/res/fonts/NotoSansKR-OFL.txt"
+    DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
+)
 
 if(UNIX AND NOT APPLE)
     install(FILES packaging/io.github.opencloudgaming.OpenNOW.desktop
