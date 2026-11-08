@@ -594,22 +594,28 @@ impl MainThreadHost {
                     ) {
                         Ok(output) => Ok(output),
                         Err(hardware_error) if requested_hardware || requested_linux_hardware => {
-                            self.use_macos_hardware.store(false, Ordering::Release);
-                            #[cfg(target_os = "windows")]
-                            self.windows_bridge.fall_back_to_software();
-                            startup_fallback = Some(hardware_error);
-                            initialize_output(
-                                Arc::clone(&self.output),
-                                surface.as_ref(),
-                                paused,
-                                false,
-                                MediaSessionConfig {
-                                    stream,
-                                    audio_device: &active_audio_device,
+                            retry_software_output(
+                                crate::HARDWARE_ONLY,
+                                hardware_error.clone(),
+                                || {
+                                    self.use_macos_hardware.store(false, Ordering::Release);
+                                    #[cfg(target_os = "windows")]
+                                    self.windows_bridge.fall_back_to_software();
+                                    startup_fallback = Some(hardware_error);
+                                    initialize_output(
+                                        Arc::clone(&self.output),
+                                        surface.as_ref(),
+                                        paused,
+                                        false,
+                                        MediaSessionConfig {
+                                            stream,
+                                            audio_device: &active_audio_device,
+                                        },
+                                        false,
+                                        #[cfg(target_os = "windows")]
+                                        Arc::clone(&self.windows_bridge),
+                                    )
                                 },
-                                false,
-                                #[cfg(target_os = "windows")]
-                                Arc::clone(&self.windows_bridge),
                             )
                         }
                         Err(error) => Err(error),
@@ -726,17 +732,21 @@ impl MainThreadHost {
                     let mut result = result;
                     #[cfg(target_os = "linux")]
                     if linux_hardware && let Err(reason) = &result {
-                        match initialize_output(
-                            Arc::clone(&self.output),
-                            Some(&new_surface),
-                            paused,
-                            false,
-                            MediaSessionConfig {
-                                stream: active_stream,
-                                audio_device: &active_audio_device,
-                            },
-                            false,
-                        ) {
+                        let replacement =
+                            retry_software_output(crate::HARDWARE_ONLY, reason.clone(), || {
+                                initialize_output(
+                                    Arc::clone(&self.output),
+                                    Some(&new_surface),
+                                    paused,
+                                    false,
+                                    MediaSessionConfig {
+                                        stream: active_stream,
+                                        audio_device: &active_audio_device,
+                                    },
+                                    false,
+                                )
+                            });
+                        match replacement {
                             Ok(output) => {
                                 if let Some(current) = active.as_mut() {
                                     current.stop();
@@ -865,18 +875,21 @@ impl MainThreadHost {
                 }
                 #[cfg(target_os = "linux")]
                 Ok(HostCommand::FallbackLinux { reason }) => {
-                    self.linux_software_fallback.store(true, Ordering::Release);
-                    let replacement = initialize_output(
-                        Arc::clone(&self.output),
-                        surface.as_ref(),
-                        paused,
-                        false,
-                        MediaSessionConfig {
-                            stream: active_stream,
-                            audio_device: &active_audio_device,
-                        },
-                        false,
-                    );
+                    let replacement =
+                        retry_software_output(crate::HARDWARE_ONLY, reason.clone(), || {
+                            self.linux_software_fallback.store(true, Ordering::Release);
+                            initialize_output(
+                                Arc::clone(&self.output),
+                                surface.as_ref(),
+                                paused,
+                                false,
+                                MediaSessionConfig {
+                                    stream: active_stream,
+                                    audio_device: &active_audio_device,
+                                },
+                                false,
+                            )
+                        });
                     match replacement {
                         Ok(output) => {
                             if let Some(current) = active.as_mut() {
@@ -895,10 +908,17 @@ impl MainThreadHost {
                         Err(fallback_error) => {
                             if let Some(feedback) = feedback.as_ref() {
                                 let _ = feedback.send(MediaFeedback::OutputError {
-                                    message: format!(
-                                        "Linux hardware fallback failed: {fallback_error}"
-                                    ),
+                                    message: if crate::HARDWARE_ONLY {
+                                        fallback_error
+                                    } else {
+                                        format!("Linux hardware fallback failed: {fallback_error}")
+                                    },
                                 });
+                            }
+                            if crate::HARDWARE_ONLY
+                                && let Some(current) = active.as_mut()
+                            {
+                                current.stop();
                             }
                             active = None;
                             feedback = None;
@@ -1096,17 +1116,23 @@ impl MainThreadHost {
                         }
                         #[cfg(target_os = "linux")]
                         if output.is_linux_hardware() {
-                            output.stop();
-                            let fallback = initialize_output(
-                                Arc::clone(&self.output),
-                                surface.as_ref(),
-                                paused,
-                                false,
-                                MediaSessionConfig {
-                                    stream: active_stream,
-                                    audio_device: &active_audio_device,
+                            let fallback = retry_software_output(
+                                crate::HARDWARE_ONLY,
+                                message.clone(),
+                                || {
+                                    output.stop();
+                                    initialize_output(
+                                        Arc::clone(&self.output),
+                                        surface.as_ref(),
+                                        paused,
+                                        false,
+                                        MediaSessionConfig {
+                                            stream: active_stream,
+                                            audio_device: &active_audio_device,
+                                        },
+                                        false,
+                                    )
                                 },
-                                false,
                             );
                             if let Ok(replacement) = fallback {
                                 *output = replacement;
@@ -1471,6 +1497,20 @@ pub fn create_test_runtime() -> (TestMediaRuntimeHost, MediaRuntime) {
     )
 }
 
+// Apply policy before invoking a software factory or changing backend state.
+// Otherwise a constructor's policy rejection masks the original hardware error.
+fn retry_software_output<T>(
+    hardware_only: bool,
+    hardware_error: String,
+    initialize_software: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    if hardware_only {
+        Err(hardware_error)
+    } else {
+        initialize_software()
+    }
+}
+
 fn initialize_output(
     output: Arc<OutputBuffers>,
     surface: Option<&RenderSurface>,
@@ -1574,6 +1614,39 @@ fn ensure_macos_main_thread() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hardware_only_output_recovery_preserves_failure_without_opening_software() {
+        let backend_changed = std::cell::Cell::new(false);
+        let hardware_error = "Vulkan surface reconfiguration failed: ERROR_SURFACE_LOST_KHR";
+        let result = super::retry_software_output(true, hardware_error.to_owned(), || {
+            backend_changed.set(true);
+            Ok("software output")
+        });
+        assert_eq!(result, Err(hardware_error.to_owned()));
+        assert!(
+            !backend_changed.get(),
+            "forbidden software factory must not run"
+        );
+    }
+
+    #[test]
+    fn normal_output_recovery_retains_software_factory_success_and_failure() {
+        let attempts = std::cell::Cell::new(0);
+        let success =
+            super::retry_software_output(false, "hardware startup failed".to_owned(), || {
+                attempts.set(attempts.get() + 1);
+                Ok("software output")
+            });
+        assert_eq!(success, Ok("software output"));
+        let failure =
+            super::retry_software_output::<()>(false, "hardware startup failed".to_owned(), || {
+                attempts.set(attempts.get() + 1);
+                Err("software output failed".to_owned())
+            });
+        assert_eq!(failure, Err("software output failed".to_owned()));
+        assert_eq!(attempts.get(), 2);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn hardware_only_runtime_rejects_explicit_software_settings_before_startup() {
