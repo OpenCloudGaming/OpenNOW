@@ -652,9 +652,10 @@ fn connection_from_store(definition: &Value, store: Option<&Value>, fetched_at: 
     let expires_in = linking
         .and_then(|value| value["expiresIn"].as_str())
         .and_then(|value| value.parse::<i64>().ok());
-    // The vendor uses zero and the negative sentinel for links without expiry.
+    // The vendor excludes exactly zero and -1 (its no-expiry sentinel). Other
+    // negative remaining lifetimes represent a link that has already expired.
     let expires_at = expires_in
-        .filter(|value| *value > 0)
+        .filter(|value| !matches!(*value, 0 | -1))
         .map(|value| fetched_at.saturating_add(value.saturating_mul(1000)));
     let sync_state = sync.and_then(|value| value["syncState"].as_str());
     let expired = connected
@@ -1134,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_negative_link_expiry_do_not_expire_connected_stores() {
+    fn zero_and_sentinel_link_expiry_do_not_expire_connected_stores() {
         let definition = provider_definitions()
             .into_iter()
             .find(|definition| definition["provider"] == "GOG")
@@ -1151,6 +1152,25 @@ mod tests {
         let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":i64::MAX.to_string()}});
         let account = connection_from_store(&definition, Some(&store), 1_000);
         assert_eq!(account["expiresAt"], i64::MAX);
+    }
+
+    #[test]
+    fn negative_remaining_link_lifetime_except_sentinel_is_expired() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "GOG")
+            .unwrap();
+        for remaining in [-2, -60, i64::MIN] {
+            let store =
+                json!({"store":"GOG","accountLinkingData":{"expiresIn":remaining.to_string()}});
+            let account = connection_from_store(&definition, Some(&store), 100_000);
+            assert_eq!(account["isConnected"], true);
+            assert_eq!(account["status"], "expired", "{remaining}");
+            assert_eq!(
+                account["expiresAt"],
+                100_000_i64.saturating_add(remaining.saturating_mul(1000))
+            );
+        }
     }
 
     #[test]
