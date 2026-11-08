@@ -101,6 +101,22 @@ FocusScope {
         streamVideo.resynchronizeInput()
     }
 
+    // Window/fullscreen transitions can outlive this surface. Owner-scoped
+    // timers coalesce work and are destroyed with it, preserving the current
+    // geometry and focus guards without invoking deleted QML wrappers.
+    Timer {
+        id: inputResyncTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.resynchronizeStreamInput()
+    }
+    Timer {
+        id: focusRestoreTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.restoreStreamFocus()
+    }
+
     onXChanged: publishCaptureRect()
     onYChanged: publishCaptureRect()
     onWidthChanged: publishCaptureRect()
@@ -111,10 +127,10 @@ FocusScope {
         target: root.Window.window
         function onXChanged() { root.resynchronizeStreamInput() }
         function onYChanged() { root.resynchronizeStreamInput() }
-        function onWidthChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onHeightChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onVisibilityChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onWidthChanged() { inputResyncTimer.restart() }
+        function onHeightChanged() { inputResyncTimer.restart() }
+        function onVisibilityChanged() { inputResyncTimer.restart() }
+        function onActiveChanged() { inputResyncTimer.restart() }
     }
 
     StreamVideoItem {
@@ -183,7 +199,7 @@ FocusScope {
         pointerLockEnabled: streamVideo.macPointerLockEnabled
         onEnableRequested: {
             streamVideo.togglePointerLock()
-            Qt.callLater(root.resynchronizeStreamInput)
+            inputResyncTimer.restart()
         }
         z: 3
     }
@@ -216,9 +232,9 @@ FocusScope {
     onVisibleChanged: {
         publishCaptureRect()
         if (visible)
-            Qt.callLater(root.restoreStreamFocus)
+            focusRestoreTimer.restart()
     }
-    onLaunchCoveredChanged: if (!launchCovered) Qt.callLater(root.resynchronizeStreamInput)
+    onLaunchCoveredChanged: if (!launchCovered) inputResyncTimer.restart()
 
     Keys.onPressed: event => {
         if (event.isAutoRepeat)

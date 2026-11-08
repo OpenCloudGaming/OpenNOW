@@ -3452,6 +3452,10 @@ mod tests {
             json!("3440x1440")
         );
         assert_eq!(
+            store.set("resolution", json!("3640x1080")).unwrap(),
+            json!("3640x1080")
+        );
+        assert_eq!(
             store.set("resolution", json!("99999x1")).unwrap(),
             json!("1920x1080")
         );

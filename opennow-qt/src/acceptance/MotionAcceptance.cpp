@@ -404,12 +404,24 @@ void startMotionAcceptance(QQuickWindow *window, AppController *controller,
             // Queue the coalesced scale update immediately before a console
             // route destroys DesktopApp, without giving the event loop a turn.
             desktop->setWidth(desktop->width() - 1);
+            // Also queue focus from sign-in, palette and guide transitions in
+            // this same event turn. Those requests must die with this surface,
+            // without calling methods on its destroyed QML wrapper.
+            controller->navigate(QStringLiteral("sign-in"));
+            controller->navigate(QStringLiteral("home"));
+            desktop->setProperty("commandOpen", true);
+            desktop->setProperty("commandOpen", false);
+            controller->showOverlay(QStringLiteral("desktop-icon-guide"));
+            controller->showOverlay(QString{});
             controller->navigate(QStringLiteral("media"));
             if (!require(!find("desktopApp"), "console route retained the desktop instance")) return;
         }
         if (tick == 73 || tick == 75) controller->navigate(QStringLiteral("home"));
         if (tick == 76) {
             if (!require(find("desktopApp"), "desktop did not return after surface switches")) return;
+            auto *pageLoader = find("desktopPageLoader");
+            auto *page = pageLoader ? pageLoader->property("item").value<QQuickItem *>() : nullptr;
+            if (!require(page && page->hasActiveFocus(), "recreated desktop did not restore page focus")) return;
             timer->stop();
             QCoreApplication::exit(0);
         }

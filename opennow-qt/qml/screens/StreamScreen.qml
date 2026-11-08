@@ -55,11 +55,11 @@ FocusScope {
     onVideoReadyChanged: {
         if (!videoReady) {
             if (!failed && visible && AppController.overlay === "")
-                Qt.callLater(root.forceActiveFocus)
+                focusRestoreTimer.restart()
             return
         }
         presentedSessionId = sessionId
-        Qt.callLater(root.resynchronizeStreamInput)
+        inputResyncTimer.restart()
     }
     onReconnectBannerVisibleChanged: {
         reconnectStartedMs = reconnectBannerVisible ? Date.now() : 0
@@ -103,6 +103,28 @@ FocusScope {
         streamVideo.resynchronizeInput()
     }
 
+    // Deferred window work must end with this surface, including when a
+    // fullscreen/console transition replaces it before the next event turn.
+    Timer {
+        id: inputResyncTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.resynchronizeStreamInput()
+    }
+    Timer {
+        id: focusRestoreTimer
+        interval: 0
+        repeat: false
+        onTriggered: {
+            if (!root.visible || ShellStore.streamOverlayBlocksGameplayInput(AppController.overlay))
+                return
+            if (root.failed)
+                retryMediaButton.forceActiveFocus()
+            else if (!root.videoReady && AppController.overlay === "")
+                root.forceActiveFocus()
+        }
+    }
+
     onXChanged: publishCaptureRect()
     onYChanged: publishCaptureRect()
     onWidthChanged: publishCaptureRect()
@@ -114,10 +136,10 @@ FocusScope {
         target: root.Window.window
         function onXChanged() { root.resynchronizeStreamInput() }
         function onYChanged() { root.resynchronizeStreamInput() }
-        function onWidthChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onHeightChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onVisibilityChanged() { Qt.callLater(root.resynchronizeStreamInput) }
-        function onActiveChanged() { Qt.callLater(root.resynchronizeStreamInput) }
+        function onWidthChanged() { inputResyncTimer.restart() }
+        function onHeightChanged() { inputResyncTimer.restart() }
+        function onVisibilityChanged() { inputResyncTimer.restart() }
+        function onActiveChanged() { inputResyncTimer.restart() }
     }
 
     Timer { interval: 1000; repeat: true; running: root.streaming || root.reconnectBannerVisible; onTriggered: root.nowMs = Date.now() }
@@ -190,7 +212,7 @@ FocusScope {
         pointerLockEnabled: streamVideo.macPointerLockEnabled
         onEnableRequested: {
             streamVideo.togglePointerLock()
-            Qt.callLater(root.resynchronizeStreamInput)
+            inputResyncTimer.restart()
         }
         z: 3
     }
@@ -432,6 +454,6 @@ FocusScope {
         }
     }
 
-    onFailedChanged: if (failed) Qt.callLater(() => retryMediaButton.forceActiveFocus())
+    onFailedChanged: if (failed) focusRestoreTimer.restart()
 
 }
