@@ -166,6 +166,7 @@ struct NativeStreamRuntime::CallbackState final
         bool cursor = false;
         quint64 rumbleEpoch = 0;
         QByteArray cursorStartId;
+        bool diagnostic = false;
     };
 
     std::mutex mutex;
@@ -1082,15 +1083,6 @@ void NativeStreamRuntime::cursorCallback(const std::uint8_t *startId, std::size_
     if (shouldSchedule) scheduleDrain(sharedState);
 }
 
-bool NativeStreamRuntime::isTerminalEvent(const QByteArray &payload)
-{
-    const auto object = QJsonDocument::fromJson(payload).object();
-    const auto type = object.value(u"type"_s).toString();
-    const auto status = object.value(u"status"_s).toString();
-    return type == u"error"_s
-        || (type == u"status"_s && (status == u"stopped"_s || status == u"error"_s));
-}
-
 void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8_t *bytes,
                                           std::size_t length, bool event)
 {
@@ -1101,28 +1093,54 @@ void NativeStreamRuntime::enqueueCallback(CallbackState *state, const std::uint8
     }
 
     const QByteArray payload(reinterpret_cast<const char *>(bytes), static_cast<qsizetype>(length));
-    bool cursorCapture = false;
-    if (event && payload.size() <= 1024 && payload.contains("\"cursor-capture\"")) {
-        const auto object = QJsonDocument::fromJson(payload).object();
-        cursorCapture = object.value(u"type"_s) == u"cursor-capture"_s
+    // Classify once, outside the queue mutex. Overload admission must not parse
+    // hundreds of retained payloads while producers wait for this lock.
+    const auto object = event ? QJsonDocument::fromJson(payload).object() : QJsonObject{};
+    const auto type = object.value(u"type"_s);
+    const auto status = object.value(u"status"_s);
+    const bool diagnostic = type == u"log"_s || type == u"telemetry"_s || type == u"stats"_s;
+    const bool firstFrame = type == u"status"_s && object.value(u"event"_s) == u"first-frame"_s
+        && status == u"streaming"_s;
+    const bool terminal = type == u"error"_s
+        || (type == u"status"_s && (status == u"stopped"_s || status == u"error"_s));
+    const bool cursorCapture = payload.size() <= 1024 && type == u"cursor-capture"_s
             && object.value(u"composited"_s).isBool()
             && object.value(u"startId"_s).isString();
-    }
     const auto sharedState = state->shared_from_this();
     bool shouldSchedule = false;
     {
         const std::lock_guard lock(state->mutex);
         if (!state->accepting) return;
+        bool replacedDiagnostic = false;
+        if (!cursorCapture && state->pending.size() >= MaximumPendingCallbacks) {
+            if (!event || firstFrame || terminal) {
+                // Startup replies authorize presentation, and first-frame is a
+                // one-shot UI transition. Terminal events must also survive a
+                // burst of stale lifecycle callbacks. Drop diagnostic samples
+                // while the GUI is busy. Keep retained callbacks
+                // in order and leave the terminal reserve and total bound intact.
+                const auto disposable = std::find_if(state->pending.begin(), state->pending.end(),
+                    [](const CallbackState::Message &message) {
+                        return message.diagnostic;
+                    });
+                if (disposable != state->pending.end()) {
+                    state->pending.erase(disposable);
+                    replacedDiagnostic = true;
+                    ++state->dropped;
+                    ++state->rumbleEpoch;
+                }
+            }
+        }
         if (cursorCapture) {
             state->cursorCapture = payload;
-        } else if (state->pending.size() >= MaximumPendingCallbacks
+        } else if (!replacedDiagnostic && state->pending.size() >= MaximumPendingCallbacks
                    && (!event || state->pending.size() >= MaximumPendingCallbacks + TerminalCallbackReserve
-                       || !isTerminalEvent(payload))) {
+                       || !terminal)) {
             ++state->dropped;
             ++state->rumbleEpoch;
             return;
         } else {
-            state->pending.enqueue({payload, event, false, state->rumbleEpoch});
+            state->pending.enqueue({payload, event, false, state->rumbleEpoch, {}, diagnostic});
         }
         if (!state->drainScheduled) {
             state->drainScheduled = true;

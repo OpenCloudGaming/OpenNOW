@@ -10,7 +10,10 @@ Item {
     readonly property bool hasContent: ConsoleStores.launchers(game).length > 0
         || DesktopTokens.gameFeatures(game).length > 0 || ShellStore.gameLockedByMembership(game)
     property bool shown: false
+    // Popup content lives in the window overlay, outside its catalog tile's
+    // visual tree. Retained hover must never reopen it above a live session.
     readonly property bool anchorUsable: visible && enabled
+        && AppController.route !== "stream" && AppController.route !== "inserting"
     readonly property bool tipHovered: tipLoader.item ? tipLoader.item.hovered : false
 
     onRequestedChanged: requested ? openDelay.restart() : closeDelay.restart()
