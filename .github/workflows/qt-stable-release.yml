@@ -131,6 +131,7 @@ jobs:
           This release includes:
           - A macOS app icon created in Apple's Icon Composer, using the OpenNOW cloud on a native dark tile.
           - More room for settings, responsive controls and Home rows, and Store/Library updates that retain existing navigation controls.
+          - Focus, navigation, and input updates that cancel when their screen closes, preventing errors during rapid route and fullscreen changes.
           - Correct connected-store status when GeForce NOW omits optional linking metadata, and library sync that waits for a newly linked account.
           - Restored German keyboard mappings, Windows modifier/AltGr handling, and window dragging and resizing while streaming.
           - Correct persistent in-game settings, cleanup of completed launch requests, and HTTPS-based region latency measurements.
