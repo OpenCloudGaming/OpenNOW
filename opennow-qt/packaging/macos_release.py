@@ -55,6 +55,7 @@ def run(*args):
 
 def verified_bundle_targets(app, architecture):
     targets = []
+    main_executable = app / "Contents/MacOS/OpenNOW"
     for path in app.rglob("*"):
         if path.is_symlink():
             continue
@@ -64,7 +65,11 @@ def verified_bundle_targets(app, architecture):
             with path.open("rb") as source:
                 if source.read(4) in MACHO_MAGIC:
                     run("lipo", path, "-verify_arch", architecture)
-                    targets.append(path)
+                    # Signing the main executable signs its containing bundle too,
+                    # which requires all sibling helpers to be signed already. The
+                    # final app signing owns its signature and entitlements.
+                    if path != main_executable:
+                        targets.append(path)
     return sorted(targets, key=lambda path: (-len(path.parts), str(path))) + [app]
 
 
