@@ -580,6 +580,12 @@ impl SettingsStore {
         );
         normalize_choice(
             &mut self.values,
+            "touchMode",
+            &["auto", "direct", "trackpad"],
+            "auto",
+        );
+        normalize_choice(
+            &mut self.values,
             "statsOverlayPosition",
             &["bottom-left", "bottom-right", "top-left", "top-right"],
             "bottom-left",
@@ -1426,7 +1432,7 @@ fn defaults() -> Map<String, Value> {
         "sessionProxyEnabled":false, "sessionProxyUrl":"", "clipboardPaste":false, "networkTest":false,
         "suppressAwdlWhileStreaming":false,
         "enableGyroscopeControls":false, "steamControllerCompatibilityMode":false,
-        "nativeCursorOverlay":true, "macPointerLockEnabled":true, "mouseSensitivity":1, "mouseAcceleration":1,
+        "nativeCursorOverlay":true, "macPointerLockEnabled":true, "mouseSensitivity":1, "mouseAcceleration":1, "touchMode":"auto",
         "shortcutToggleStats":"Ctrl+N", "shortcutTogglePointerLock":"F8",
         "shortcutToggleFullscreen":"F11", "shortcutStopStream":"Ctrl+Shift+Q",
         "shortcutToggleAntiAfk":"Ctrl+Shift+K", "shortcutToggleMicrophone":"Ctrl+Shift+M",

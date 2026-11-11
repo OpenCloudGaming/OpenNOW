@@ -149,6 +149,7 @@ FocusScope {
             if (Qt.platform.os === "osx" && macPointerLockEnabled !== (ShellStore.settings.macPointerLockEnabled !== false))
                 ShellStore.setSetting("macPointerLockEnabled", macPointerLockEnabled)
         }
+        touchMode: String(ShellStore.settings.touchMode || "auto")
         keyboardLayout: String((ShellStore.activeSession || {}).keyboardLayout || "en-US")
         videoSize: Qt.size(Number(root.profile.width || 0), Number(root.profile.height || 0))
         frameGenerationFactor: ShellStore.frameGenerationFactor()
@@ -188,6 +189,8 @@ FocusScope {
             : streamVideo.relativeMouse ? streamVideo.inputCaptureError : ""
         z: 3
     }
+
+    StreamTouchModeNotice { surface: streamVideo }
 
     StreamPointerLockHint {
         layer.enabled: HdrOutput.chromeRequired
