@@ -229,6 +229,46 @@ quint16 StreamVideoItem::windowsGameplayVirtualKey(int key, Qt::KeyboardModifier
     return windowsVirtualKey(key, modifiers, nativeVirtualKey);
 }
 
+#if defined(Q_OS_WIN)
+bool StreamVideoItem::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result)
+{
+    if (!m_captureActive || eventType != "windows_generic_MSG") return false;
+    const auto &msg = *static_cast<const MSG *>(message);
+    const bool pressed = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
+    if (!pressed && msg.message != WM_KEYUP && msg.message != WM_SYSKEYUP) return false;
+    if (!m_inputWindow || !m_inputWindow->handle()
+        || msg.hwnd != reinterpret_cast<HWND>(m_inputWindow->winId())) return false;
+
+    const auto flags = HIWORD(msg.lParam);
+    const quint32 scanCode = LOBYTE(flags) | ((flags & KF_EXTENDED) ? 0xe000 : 0);
+    if (!windowsSet1VirtualKey(scanCode) || scanCode > 0xff) return false;
+    const auto nativeKey = quint32(msg.wParam);
+    if (nativeKey == 0 || nativeKey == VK_PROCESSKEY || nativeKey >= VK_PACKET) return false;
+    const auto modifiers = QGuiApplication::queryKeyboardModifiers();
+
+    if (pressed && !m_windowsDeadKeys.contains(scanCode)) {
+        // Qt consumes keydowns translated to WM_DEADCHAR and then has no keyup
+        // record. Probe before TranslateMessage so composition stays remote.
+        BYTE keyboardState[256];
+        wchar_t spacingAccent[4]{};
+        constexpr UINT preserveKeyboardState = 0x04;
+        if (!GetKeyboardState(keyboardState)
+            || ToUnicodeEx(nativeKey, scanCode, keyboardState, spacingAccent, 4,
+                           preserveKeyboardState, GetKeyboardLayout(0)) >= 0) return false;
+        m_windowsDeadKeys.insert(scanCode);
+        QKeyEvent event(QEvent::KeyPress, int(spacingAccent[0]), modifiers, scanCode,
+                        nativeKey, 0, {}, (flags & KF_REPEAT) != 0);
+        keyPressEvent(&event);
+    } else if (!pressed) {
+        if (!m_windowsDeadKeys.remove(scanCode)) return false;
+        QKeyEvent event(QEvent::KeyRelease, Qt::Key_unknown, modifiers, scanCode, nativeKey, 0);
+        keyReleaseEvent(&event);
+    }
+    if (result) *result = 0;
+    return true;
+}
+#endif
+
 static quint16 macPhysicalVirtualKey(quint32 keyCode)
 {
     switch (keyCode) {
@@ -992,6 +1032,9 @@ void StreamVideoItem::releaseInput()
     }
     m_pressedKeys.clear();
     m_pressedShortcuts.clear();
+#if defined(Q_OS_WIN)
+    m_windowsDeadKeys.clear();
+#endif
     if (!m_rawInputActive) releaseQtMouseButtons();
     else m_pressedMouseButtons.clear();
     ungrabMouse();

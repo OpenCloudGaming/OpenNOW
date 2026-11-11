@@ -5,6 +5,7 @@ import OpenNOW
 Item {
     id: root
     property string artwork: ""
+    property string fallbackTitle: ""
     property color fallbackColor: Theme.cartSteam
     property real cornerRadius: 34
     property real scrimStart: 0.28
@@ -26,17 +27,45 @@ Item {
     }
 
     Rectangle {
+        anchors.fill: parent
+        radius: root.cornerRadius
+        color: root.fallbackColor
+    }
+
+    Text {
+        anchors.centerIn: parent
+        width: Math.max(0, parent.width - 20)
+        visible: root.fallbackTitle !== "" && !image.hasArtwork
+            && (root.normalizedArtwork === "" || artworkSource.failed || image.status === Image.Error)
+        text: root.fallbackTitle
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        maximumLineCount: 3
+        elide: Text.ElideRight
+        horizontalAlignment: Text.AlignHCenter
+        color: "#F6F7FB"
+        font.family: Theme.bodyFont
+        font.pixelSize: DesktopTokens.captionSize
+        font.weight: Font.DemiBold
+        Accessible.ignored: true
+    }
+
+    Rectangle {
         id: roundedMask
         anchors.fill: parent
         radius: root.cornerRadius
         color: "white"
         visible: false
-        layer.enabled: true
+        layer.enabled: artworkLayer.visible
     }
 
     Item {
+        id: artworkLayer
         anchors.fill: parent
-        layer.enabled: true
+        visible: opacity > 0
+        opacity: image.hasArtwork ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : Theme.heroDuration } }
+        layer.enabled: visible
         layer.smooth: true
         layer.effect: MultiEffect {
             maskEnabled: true
@@ -45,17 +74,23 @@ Item {
             maskSpreadAtMin: 0.2
         }
 
-        Rectangle { anchors.fill: parent; color: root.fallbackColor }
         Image {
+            id: image
+            property url readySource: ""
+            readonly property bool hasArtwork: status === Image.Ready
+                || (status === Image.Loading && readySource.toString() === source.toString())
             anchors.fill: parent
             source: artworkSource.resolvedUrl
-            onStatusChanged: artworkSource.reportImageStatus(status, source)
+            onStatusChanged: {
+                if (status === Image.Ready) readySource = source
+                artworkSource.reportImageStatus(status, source)
+            }
             fillMode: Image.PreserveAspectCrop
-            sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
+            sourceSize: DesktopTokens.artworkSourceSize(width, height, Screen.devicePixelRatio)
             asynchronous: true
             cache: true
-            opacity: status === Image.Ready ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: Theme.heroDuration } }
+            retainWhileLoading: true
+            visible: hasArtwork
         }
         Rectangle {
             anchors.fill: parent

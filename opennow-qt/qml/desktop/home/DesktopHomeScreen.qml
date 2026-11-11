@@ -36,6 +36,8 @@ FocusScope {
     Accessible.name: pageTitle
 
     readonly property var games: ShellStore.catalogGames || []
+    readonly property bool catalogLoading: root.games.length === 0
+        && (ShellStore.catalogState === "idle" || ShellStore.catalogState === "loading" || ShellStore.catalogState === "refreshing")
     readonly property var sortedRecent: {
         const list = (root.games || []).slice()
         list.sort((left, right) => String(right.lastPlayed || "").localeCompare(String(left.lastPlayed || "")))
@@ -82,6 +84,8 @@ FocusScope {
 
     function heroMeta() {
         const game = root.heroGame
+        if (root.catalogLoading)
+            return qsTr("Loading…")
         if (!game)
             return qsTr("Sign in and sync your library to continue a game.")
         const last = DesktopTokens.relativeLastPlayed(game.lastPlayed, root.lastPlayedNowMs)
@@ -112,6 +116,46 @@ FocusScope {
     function zoneGames(zone) {
         const games = zone === 1 ? root.jumpGames : zone === 2 ? root.favoriteGames : root.newGames
         return root.takeGames(games, 0, root.homeTileCount)
+    }
+
+    component HomePosters: Row {
+        id: rail
+        required property int zone
+        readonly property var games: root.zoneGames(zone)
+        y: 30
+        width: parent.width
+        spacing: root.railGap
+
+        Repeater {
+            model: root.homeTileCount
+            Loader {
+                id: slot
+                required property int index
+                readonly property var game: rail.games[index] || null
+                visible: game !== null || root.catalogLoading
+                z: item ? item.z : 0
+                width: root.homeTileWidth
+                height: root.homeTileHeight
+                sourceComponent: game ? poster : root.catalogLoading ? skeleton : null
+
+                Component {
+                    id: skeleton
+                    DesktopPosterSkeleton {}
+                }
+                Component {
+                    id: poster
+                    DesktopHomePoster {
+                        game: slot.game
+                        tileWidth: root.homeTileWidth
+                        tileHeight: root.homeTileHeight
+                        current: root.focusZone === rail.zone && root.focusIndex === slot.index
+                        onPointed: root.setSelection(rail.zone, slot.index)
+                        onActivated: root.openGame(slot.game)
+                        onPlayRequested: root.playRequested(slot.game)
+                    }
+                }
+            }
+        }
     }
 
     function setSelection(zone, index) {
@@ -277,7 +321,7 @@ FocusScope {
                             source: heroArtworkSource.resolvedUrl
                             onStatusChanged: heroArtworkSource.reportImageStatus(status, source)
                             fillMode: Image.PreserveAspectCrop
-                            sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
+                            sourceSize: DesktopTokens.artworkSourceSize(width, height, Screen.devicePixelRatio)
                             asynchronous: true
                             cache: true
                         }
@@ -429,23 +473,7 @@ FocusScope {
                     HoverHandler { id: seeJump; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: root.routeRequested("library") }
                 }
-                Row {
-                    y: 30; width: parent.width; spacing: root.railGap
-                    Repeater {
-                        model: root.takeGames(root.jumpGames, 0, root.homeTileCount)
-                        DesktopHomePoster {
-                            required property var modelData
-                            required property int index
-                            game: modelData
-                            tileWidth: root.homeTileWidth
-                            tileHeight: root.homeTileHeight
-                            current: root.focusZone === 1 && root.focusIndex === index
-                            onPointed: root.setSelection(1, index)
-                            onActivated: root.openGame(modelData)
-                            onPlayRequested: root.playRequested(modelData)
-                        }
-                    }
-                }
+                HomePosters { zone: 1 }
             }
 
             Item {
@@ -461,23 +489,7 @@ FocusScope {
                     HoverHandler { id: seeFriends; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: root.routeRequested("library") }
                 }
-                Row {
-                    y: 30; width: parent.width; spacing: root.railGap
-                    Repeater {
-                        model: root.takeGames(root.favoriteGames, 0, root.homeTileCount)
-                        DesktopHomePoster {
-                            required property var modelData
-                            required property int index
-                            game: modelData
-                            tileWidth: root.homeTileWidth
-                            tileHeight: root.homeTileHeight
-                            current: root.focusZone === 2 && root.focusIndex === index
-                            onPointed: root.setSelection(2, index)
-                            onActivated: root.openGame(modelData)
-                            onPlayRequested: root.playRequested(modelData)
-                        }
-                    }
-                }
+                HomePosters { zone: 2 }
             }
 
             Item {
@@ -493,23 +505,7 @@ FocusScope {
                     HoverHandler { id: seeNew; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: root.routeRequested("library") }
                 }
-                Row {
-                    y: 30; width: parent.width; spacing: root.railGap
-                    Repeater {
-                        model: root.takeGames(root.newGames, 0, root.homeTileCount)
-                        DesktopHomePoster {
-                            required property var modelData
-                            required property int index
-                            game: modelData
-                            tileWidth: root.homeTileWidth
-                            tileHeight: root.homeTileHeight
-                            current: root.focusZone === 3 && root.focusIndex === index
-                            onPointed: root.setSelection(3, index)
-                            onActivated: root.openGame(modelData)
-                            onPlayRequested: root.playRequested(modelData)
-                        }
-                    }
-                }
+                HomePosters { zone: 3 }
             }
         }
     }

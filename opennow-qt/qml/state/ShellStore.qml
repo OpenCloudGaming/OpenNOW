@@ -660,17 +660,7 @@ QtObject {
                     serverIp:root.conflictSession.serverIp || ""
                 }, 35000)
             } else if (stage === "create") {
-                root.streamState = "requesting"
-                root.launchRequestedAtMs = Date.now()
-                root.pendingRequestedColorQuality = String(root.settings.colorQuality || "8bit_420")
-                root.streamCreateRequestId = CoreClient.request("session.create",
-                    Object.assign({}, root.pendingLaunchParams, {
-                        runtimeCapabilities: root.nativeRuntimeCapabilities,
-                        maxEntitledFps: settingsOwner.maxEntitledFps(String(root.settings.resolution || "")),
-                        // Active display physical DPI (auto per screen / OS).
-                        screenDpi: AppController.screenDpi(),
-                        devicePixelRatio: Screen.devicePixelRatio
-                    }), 60000)
+                root.requestNewSession()
             }
         }
         function onRequestFailed(id, code, message) {
@@ -2125,6 +2115,24 @@ QtObject {
             return
         }
         inspectLaunch("create")
+    }
+
+    function requestNewSession() {
+        streamState = "requesting"
+        launchRequestedAtMs = Date.now()
+        pendingRequestedColorQuality = String(settings.colorQuality || "8bit_420")
+        streamCreateRequestId = CoreClient.request("session.create",
+            Object.assign({}, pendingLaunchParams, {
+                runtimeCapabilities: nativeRuntimeCapabilities,
+                maxEntitledFps: settingsOwner.maxEntitledFps(String(settings.resolution || "")),
+                // Active display physical DPI (auto per screen / OS).
+                screenDpi: AppController.screenDpi(),
+                devicePixelRatio: Screen.devicePixelRatio
+            }), 60000)
+        if (streamCreateRequestId === "") {
+            pendingRequestedColorQuality = ""
+            handleSessionCreateFailure("", CoreClient.lastError || qsTr("Session could not start"))
+        }
     }
 
     function resolveSessionConflict(choice) {

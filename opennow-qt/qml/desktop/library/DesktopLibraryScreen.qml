@@ -103,6 +103,10 @@ FocusScope {
         return result
     }
     readonly property var games: filteredGames()
+    readonly property bool waitingForGames: root.games.length === 0
+        && (root.activeFilter === "cloud-favorites" ? ShellStore.remoteFavoritesState === "loading"
+            : ShellStore.catalogGames.length === 0 && (ShellStore.catalogState === "idle"
+                || ShellStore.catalogState === "loading" || ShellStore.catalogState === "refreshing"))
     readonly property var filters: [
         {key:"all", label:qsTr("All"), count:root.countWhere(function(game) { return !root.isHiddenGame(game) })},
         {key:"cloud-favorites", label:qsTr("GeForce NOW favorites"), count:ShellStore.remoteFavorites.length},
@@ -356,6 +360,7 @@ FocusScope {
         model: root.games
         focus: true
         boundsBehavior: Flickable.StopAtBounds
+        Accessible.description: root.waitingForGames ? qsTr("Loading…") : ""
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         delegate: DesktopPoster {
             required property var modelData
@@ -379,11 +384,30 @@ FocusScope {
         }
     }
 
+    Item {
+        objectName: "libraryLoadingSkeleton"
+        anchors.fill: grid
+        clip: true
+        visible: root.waitingForGames
+
+        Repeater {
+            model: root.waitingForGames ? root.libraryColumns * Math.min(4,
+                Math.ceil(grid.height / Math.max(1, root.libraryCellH))) : 0
+            DesktopPosterSkeleton {
+                required property int index
+                x: (index % root.libraryColumns) * root.libraryCellW + 6
+                y: Math.floor(index / root.libraryColumns) * root.libraryCellH + 6
+                width: Math.max(1, root.libraryCellW - 12)
+                height: Math.max(1, root.libraryCellH - 12)
+            }
+        }
+    }
+
     Column {
         anchors.centerIn: grid
         width: Math.min(grid.width - 48, 460)
         spacing: 12
-        visible: root.games.length === 0
+        visible: root.games.length === 0 && !root.waitingForGames
         Text {
             width: parent.width
             text: root.collection ? qsTr("No games in this view") : qsTr("No games found")

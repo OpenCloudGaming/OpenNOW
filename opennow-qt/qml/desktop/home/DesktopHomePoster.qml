@@ -44,6 +44,7 @@ Item {
     RoundedArtwork {
         anchors.fill: parent
         artwork: root.artwork
+        fallbackTitle: String(root.game && root.game.title || "")
         fallbackColor: "#171B27"
         cornerRadius: 12
         scrimStart: root.highlighted ? 0.3 : 1

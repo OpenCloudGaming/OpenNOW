@@ -320,7 +320,12 @@ responses are suppressed:
 complete, `cleaned` after an allocation-free error or successful compensating
 cleanup, or `failed` when cleanup remains unresolved. `session_allocation_unresolved`
 also requires `failed`: a lost or malformed POST response does not prove that no
-seat was allocated. Sending a response,
+seat was allocated. `session_allocation_recovery_required` means an earlier
+allocation record blocked admission before POST. It settles that new request as
+`cleaned`, while the original record still blocks allocation until the core can
+verify its outcome. Discovery includes a recorded origin omitted by the regional
+list when it is the original account's provider endpoint or a canonical NVIDIA
+queue zone. Sending a response,
 clearing a local request ID, or requesting cancellation is not settlement.
 An admission `busy` response means no worker was admitted and is not followed
 by settlement; Qt tracks retries until they are cancelled or admitted.

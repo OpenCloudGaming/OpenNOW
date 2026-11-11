@@ -5,7 +5,7 @@ transparent padding, fits the unmodified cloud into a centered 896-pixel area on
 a transparent 1024-pixel canvas, and downsamples with Lanczos.
 
 macOS uses Apple's Icon Composer project in `OpenNOW.icon/`. Its foreground is
-an unchanged copy of the canonical `logo.png`, placed at 0.7 scale on the system
+an unchanged copy of the canonical `logo.png`, centered at 59.5% scale on the system
 dark background with Icon Composer's native effects. Open this project in
 Apple Icon Composer to edit it, then export the 1024-pixel **macOS pre-Tahoe**
 image as `macos-source.png`. That export owns the rounded charcoal tile, alpha,

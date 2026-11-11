@@ -27,6 +27,7 @@ public:
         bool h264 = false;
         bool h265 = false;
         bool av1 = false;
+        bool supportsShellRendering = true;
     };
 
     static QList<Adapter> detectAdapters();

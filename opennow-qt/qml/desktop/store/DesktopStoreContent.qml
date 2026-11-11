@@ -55,6 +55,8 @@ FocusScope {
     readonly property int catalogCount: Number(ShellStore.storeTotalCount || (root.storeGames || []).length)
     readonly property string catalogState: ShellStore.storeState
     readonly property string catalogError: ShellStore.storeError
+    readonly property bool waitingForStore: root.storeGames.length === 0 && root.panelShelves.length === 0
+        && (root.catalogState === "idle" || root.catalogState === "loading" || root.catalogState === "refreshing")
     onSearchTextChanged: storeSearchDelay.restart()
     onActiveGenreChanged: storeSearchDelay.restart()
     onActiveStoreChanged: storeSearchDelay.restart()
@@ -629,10 +631,23 @@ FocusScope {
             onDetailsRequested: game => root.gameSelected(game)
         }
 
+        Rectangle {
+            id: heroPlaceholder
+            x: hero.x
+            y: hero.y
+            width: hero.width
+            height: hero.height
+            radius: 16
+            visible: root.waitingForStore && root.isDefaultBrowse() && !hero.visible
+            color: DesktopTokens.raised
+            border.color: DesktopTokens.seam
+            Accessible.ignored: true
+        }
+
         Flow {
             id: chips
             x: 24
-            y: hero.visible ? 292 : 18
+            y: hero.visible || heroPlaceholder.visible ? 292 : 18
             width: root.railInnerWidth
             spacing: 8
 
@@ -730,6 +745,13 @@ FocusScope {
             y: storeStatus.y + (storeStatus.visible ? storeStatus.height + 16 : 0)
             width: root.railInnerWidth
             spacing: 16
+            DesktopStoreShelf {
+                objectName: "storeLoadingSkeleton"
+                width: parent.width
+                title: qsTr("Loading the store…")
+                showSeeAll: false
+                placeholderCount: root.waitingForStore ? root.railCount : 0
+            }
             Repeater {
                 id: shelfRepeater
                 // Replacing a JS-array model recreates every row, including its
@@ -860,7 +882,7 @@ FocusScope {
         anchors.centerIn: parent
         width: Math.min(root.width - 48, 600)
         spacing: 9
-        visible: root.panelShelves.length === 0 && root.newGames.length === 0 && root.popularGames.length === 0
+        visible: !root.waitingForStore && root.panelShelves.length === 0 && root.newGames.length === 0 && root.popularGames.length === 0
         z: 200
 
         Text {

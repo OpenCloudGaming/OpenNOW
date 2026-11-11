@@ -1052,6 +1052,33 @@ private slots:
         }
     }
 
+    void refusedCreateLeavesRequestingState()
+    {
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(loadShellFunction(engine, QStringLiteral("requestNewSession")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("handleSessionCreateFailure")));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var pendingLaunchParams = {appId:'123'}, settings = {}, nativeRuntimeCapabilities = {};
+            var streamState = 'checking', streamMessage = '', streamCreateRequestId = '';
+            var pendingRequestedColorQuality = '', launchRequestedAtMs = 0;
+            var settingsOwner = {maxEntitledFps:function(){return 60;}};
+            var AppController = {screenDpi:function(){return 96;}};
+            var Screen = {devicePixelRatio:1};
+            var streamPollTimer = {stop:function(){}};
+            var CoreClient = {
+                lastError:'Cloud allocation cleanup is unresolved',
+                request:function(){return '';}
+            };
+            requestNewSession();
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("error"));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamMessage")).toString(),
+                 QStringLiteral("Cloud allocation cleanup is unresolved"));
+        QVERIFY(engine.evaluate(QStringLiteral("pendingRequestedColorQuality === ''")).toBool());
+    }
+
     void launchDiscoveryFailure_data()
     {
         QTest::addColumn<QString>("code");
@@ -3038,14 +3065,16 @@ private slots:
         const auto exec = main.indexOf(QStringLiteral("const auto exitCode = application.exec();"));
         const auto deadline = main.indexOf(QStringLiteral("armTeardownDeadline(exitCode);"));
         const auto core = main.indexOf(QStringLiteral("coreClient.stop();"));
-        const auto roots = main.indexOf(QStringLiteral("for (auto *root : roots) delete root;"));
+        const auto acceptance = main.indexOf(QStringLiteral("acceptance.reset();"), exec);
+        const auto qmlEngine = main.indexOf(QStringLiteral("qmlEngine.reset();"), exec);
         const auto streamer = main.indexOf(QStringLiteral("nativeStreamRuntime.shutdown()"), exec);
         const auto completed = main.indexOf(QStringLiteral("singleInstance.finishQuitRequest();"), exec);
         QVERIFY(exec >= 0);
         QVERIFY(deadline > exec);
         QVERIFY(core > deadline);
-        QVERIFY(roots > core);
-        QVERIFY(streamer > roots);
+        QVERIFY(acceptance > core);
+        QVERIFY(qmlEngine > acceptance);
+        QVERIFY(streamer > qmlEngine);
         QVERIFY(completed > streamer);
         QVERIFY(main.contains(QStringLiteral("if (exitCode == EXIT_SUCCESS && requestedQuitCompleted)")));
         QVERIFY(main.contains(QStringLiteral("->property(\"sessionWorkIdle\").toBool()")));
@@ -3107,13 +3136,13 @@ private slots:
         const auto owner = main.indexOf(QStringLiteral("LinuxVulkanGraphics::Device vulkanDevice"));
         const auto diagnostics = main.indexOf(QStringLiteral("NativeStreamRuntime::initializeDiagnostics()"));
         const auto runtime = main.indexOf(QStringLiteral("NativeStreamRuntime nativeStreamRuntime"));
-        const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
+        const auto engine = main.indexOf(QStringLiteral("std::optional<QQmlApplicationEngine> qmlEngine"));
         const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
         const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
         const auto decorations = main.indexOf(QStringLiteral("WindowTheme::prepareWindow(rootWindow)"));
         const auto graphicsSetup = main.indexOf(QStringLiteral("graphicsDevices.applyTo(rootWindow)"));
         const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
-        const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
+        const auto prepare = main.indexOf(QStringLiteral("acceptance->prepareWindow()"));
         const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
         QVERIFY(owner >= 0);
         QVERIFY(diagnostics >= 0);
