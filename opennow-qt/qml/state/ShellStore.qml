@@ -264,6 +264,7 @@ QtObject {
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState
+    readonly property bool catalogInitialLoading: catalogOwner.catalogInitialLoading
     property alias catalogComplete: catalogOwner.catalogComplete
     property alias catalogError: catalogOwner.catalogError
     property alias catalogNextCursor: catalogOwner.catalogNextCursor
@@ -296,6 +297,7 @@ QtObject {
     property alias storeForceRefresh: catalogOwner.storeForceRefresh
     property alias storeLastPageCached: catalogOwner.storeLastPageCached
     readonly property bool storeLoading: catalogOwner.storeLoading
+    readonly property bool storeInitialLoading: catalogOwner.storeInitialLoading
     property alias storePageTimer: catalogOwner.storePageTimer
     property alias storeMarquee: catalogOwner.storeMarquee
     property alias storePanels: catalogOwner.storePanels

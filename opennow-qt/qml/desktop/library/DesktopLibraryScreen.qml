@@ -105,8 +105,7 @@ FocusScope {
     readonly property var games: filteredGames()
     readonly property bool waitingForGames: root.games.length === 0
         && (root.activeFilter === "cloud-favorites" ? ShellStore.remoteFavoritesState === "loading"
-            : ShellStore.catalogGames.length === 0 && (ShellStore.catalogState === "idle"
-                || ShellStore.catalogState === "loading" || ShellStore.catalogState === "refreshing"))
+            : ShellStore.catalogInitialLoading)
     readonly property var filters: [
         {key:"all", label:qsTr("All"), count:root.countWhere(function(game) { return !root.isHiddenGame(game) })},
         {key:"cloud-favorites", label:qsTr("GeForce NOW favorites"), count:ShellStore.remoteFavorites.length},
@@ -392,7 +391,7 @@ FocusScope {
 
         Repeater {
             model: root.waitingForGames ? root.libraryColumns * Math.min(4,
-                Math.ceil(grid.height / Math.max(1, root.libraryCellH))) : 0
+                Math.ceil(Math.max(0, grid.height) / Math.max(1, root.libraryCellH))) : 0
             DesktopPosterSkeleton {
                 required property int index
                 x: (index % root.libraryColumns) * root.libraryCellW + 6

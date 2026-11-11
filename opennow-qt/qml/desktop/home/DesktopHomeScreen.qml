@@ -36,8 +36,7 @@ FocusScope {
     Accessible.name: pageTitle
 
     readonly property var games: ShellStore.catalogGames || []
-    readonly property bool catalogLoading: root.games.length === 0
-        && (ShellStore.catalogState === "idle" || ShellStore.catalogState === "loading" || ShellStore.catalogState === "refreshing")
+    readonly property bool catalogLoading: ShellStore.catalogInitialLoading
     readonly property var sortedRecent: {
         const list = (root.games || []).slice()
         list.sort((left, right) => String(right.lastPlayed || "").localeCompare(String(left.lastPlayed || "")))
@@ -84,8 +83,6 @@ FocusScope {
 
     function heroMeta() {
         const game = root.heroGame
-        if (root.catalogLoading)
-            return qsTr("Loading…")
         if (!game)
             return qsTr("Sign in and sync your library to continue a game.")
         const last = DesktopTokens.relativeLastPlayed(game.lastPlayed, root.lastPlayedNowMs)
@@ -365,7 +362,8 @@ FocusScope {
                             Text {
                                 width: parent.width
                                 elide: Text.ElideRight
-                                text: root.heroGame ? String(root.heroGame.title || qsTr("Game")) : qsTr("No games yet")
+                                text: root.catalogLoading ? qsTr("Loading…")
+                                    : root.heroGame ? String(root.heroGame.title || qsTr("Game")) : qsTr("No games yet")
                                 color: "#FFFFFF"
                                 font.family: Theme.displayFont
                                 font.pixelSize: 34
@@ -376,6 +374,7 @@ FocusScope {
                                 width: parent.width
                                 elide: Text.ElideRight
                                 text: root.heroMeta()
+                                opacity: root.catalogLoading ? 0 : 1
                                 color: "#B8FFFFFF"
                                 font.family: Theme.bodyFont
                                 font.pixelSize: 13
@@ -385,6 +384,8 @@ FocusScope {
 
                         Row {
                             spacing: 9
+                            opacity: root.catalogLoading ? 0 : 1
+                            enabled: !root.catalogLoading
 
                             Rectangle {
                                 id: startButton

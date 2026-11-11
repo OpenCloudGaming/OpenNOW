@@ -55,8 +55,7 @@ FocusScope {
     readonly property int catalogCount: Number(ShellStore.storeTotalCount || (root.storeGames || []).length)
     readonly property string catalogState: ShellStore.storeState
     readonly property string catalogError: ShellStore.storeError
-    readonly property bool waitingForStore: root.storeGames.length === 0 && root.panelShelves.length === 0
-        && (root.catalogState === "idle" || root.catalogState === "loading" || root.catalogState === "refreshing")
+    readonly property bool waitingForStore: ShellStore.storeInitialLoading && root.panelShelves.length === 0
     onSearchTextChanged: storeSearchDelay.restart()
     onActiveGenreChanged: storeSearchDelay.restart()
     onActiveStoreChanged: storeSearchDelay.restart()

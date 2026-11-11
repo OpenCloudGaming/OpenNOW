@@ -32,9 +32,11 @@ class StableReleaseTest(unittest.TestCase):
         self.assertNotIn("Intel macOS is not included", notes)
 
     def test_stable_version_uses_project_version_without_nightly_suffix(self):
-        cmake = ROOT / "opennow-qt/CMakeLists.txt"
-        self.assertEqual(nightly_version(cmake, 1, 1, "stable"), "1.0.4")
-        self.assertEqual(nightly_version(cmake, 620, 1), "1.0.4-nightly.620.1")
+        with tempfile.TemporaryDirectory() as directory:
+            cmake = Path(directory) / "CMakeLists.txt"
+            cmake.write_text("project(OpenNOWQt VERSION 1.2.3 LANGUAGES CXX)\n")
+            self.assertEqual(nightly_version(cmake, 1, 1, "stable"), "1.2.3")
+            self.assertEqual(nightly_version(cmake, 620, 1), "1.2.3-nightly.620.1")
 
     def test_channels_cannot_relabel_each_others_versions(self):
         for version, channel in (("1.0.0-nightly.1.1", "stable"), ("1.0.0", "nightly"),
