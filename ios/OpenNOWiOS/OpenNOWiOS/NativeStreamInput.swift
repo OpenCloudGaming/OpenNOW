@@ -103,6 +103,24 @@ enum NativeStreamMouseCoordinatePolicy {
     }
 }
 
+/// Turns UIKit scroll gestures into wheel deltas for the host, where 120 is one notch and
+/// positive scrolls up. The wheel is read from scroll gestures rather than `GCMouse`, which
+/// does not deliver a wheel's clicks on iPadOS.
+enum NativeStreamScrollWheelPolicy {
+    static let notch = 120
+
+    /// A wheel click is one notch in the direction of travel, whatever distance iOS gives it.
+    static func discreteDelta(travel: CGFloat) -> Int {
+        travel > 0 ? notch : (travel < 0 ? -notch : 0)
+    }
+
+    /// A trackpad scroll is proportional: the height of the surface is twenty notches.
+    static func continuousDelta(travel: CGFloat, surfaceHeight: CGFloat) -> Int {
+        guard surfaceHeight > 0 else { return 0 }
+        return Int((travel / surfaceHeight * CGFloat(notch * 20)).rounded(.towardZero))
+    }
+}
+
 enum NativeStreamGamepadMixer {
     static func merging(
         physical: NativeStreamGamepadState,
@@ -904,7 +922,6 @@ final class NativeStreamInputBridge {
             input.leftButton.pressedChangedHandler = nil
             input.rightButton?.pressedChangedHandler = nil
             input.middleButton?.pressedChangedHandler = nil
-            input.scroll.valueChangedHandler = nil
         }
         controllersBySlot.values.forEach {
             $0.extendedGamepad?.valueChangedHandler = nil
@@ -1240,7 +1257,6 @@ final class NativeStreamInputBridge {
             input.leftButton.pressedChangedHandler = nil
             input.rightButton?.pressedChangedHandler = nil
             input.middleButton?.pressedChangedHandler = nil
-            input.scroll.valueChangedHandler = nil
         }
         mice = GCMouse.mice()
         for mouse in mice {
@@ -1260,11 +1276,6 @@ final class NativeStreamInputBridge {
             }
             input.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in
                 self?.sendMouseButton(3, pressed: pressed)
-            }
-            input.scroll.valueChangedHandler = { [weak self] _, _, yValue in
-                let delta = Int((CGFloat(yValue) * 120).rounded())
-                guard delta != 0 else { return }
-                self?.sendMouseWheel(delta: delta)
             }
             input.auxiliaryButtons?.enumerated().forEach { offset, button in
                 button.pressedChangedHandler = { [weak self] _, _, pressed in

@@ -7641,7 +7641,7 @@ struct NativeStreamTouchGeometry {
     var jitterThreshold: CGFloat = 0
 }
 
-private struct NativeStreamTouchCaptureView: UIViewRepresentable {
+struct NativeStreamTouchCaptureView: UIViewRepresentable {
     let inputBridge: NativeStreamInputBridge
     let inputEnabled: Bool
     let nativeTouchEnabled: Bool
@@ -7677,7 +7677,18 @@ private extension CGPoint {
     }
 }
 
-private final class NativeStreamTouchView: UIView {
+/// A scroll gesture that remembers how much of its travel has already gone to the host.
+private final class NativeStreamScrollRecognizer: UIPanGestureRecognizer {
+    var sentTravel: CGFloat = 0
+}
+
+extension NativeStreamTouchView: UIGestureRecognizerDelegate {
+    /// The in-game menu's own lists must keep scrolling under the same wheel.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
+final class NativeStreamTouchView: UIView {
     weak var inputBridge: NativeStreamInputBridge?
     var inputEnabled = true {
         didSet {
@@ -7740,11 +7751,48 @@ private final class NativeStreamTouchView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        installScrollRecognizers()
         if window != nil {
             becomeFirstResponder()
         } else {
             releaseAllNativeTouches()
         }
+    }
+
+    private lazy var scrollRecognizers: [NativeStreamScrollRecognizer] = [UIScrollTypeMask.discrete, .continuous].map {
+        let recognizer = NativeStreamScrollRecognizer(target: self, action: #selector(scrolled(_:)))
+        recognizer.maximumNumberOfTouches = 0
+        recognizer.allowedScrollTypesMask = $0
+        recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        return recognizer
+    }
+
+    /// The recognizers sit on the stream's root view, not on this one: a scroll goes to whatever
+    /// is under the pointer, and a locked pointer can be resting over a control drawn above.
+    private func installScrollRecognizers() {
+        scrollRecognizers.forEach { $0.view?.removeGestureRecognizer($0) }
+        guard window != nil else { return }
+        let surface = sequence(first: self as UIResponder, next: \.next).lazy
+            .compactMap { ($0 as? NativeStreamHostingController)?.view }.first ?? self
+        scrollRecognizers.forEach(surface.addGestureRecognizer)
+    }
+
+    @objc private func scrolled(_ recognizer: NativeStreamScrollRecognizer) {
+        guard recognizer.state == .began || recognizer.state == .changed, let surface = recognizer.view else {
+            recognizer.sentTravel = 0
+            return
+        }
+        let travel = recognizer.translation(in: surface).y
+        let pending = travel - recognizer.sentTravel
+        let wheelClick = recognizer.allowedScrollTypesMask == .discrete
+        let delta = wheelClick
+            ? NativeStreamScrollWheelPolicy.discreteDelta(travel: pending)
+            : NativeStreamScrollWheelPolicy.continuousDelta(travel: pending, surfaceHeight: surface.bounds.height)
+        guard delta != 0 else { return }
+        recognizer.sentTravel = travel
+        inputBridge?.sendMouseWheel(delta: delta)
     }
 
     private func updateAccessibilityPresentation() {
