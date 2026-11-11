@@ -1769,15 +1769,17 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(StreamSettingsResolver.selectingColor(.eightBit420,in:initial).hdrEnabled)
     }
 
-    func testDisplayClockRequestsFixedStreamCadenceWithinScreenLimit() {
-        for (streamFPS, displayFPS, expected) in [
-            (60, 60, 60), (60, 120, 60), (120, 120, 120), (240, 120, 120),
-            (120, 60, 60), (30, 120, 30), (60, 30, 30), (0, 60, 1), (60, 0, 1)
+    func testDisplayClockRunsAtThePanelRateAndNeverBelowTheStreamRate() {
+        for (streamFPS, displayFPS, minimum, maximum) in [
+            (60, 60, 60, 60), (60, 120, 60, 120), (120, 120, 120, 120), (240, 120, 120, 120),
+            (120, 60, 60, 60), (30, 120, 30, 120), (60, 30, 30, 30), (0, 60, 1, 60), (60, 0, 1, 1)
         ] {
             let range = nativeStreamDisplayFrameRateRange(streamFPS: streamFPS, displayMaximumFPS: displayFPS)
-            XCTAssertEqual(range.minimum, Float(expected))
-            XCTAssertEqual(range.maximum, Float(expected))
-            XCTAssertEqual(range.preferred, Float(expected))
+            // A 60 FPS stream still never permits a display-link rate below 60.
+            XCTAssertEqual(range.minimum, Float(minimum))
+            XCTAssertEqual(range.maximum, Float(maximum))
+            // A 60 fps stream on a 120 Hz panel is presented on the 120 Hz grid.
+            XCTAssertEqual(range.preferred, Float(maximum))
         }
     }
 
