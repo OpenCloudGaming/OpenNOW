@@ -27,6 +27,7 @@
 		0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */; };
 		0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */; };
 		0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */; };
+		AC5BF1AD228C4856A3DA4ECC /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = AC5BF1AD228C4856A3DA4ECD /* AppIcon.icon */; };
 		0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */; };
 		0F6E42487CAD9DBDA3B96F75 /* NVST/BifrostFree/NvstResultCodes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D58F562DA17F3A14C378D08 /* NVST/BifrostFree/NvstResultCodes.swift */; };
 		1290E0FB4D1FAB8F9CA53A6F /* NativeStreamNVST.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D1173146DFEC0DCCAF36982 /* NativeStreamNVST.swift */; };
@@ -231,6 +232,7 @@
 		0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWiOSApp.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AC5BF1AD228C4856A3DA4ECD /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		0A1B2C3D4E5F6A7B8C9D2005 /* OpenNOWiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenNOWiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWStore.swift; sourceTree = "<group>"; };
 		0A291A1FE9918D8324AD221E /* NVST/BifrostFree/SrtpCryptography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NVST/BifrostFree/SrtpCryptography.swift; sourceTree = "<group>"; };
@@ -544,6 +546,7 @@
 				EE0000000000000000000011 /* PrivacyInfo.xcprivacy */,
 				DE000000000000000000001A /* Localizable.xcstrings */,
 				0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */,
+				AC5BF1AD228C4856A3DA4ECD /* AppIcon.icon */,
 			);
 			path = OpenNOWiOS;
 			sourceTree = "<group>";
@@ -706,6 +709,7 @@
 			files = (
 				187B20A5ED969D396F5DE288 /* NVST/Licenses in Resources */,
 				0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */,
+				AC5BF1AD228C4856A3DA4ECC /* AppIcon.icon in Resources */,
 				EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 				DE000000000000000000000A /* Localizable.xcstrings in Resources */,
 			);
