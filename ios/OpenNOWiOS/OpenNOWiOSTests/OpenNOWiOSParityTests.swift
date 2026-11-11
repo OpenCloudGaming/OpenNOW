@@ -983,11 +983,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
         let editor = NativeStreamPresentationController(content: AnyView(NativeStreamTouchLayoutPreview()))
         presenter = editor
         window.rootViewController = editor
+        // iPadOS refuses programmatic rotation in its windowed modes ("The current windowing mode
+        // does not allow for programmatic changes to interface orientation"). The stream can then
+        // only ask for landscape, so that is what it is held to there.
+        final class RotationProbe { var refused = false }
+        let probe = RotationProbe()
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { _ in probe.refused = true }
         for _ in 0..<30 {
-            if scene.interfaceOrientation.isLandscape { break }
+            if scene.interfaceOrientation.isLandscape || probe.refused { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        XCTAssertTrue(scene.interfaceOrientation.isLandscape)
+        XCTAssertEqual(editor.host.supportedInterfaceOrientations, .landscape)
+        if !probe.refused { XCTAssertTrue(scene.interfaceOrientation.isLandscape) }
         try await Task.sleep(nanoseconds: 300_000_000)
         capture("Xbox Layout Editor")
         editor.tearDown()
@@ -1229,8 +1236,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
             sidebar.selectItem(at: index, animated: false, scrollPosition: [])
             try await settle()
         }
+        // Only bars the user can see. A tab bar may keep the tab it just left in the hierarchy,
+        // hidden, and that is not the screen being shown.
+        func isShown(_ view: UIView) -> Bool {
+            var current: UIView? = view
+            while let candidate = current {
+                if candidate.isHidden || candidate.alpha < 0.01 { return false }
+                current = candidate.superview
+            }
+            return view.window != nil
+        }
         func titles() -> [String] {
-            descendants(host.view).compactMap { ($0 as? UINavigationBar)?.topItem?.title }
+            descendants(host.view).filter(isShown).compactMap { ($0 as? UINavigationBar)?.topItem?.title }
         }
         try await settle()
         XCTAssertEqual(host.traitCollection.horizontalSizeClass, compact ? .compact : .regular)
@@ -1752,15 +1769,17 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(StreamSettingsResolver.selectingColor(.eightBit420,in:initial).hdrEnabled)
     }
 
-    func testDisplayClockRequestsFixedStreamCadenceWithinScreenLimit() {
-        for (streamFPS, displayFPS, expected) in [
-            (60, 60, 60), (60, 120, 60), (120, 120, 120), (240, 120, 120),
-            (120, 60, 60), (30, 120, 30), (60, 30, 30), (0, 60, 1), (60, 0, 1)
+    func testDisplayClockRunsAtThePanelRateAndNeverBelowTheStreamRate() {
+        for (streamFPS, displayFPS, minimum, maximum) in [
+            (60, 60, 60, 60), (60, 120, 60, 120), (120, 120, 120, 120), (240, 120, 120, 120),
+            (120, 60, 60, 60), (30, 120, 30, 120), (60, 30, 30, 30), (0, 60, 1, 60), (60, 0, 1, 1)
         ] {
             let range = nativeStreamDisplayFrameRateRange(streamFPS: streamFPS, displayMaximumFPS: displayFPS)
-            XCTAssertEqual(range.minimum, Float(expected))
-            XCTAssertEqual(range.maximum, Float(expected))
-            XCTAssertEqual(range.preferred, Float(expected))
+            // A 60 FPS stream still never permits a display-link rate below 60.
+            XCTAssertEqual(range.minimum, Float(minimum))
+            XCTAssertEqual(range.maximum, Float(maximum))
+            // A 60 fps stream on a 120 Hz panel is presented on the 120 Hz grid.
+            XCTAssertEqual(range.preferred, Float(maximum))
         }
     }
 

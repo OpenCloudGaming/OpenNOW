@@ -46,9 +46,14 @@ func nativeStreamShouldUseFilteredRenderer(
     isSimulator || osMajorVersion >= 26 || videoCodec == .h265 || streamSharpeningEnabled
 }
 
+/// The display clock runs at the panel's full rate, never slower than it must to show every
+/// stream frame. Frames arrive off the network with jitter; a clock that ticks only as often as
+/// they arrive drops one whenever two land between the same pair of ticks and holds the next up
+/// to a whole stream interval. On a 120 Hz panel a 60 fps stream then waits at most 8 ms.
 func nativeStreamDisplayFrameRateRange(streamFPS: Int, displayMaximumFPS: Int) -> CAFrameRateRange {
-    let rate = Float(min(max(1, streamFPS), max(1, displayMaximumFPS)))
-    return CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+    let display = Float(max(1, displayMaximumFPS))
+    let stream = min(Float(max(1, streamFPS)), display)
+    return CAFrameRateRange(minimum: stream, maximum: display, preferred: display)
 }
 
 enum NativeStreamTransportPolicy {

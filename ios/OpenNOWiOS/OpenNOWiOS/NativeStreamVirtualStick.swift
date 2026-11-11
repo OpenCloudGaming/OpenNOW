@@ -132,6 +132,10 @@ private struct NativeStreamVirtualStickTouchSurface: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: NativeStreamVirtualStickTouchControl, coordinator: ()) {
+        // The host still has to see the stick return to centre, but the knob belongs to a view
+        // that is being destroyed: writing its state while SwiftUI tears the graph down is an
+        // exclusivity violation, which aborts the app.
+        view.offsetChanged = { _ in }
         view.endTouch(cancelled: true)
     }
 }
