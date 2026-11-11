@@ -382,6 +382,19 @@ if(BUILD_TESTING)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)
     add_test(NAME opennow-framepacer-tests COMMAND opennow-framepacer-tests -o -,txt)
+    qt_add_executable(opennow-translation-tests tests/tst_translation.cpp
+        src/translation/TranslationCache.cpp src/translation/TranslationCache.h
+        src/translation/WuWaDialogueDb.cpp src/translation/WuWaDialogueDb.h
+        src/translation/TranslationHttp.cpp src/translation/TranslationHttp.h
+        src/translation/OcrEngine.cpp src/translation/OcrEngine.h
+        src/translation/TranslationProvider.cpp src/translation/TranslationProvider.h
+        src/translation/TranslationWorker.cpp src/translation/TranslationWorker.h
+        src/translation/TranslationEngine.cpp src/translation/TranslationEngine.h)
+    target_include_directories(opennow-translation-tests PRIVATE src)
+    target_link_libraries(opennow-translation-tests PRIVATE Qt6::Test Qt6::Gui Qt6::Network)
+    add_test(NAME opennow-translation-tests COMMAND opennow-translation-tests -o -,txt)
+    set_tests_properties(opennow-translation-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-streampresenttimings-tests tests/tst_streampresenttimings.cpp)
     target_include_directories(opennow-streampresenttimings-tests PRIVATE src)
     target_link_libraries(opennow-streampresenttimings-tests PRIVATE Qt6::Test)

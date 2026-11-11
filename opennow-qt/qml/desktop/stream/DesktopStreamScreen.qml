@@ -166,6 +166,13 @@ FocusScope {
         }
     }
 
+    // Live EN -> VI translation overlay. Same window, above the video (z: 6),
+    // never captures input and never restarts the stream.
+    TranslationOverlay {
+        anchors.fill: parent
+        z: 6
+    }
+
     Timer {
         id: clipboardPasteNotice
         objectName: "streamClipboardPasteNoticeTimer"

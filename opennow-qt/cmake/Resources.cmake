@@ -12,6 +12,18 @@ qt_add_resources(opennow-qt "opennow-locales"
     FILES ${OPENNOW_LOCALE_FILES}
 )
 
+# VN translation: bundled WuWa dialogue-DB seed (0 datamined lines in v1;
+# the file is a schema + note, and fills from verified live play). The
+# engine reads it from :/translation/wuwa-dialogue-db.json only when no
+# user DB exists next to the executable or in AppData.
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/translation/data/wuwa-dialogue-db.json"
+    PROPERTIES QT_RESOURCE_ALIAS "wuwa-dialogue-db.json")
+qt_add_resources(opennow-qt "opennow-translation-data"
+    PREFIX "/translation"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/translation/data/wuwa-dialogue-db.json"
+)
+
 set(OPENNOW_STREAM_SHADERS
     shaders/streamvideo.vert shaders/streamvideo.frag
     shaders/hdroutput.frag
