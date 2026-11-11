@@ -500,8 +500,10 @@ enum NativeStreamSDP {
         // NVIDIA CSC encoding: (color space << 1) | range; preserve full range.
         let encoderCscMode = hdrEnabled ? 5 : 3 // BT.2020 / BT.709
         let maxBitrate = max(absoluteMinBitrateKbps, profile.maxBitrateKbps)
-        let minimumBitrate = max(absoluteMinBitrateKbps, Int((Double(maxBitrate) * 0.35).rounded()))
-        let startupBitrate = max(minimumBitrate, Int((Double(maxBitrate) * 0.70).rounded()))
+        // The floor bounds how far the host may back off when the link degrades. A floor tied to
+        // the maximum keeps a congested Wi-Fi path saturated, so use the desktop client's range.
+        let minimumBitrate = absoluteMinBitrateKbps
+        let startupBitrate = max(minimumBitrate, maxBitrate / 4)
         let isHighFPS = profile.fps >= 90
         let is120FPS = profile.fps == 120
         let is240FPS = profile.fps >= 240
@@ -621,7 +623,7 @@ enum NativeStreamSDP {
             "a=video.clientViewportHt:\(profile.height)",
             "a=video.maxFPS:\(profile.fps)",
             "a=video.initialBitrateKbps:\(startupBitrate)",
-            "a=video.initialPeakBitrateKbps:\(maxBitrate)",
+            "a=video.initialPeakBitrateKbps:\(startupBitrate)",
             "a=vqos.bw.maximumBitrateKbps:\(maxBitrate)",
             "a=vqos.bw.minimumBitrateKbps:\(minimumBitrate)",
             "a=vqos.bw.peakBitrateKbps:\(maxBitrate)",

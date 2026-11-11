@@ -281,9 +281,27 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
         if status != noErr {
             metadataRef.release()
             NSLog("[OpenNOW] HEVC decode failed status=%d", status)
+            if status == kVTInvalidSessionErr {
+                discardSession(decompressionSession)
+            }
             return Int(status)
         }
         return 0
+    }
+
+    /// An invalidated session fails every later frame. Dropping it lets the keyframe WebRTC
+    /// requests after this error rebuild the session, even with unchanged parameter sets.
+    private func discardSession(_ session: VTDecompressionSession) {
+        let discarded = lock.withLock { () -> Bool in
+            guard decompressionSession === session else { return false }
+            decompressionSession = nil
+            formatDescription = nil
+            parameterSetKey = nil
+            return true
+        }
+        if discarded {
+            VTDecompressionSessionInvalidate(session)
+        }
     }
 
     func implementationName() -> String {
@@ -355,6 +373,7 @@ private final class NativeStreamHEVCVideoDecoder: NSObject, RTCVideoDecoder {
             NSLog("[OpenNOW] HEVC decompression session failed status=%d", sessionStatus)
             return Int(sessionStatus)
         }
+        VTSessionSetProperty(nextSession, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
 
         lock.withLock {
             if let decompressionSession {
