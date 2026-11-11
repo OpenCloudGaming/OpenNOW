@@ -1,5 +1,13 @@
 {
-  "fill" : "system-dark",
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
   "groups" : [
     {
       "layers" : [

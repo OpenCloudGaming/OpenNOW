@@ -149,7 +149,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (flyHighSelfTest >= 0 && flyHighSelfTest + 1 < application.arguments().size())
         return FrameGenerationBenchmark::flyHighSelfTest(application.arguments().at(flyHighSelfTest + 1));
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
+#ifndef Q_OS_MACOS
+    // On macOS, Cocoa must resolve the bundle's appearance-aware icon.
     QGuiApplication::setWindowIcon(applicationWindowIcon());
+#endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     LinuxVulkanGraphics::requestDeviceExtensions();
 #endif
