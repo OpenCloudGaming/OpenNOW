@@ -274,7 +274,9 @@ bool GraphicsDeviceSelection::applyTo(QQuickWindow *window) const
 {
     if (!m_active.luid) return true;
 #ifdef Q_OS_WIN
-    if (!window || window->isVisible() || window->isSceneGraphInitialized()) return false;
+    // Qt's software scene graph reports itself initialized before it has a
+    // graphics device. Only an existing RHI makes adapter selection too late.
+    if (!window || window->isVisible() || window->rhi()) return false;
     if (!m_active.supportsShellRendering) {
         // Supplying a hardware adapter LUID disables Qt's built-in WARP retry.
         // Keep the D3D11 scene graph and allow the shell to open on legacy GPUs.
