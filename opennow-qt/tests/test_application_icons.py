@@ -70,7 +70,10 @@ class ApplicationIconTests(unittest.TestCase):
     def test_macos_icons_preserve_the_apple_composer_export(self):
         project = ICONS / "OpenNOW.icon"
         specification = json.loads((project / "icon.json").read_text())
-        self.assertEqual(specification["fill"], "system-dark")
+        self.assertEqual(specification["fill-specializations"], [
+            {"value": "system-light"},
+            {"appearance": "dark", "value": "system-dark"},
+        ])
         for group in specification["groups"]:
             for layer in group["layers"]:
                 self.assertEqual((project / "Assets" / layer["image-name"]).read_bytes(),
@@ -88,7 +91,7 @@ class ApplicationIconTests(unittest.TestCase):
                     if size >= 128:
                         r, g, b, alpha = image.getpixel((size // 2, size // 5))
                         self.assertEqual(alpha, 255)
-                        self.assertLess(max(r, g, b), 100)
+                        self.assertGreater(min(r, g, b), 200)
 
     def test_check_accepts_recompression_but_rejects_changed_pixels(self):
         original = (ICONS / "opennow-macos-32.png").read_bytes()
@@ -132,6 +135,10 @@ class ApplicationIconTests(unittest.TestCase):
         plist = plistlib.loads((PACKAGING / "Info.plist.in").read_bytes())
         self.assertEqual(plist["CFBundleIdentifier"], "${MACOSX_BUNDLE_GUI_IDENTIFIER}")
         self.assertEqual(plist["CFBundleIconFile"], "${MACOSX_BUNDLE_ICON_FILE}")
+        self.assertEqual(plist["CFBundleIconName"], "OpenNOW")
+        bundle_resources = (QT_ROOT / "cmake/ApplicationIcons.cmake").read_text()
+        self.assertIn("packaging/icons/Assets.car packaging/icons/OpenNOW.icns", bundle_resources)
+        self.assertTrue((ICONS / "Assets.car").read_bytes().startswith(b"BOMStore"))
         desktop = (PACKAGING / "io.github.opencloudgaming.OpenNOW.desktop").read_text()
         self.assertIn("Icon=io.github.opencloudgaming.OpenNOW\n", desktop)
 

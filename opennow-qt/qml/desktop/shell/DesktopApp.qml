@@ -43,6 +43,8 @@ FocusScope {
         return qsTr("Home")
     }
     function subtitleForRoute(value) {
+        if ((value === "library" && ShellStore.catalogInitialLoading)
+            || (value === "store" && ShellStore.storeInitialLoading)) return ""
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
         if (value === "friends") return qsTr("Coming soon")

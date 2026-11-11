@@ -16,6 +16,7 @@ QtObject {
     property int catalogTotalCount: 0
     property string catalogState: "idle"
     readonly property bool catalogBusy: catalogState === "loading" || catalogState === "refreshing"
+    readonly property bool catalogInitialLoading: catalogGames.length === 0 && (catalogState === "idle" || catalogBusy)
     property string catalogSource: "public"
     property string catalogRequestId: ""
     property bool catalogComplete: false
@@ -407,6 +408,8 @@ QtObject {
     property bool storeLastPageCached: false
     property string storeRequestId: ""
     readonly property bool storeLoading: storeRequestId !== "" || storePageTimer.running
+    readonly property bool storeInitialLoading: storeGames.length === 0
+        && (storeState === "idle" || storeState === "loading" || storeState === "refreshing")
     property Timer storePageTimer: Timer {
         interval: root.storeLastPageCached ? 1 : 75
         onTriggered: root.requestStorePage()

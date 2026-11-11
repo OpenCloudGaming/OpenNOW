@@ -1725,6 +1725,7 @@ mod acceptance_tests {
         for (code, outcome) in [
             ("cancelled", "cleaned"),
             ("invalid_request", "cleaned"),
+            ("session_allocation_recovery_required", "cleaned"),
             ("session_cleanup_pending", "failed"),
             ("session_provenance_unavailable", "failed"),
         ] {

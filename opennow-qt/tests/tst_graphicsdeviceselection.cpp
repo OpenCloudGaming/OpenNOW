@@ -1,6 +1,10 @@
 #include "app/platform/GraphicsDeviceSelection.h"
 
 #include <QTest>
+#include <QQuickGraphicsConfiguration>
+#include <QQuickGraphicsDevice>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QSet>
 #include <QVariantMap>
 
@@ -96,6 +100,24 @@ private slots:
         QVERIFY(!options[0].toMap().value(u"disabled"_s).toBool());
         QVERIFY(options[1].toMap().value(u"disabled"_s).toBool());
         QVERIFY(!options[1].toMap().value(u"value"_s).toString().isEmpty());
+    }
+
+    void legacyAdapterUsesWarpForTheShell()
+    {
+        const GraphicsDeviceSelection::Adapter legacy{
+            u"legacy"_s, u"Legacy GPU"_s, 7, 0, false, false, false, false, false};
+        const GraphicsDeviceSelection::Adapter modern{u"modern"_s, u"Modern GPU"_s, 8};
+        GraphicsDeviceSelection automatic({legacy, modern}, {});
+        QCOMPARE(automatic.adapterLuid(), 8ULL);
+#ifdef Q_OS_WIN
+        GraphicsDeviceSelection onlyLegacy({legacy}, {});
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+        QQuickWindow window;
+        QVERIFY(!window.rhi());
+        QVERIFY(onlyLegacy.applyTo(&window));
+        QVERIFY(window.graphicsConfiguration().prefersSoftwareDevice());
+        QVERIFY(window.graphicsDevice().isNull());
+#endif
     }
 
     void hardwareEnumerationNeverReturnsSoftwareOrDuplicateLuids()

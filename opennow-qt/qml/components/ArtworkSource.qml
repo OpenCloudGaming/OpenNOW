@@ -8,6 +8,8 @@ QtObject {
     property bool requestActive: active
     property string retainedSource: ""
     readonly property string resolvedUrl: active ? ShellStore.artworkUrl(sourceUrl) : ""
+    readonly property bool failed: active && Boolean(ShellStore.artworkRetrySources
+        && ShellStore.artworkRetrySources[sourceUrl])
 
     function reportImageStatus(status, imageSource) {
         if (active && (status === Image.Error || status === Image.Ready))
