@@ -346,6 +346,34 @@ private slots:
         }
     }
 
+    void frameSynchronousHoverDoesNotRepeatAbsoluteReports()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(1920, 1080));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        QVERIFY(!item.relativeMouse());
+        const QPointF position(session.window.width() / 3.0, session.window.height() / 3.0);
+        QMouseEvent move(QEvent::MouseMove, position, session.window.mapToGlobal(position.toPoint()),
+                         Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(&session.window, &move);
+        QTRY_VERIFY(!CursorSession::absoluteMotions.isEmpty());
+        // Qt Quick re-delivers the last hover position after frames while the
+        // mouse rests; those must not reach the server as new absolute moves.
+        const auto reports = CursorSession::absoluteMotions.size();
+        QSignalSpy swaps(&session.window, &QQuickWindow::frameSwapped);
+        for (int frame = 0; frame < 8; ++frame) {
+            item.update();
+            QVERIFY(swaps.wait(1000));
+        }
+        QCOMPARE(CursorSession::absoluteMotions.size(), reports);
+    }
+
     void clipboardPasteRouting_data()
     {
         QTest::addColumn<bool>("fullscreen");
