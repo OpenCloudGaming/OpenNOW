@@ -13,6 +13,7 @@ struct OpenNOWFailure: Identifiable, Equatable {
         case timeout
         case authExpired
         case notEntitled
+        case sessionLimit
         case capacity
         case maintenance
         case transportLost
@@ -26,6 +27,7 @@ struct OpenNOWFailure: Identifiable, Equatable {
         case signIn
         case changeServer
         case seePlans
+        case manageSessions
         case reportProblem
         case none
 
@@ -35,6 +37,7 @@ struct OpenNOWFailure: Identifiable, Equatable {
             case .signIn: return "Sign In"
             case .changeServer: return "Change Server"
             case .seePlans: return "See Plans"
+            case .manageSessions: return "Manage Sessions"
             case .reportProblem: return "Report a Problem"
             case .none: return nil
             }
@@ -54,6 +57,18 @@ struct OpenNOWFailure: Identifiable, Equatable {
     static func classify(_ error: Error, context: Context) -> OpenNOWFailure {
         let nsError = error as NSError
         let raw = nsError.localizedDescription
+
+        if let limit = error as? CloudMatchSessionLimitError {
+            return OpenNOWFailure(
+                kind: .sessionLimit,
+                message: "Another cloud session is already running or queued. Resume it or end it before starting a new one.",
+                recovery: .manageSessions,
+                code: limit.code
+            )
+        }
+        if let object = jsonObject(in: raw), CloudMatchSessionLimitError.isSessionLimit(object) {
+            return classify(CloudMatchSessionLimitError(sessions: [], code: CloudMatchSessionLimitError.code(in: object)), context: context)
+        }
 
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {
@@ -99,12 +114,30 @@ struct OpenNOWFailure: Identifiable, Equatable {
                 recovery: .signIn,
                 code: nil
             )
-        case 402, 403:
+        case 402:
             return OpenNOWFailure(
                 kind: .notEntitled,
                 message: serverMessage(raw) ?? "Your membership doesn't include this.",
                 recovery: .seePlans,
                 code: nil
+            )
+        case 403:
+            let reason = jsonObject(in: raw).flatMap(preferredMessage) ?? raw
+            if reason.localizedCaseInsensitiveContains("not_entitled")
+                || reason.localizedCaseInsensitiveContains("not entitled")
+                || reason.localizedCaseInsensitiveContains("membership") {
+                return OpenNOWFailure(
+                    kind: .notEntitled,
+                    message: serverMessage(raw) ?? "Your membership doesn't include this.",
+                    recovery: .seePlans,
+                    code: nil
+                )
+            }
+            return OpenNOWFailure(
+                kind: .rejected,
+                message: serverMessage(raw) ?? "The server refused this request.",
+                recovery: .reportProblem,
+                code: "403"
             )
         case 503:
             return OpenNOWFailure(
@@ -208,6 +241,9 @@ struct OpenNOWFailure: Identifiable, Equatable {
             }
         }
         if let nested = object["error"] as? [String: Any] {
+            return preferredMessage(in: nested)
+        }
+        if let nested = object["requestStatus"] as? [String: Any] {
             return preferredMessage(in: nested)
         }
         return nil
