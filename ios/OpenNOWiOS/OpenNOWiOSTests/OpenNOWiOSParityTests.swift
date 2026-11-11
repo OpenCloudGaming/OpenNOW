@@ -3260,7 +3260,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
         }
     }
 
-    func testNvstRequestMatchesAndroidStartupAndPacingContract() {
+    func testNvstRequestUsesDesktopBitrateRangeAndAndroidPacingContract() {
         var settings = AppSettings.default
         settings.preferredCodec = "H264"
         let profile = StreamVideoProfile(width: 1_280, height: 720, fps: 60, maxBitrateKbps: 13_000)
@@ -3274,9 +3274,23 @@ final class OpenNOWiOSParityTests: XCTestCase {
 
         XCTAssertTrue(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"))
         XCTAssertTrue(nvst.contains("a=packetPacing.numGroups:5"))
-        XCTAssertTrue(nvst.contains("a=video.initialBitrateKbps:9100"))
-        XCTAssertTrue(nvst.contains("a=video.initialPeakBitrateKbps:13000"))
+        XCTAssertTrue(nvst.contains("a=video.initialBitrateKbps:5000"))
+        XCTAssertTrue(nvst.contains("a=video.initialPeakBitrateKbps:5000"))
         XCTAssertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:5000"))
+        XCTAssertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:13000"))
+
+        // The floor stays fixed as the ceiling rises, so the host can still back off.
+        let highBitrate = NativeStreamSDP.buildNvstSDP(
+            offerSDP: "a=ri.partialReliableThresholdMs:30",
+            localAnswerSDP: "a=ice-ufrag:u\na=ice-pwd:p\na=fingerprint:sha-256 AA:BB",
+            profile: StreamVideoProfile(width: 3_840, height: 2_160, fps: 60, maxBitrateKbps: 75_000),
+            settings: settings,
+            codec: .h264
+        )
+        XCTAssertTrue(highBitrate.contains("a=vqos.bw.minimumBitrateKbps:5000\n"))
+        XCTAssertTrue(highBitrate.contains("a=video.initialBitrateKbps:18750\n"))
+        XCTAssertTrue(highBitrate.contains("a=video.initialPeakBitrateKbps:18750\n"))
+        XCTAssertTrue(highBitrate.contains("a=vqos.bw.maximumBitrateKbps:75000\n"))
         XCTAssertFalse(nvst.contains("a=vqos.drc.minRequiredBitrateCheckEnabled"))
         XCTAssertFalse(nvst.contains("a=vqos.bllFec.enable"))
     }
@@ -5912,20 +5926,20 @@ final class OpenNOWiOSParityTests: XCTestCase {
         watchdog.markConnected(now: 0)
 
         XCTAssertEqual(
-            watchdog.observe(now: 4.9, bytesReceived: 0, framesDecoded: 0, connected: true),
+            watchdog.observe(now: 1.9, bytesReceived: 0, framesDecoded: 0, connected: true),
             .none
         )
         XCTAssertEqual(
-            watchdog.observe(now: 5, bytesReceived: 0, framesDecoded: 0, connected: true),
-            .requestKeyframe(stalledFor: 5, attempt: 1)
+            watchdog.observe(now: 2, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 2, attempt: 1)
         )
         XCTAssertEqual(
-            watchdog.observe(now: 7.4, bytesReceived: 0, framesDecoded: 0, connected: true),
+            watchdog.observe(now: 3.9, bytesReceived: 0, framesDecoded: 0, connected: true),
             .none
         )
         XCTAssertEqual(
-            watchdog.observe(now: 7.5, bytesReceived: 0, framesDecoded: 0, connected: true),
-            .requestKeyframe(stalledFor: 7.5, attempt: 2)
+            watchdog.observe(now: 4, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 4, attempt: 2)
         )
         XCTAssertEqual(
             watchdog.observe(now: 10, bytesReceived: 0, framesDecoded: 0, connected: true),
@@ -5942,26 +5956,26 @@ final class OpenNOWiOSParityTests: XCTestCase {
             .none
         )
         XCTAssertEqual(
-            watchdog.observe(now: 9.9, bytesReceived: 100, framesDecoded: 1, connected: true),
+            watchdog.observe(now: 6.9, bytesReceived: 100, framesDecoded: 1, connected: true),
             .none
         )
         XCTAssertEqual(
-            watchdog.observe(now: 10, bytesReceived: 100, framesDecoded: 1, connected: true),
-            .requestKeyframe(stalledFor: 5, attempt: 1)
+            watchdog.observe(now: 7, bytesReceived: 100, framesDecoded: 1, connected: true),
+            .requestKeyframe(stalledFor: 2, attempt: 1)
         )
         XCTAssertEqual(
-            watchdog.observe(now: 10.5, bytesReceived: 100, framesDecoded: 1, connected: false),
+            watchdog.observe(now: 7.5, bytesReceived: 100, framesDecoded: 1, connected: false),
             .none
         )
 
         watchdog.markConnected(now: 20)
         XCTAssertEqual(
-            watchdog.observe(now: 24.9, bytesReceived: 0, framesDecoded: 0, connected: true),
+            watchdog.observe(now: 21.9, bytesReceived: 0, framesDecoded: 0, connected: true),
             .none
         )
         XCTAssertEqual(
-            watchdog.observe(now: 25, bytesReceived: 0, framesDecoded: 0, connected: true),
-            .requestKeyframe(stalledFor: 5, attempt: 1)
+            watchdog.observe(now: 22, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 2, attempt: 1)
         )
     }
 

@@ -103,8 +103,8 @@ struct NativeStreamLivenessWatchdog {
     private(set) var latestObservationProgressed = false
 
     init(
-        keyframeAfter: TimeInterval = 5,
-        keyframeInterval: TimeInterval = 2.5,
+        keyframeAfter: TimeInterval = 2,
+        keyframeInterval: TimeInterval = 2,
         restartAfter: TimeInterval = 10
     ) {
         self.keyframeAfter = keyframeAfter
