@@ -983,11 +983,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
         let editor = NativeStreamPresentationController(content: AnyView(NativeStreamTouchLayoutPreview()))
         presenter = editor
         window.rootViewController = editor
+        // iPadOS refuses programmatic rotation in its windowed modes ("The current windowing mode
+        // does not allow for programmatic changes to interface orientation"). The stream can then
+        // only ask for landscape, so that is what it is held to there.
+        final class RotationProbe { var refused = false }
+        let probe = RotationProbe()
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { _ in probe.refused = true }
         for _ in 0..<30 {
-            if scene.interfaceOrientation.isLandscape { break }
+            if scene.interfaceOrientation.isLandscape || probe.refused { break }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        XCTAssertTrue(scene.interfaceOrientation.isLandscape)
+        XCTAssertEqual(editor.host.supportedInterfaceOrientations, .landscape)
+        if !probe.refused { XCTAssertTrue(scene.interfaceOrientation.isLandscape) }
         try await Task.sleep(nanoseconds: 300_000_000)
         capture("Xbox Layout Editor")
         editor.tearDown()
@@ -1229,8 +1236,18 @@ final class OpenNOWiOSParityTests: XCTestCase {
             sidebar.selectItem(at: index, animated: false, scrollPosition: [])
             try await settle()
         }
+        // Only bars the user can see. A tab bar may keep the tab it just left in the hierarchy,
+        // hidden, and that is not the screen being shown.
+        func isShown(_ view: UIView) -> Bool {
+            var current: UIView? = view
+            while let candidate = current {
+                if candidate.isHidden || candidate.alpha < 0.01 { return false }
+                current = candidate.superview
+            }
+            return view.window != nil
+        }
         func titles() -> [String] {
-            descendants(host.view).compactMap { ($0 as? UINavigationBar)?.topItem?.title }
+            descendants(host.view).filter(isShown).compactMap { ($0 as? UINavigationBar)?.topItem?.title }
         }
         try await settle()
         XCTAssertEqual(host.traitCollection.horizontalSizeClass, compact ? .compact : .regular)
