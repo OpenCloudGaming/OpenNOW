@@ -3,7 +3,9 @@
 #include <QTest>
 #include <QQuickGraphicsConfiguration>
 #include <QQuickGraphicsDevice>
+#include <QQuickRenderControl>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QSet>
 #include <QVariantMap>
 
@@ -110,7 +112,10 @@ private slots:
         QCOMPARE(automatic.adapterLuid(), 8ULL);
 #ifdef Q_OS_WIN
         GraphicsDeviceSelection onlyLegacy({legacy}, {});
-        QQuickWindow window;
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+        QQuickRenderControl renderControl;
+        QQuickWindow window(&renderControl);
+        QVERIFY(!window.isSceneGraphInitialized());
         QVERIFY(onlyLegacy.applyTo(&window));
         QVERIFY(window.graphicsConfiguration().prefersSoftwareDevice());
         QVERIFY(window.graphicsDevice().isNull());

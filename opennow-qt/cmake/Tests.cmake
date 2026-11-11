@@ -34,7 +34,8 @@ if(BUILD_TESTING)
     if(WIN32)
         target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi d3d11)
     endif()
-    add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt)
+    add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt
+        -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/graphics-device-results.xml,junitxml")
     set_tests_properties(opennow-graphicsdevices-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-macawdl-tests tests/tst_macawdlcontroller.cpp
