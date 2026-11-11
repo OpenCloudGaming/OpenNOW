@@ -751,6 +751,33 @@ class SpaceUiInstrumentedTest {
         compose.runOnIdle { assertEquals("https://us-california-south.cloudmatchbeta.nvidiagrid.net/", launched) }
     }
 
+    @Test fun queuePickerShowsUnavailableServersAndCanLaunchWithDefault() {
+        var defaultLaunches = 0
+        compose.setContent {
+            SpaceUiTheme {
+                PrintedWasteSelectorContent(
+                    OpenNowUiState(
+                        printedWasteMapping = mapOf(
+                            "NP-LAX-03" to PrintedWasteServerMappingEntry("Southern California", "US Southwest"),
+                        ),
+                    ),
+                    games.first(),
+                    onDismiss = {},
+                    onRetry = {},
+                    onLaunch = { url ->
+                        assertEquals(null, url)
+                        defaultLaunches++
+                    },
+                    onSettingsChange = {},
+                )
+            }
+        }
+        compose.onNodeWithText("No queue data from PrintedWaste").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Launch").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Default").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, defaultLaunches) }
+    }
+
     @Test fun settingsActionsUseFullWidthConsoleRows() {
         compose.setContent {
             SpaceUiTheme {

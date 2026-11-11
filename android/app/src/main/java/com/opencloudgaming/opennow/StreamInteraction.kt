@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.view.InputDevice
 import android.view.MotionEvent
 import org.webrtc.GlRectDrawer
 import org.webrtc.GlShader
@@ -976,6 +977,15 @@ internal class TouchMouseState {
         }
 
         if (directClick && !combined) {
+            fun finishDirectPointer(index: Int) {
+                // Lift-off coordinates can shift as the finger loses contact. Keep the last
+                // DOWN/MOVE position, while preserving external mouse release positioning.
+                if (index >= 0 && !event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+                    directClickMouse.move(positionAt(index), client::sendDirectClickMousePosition)
+                }
+                directClickMouse.release(client::setDirectClickMouseButton)
+                activePointerId = -1
+            }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                     val index = if (event.actionMasked == MotionEvent.ACTION_DOWN) 0 else event.actionIndex
@@ -1023,18 +1033,13 @@ internal class TouchMouseState {
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val index = event.findPointerIndex(activePointerId)
-                    if (index >= 0) directClickMouse.move(positionAt(index), client::sendDirectClickMousePosition)
-                    directClickMouse.release(client::setDirectClickMouseButton)
-                    activePointerId = -1
+                    finishDirectPointer(event.findPointerIndex(activePointerId))
                     return true
                 }
                 MotionEvent.ACTION_POINTER_UP -> {
                     val releasedId = event.getPointerId(event.actionIndex)
                     if (releasedId == activePointerId) {
-                        directClickMouse.move(positionAt(event.actionIndex), client::sendDirectClickMousePosition)
-                        directClickMouse.release(client::setDirectClickMouseButton)
-                        activePointerId = -1
+                        finishDirectPointer(event.actionIndex)
                     }
                     return true
                 }
@@ -1209,12 +1214,12 @@ internal class TouchMouseState {
     ) {
         val x = event.getX(index)
         val y = event.getY(index)
+        // UP ends the gesture; its coordinates are not another movement sample. Flush only
+        // deltas already collected from MOVE so rate limiting cannot lose the drag's tail.
+        sendMouseDelta(0f, 0f, event.eventTime, client, force = true)
         if (combinedSlideDirectClick) {
             if (activePointerId < 0) return
             val click = doubleTapDirectClick.finish(x, y, event.eventTime)
-            if (doubleTapDirectClick.isSliding && !scrollGestureOccurred && !twoFingerTapCandidate) {
-                sendMouseDelta(x - lastX, y - lastY, event.eventTime, client, force = true)
-            }
             if (click) {
                 positionAt(index)?.let { position ->
                     // K&M overlay buttons own clicks, but a double tap must still position the
@@ -1228,15 +1233,6 @@ internal class TouchMouseState {
             scrollGestureOccurred = false
             return
         }
-        sendMouseDelta(
-            dx = x - lastX,
-            dy = y - lastY,
-            eventTimeMs = event.eventTime,
-            client = client,
-            force = true,
-        )
-        lastX = x
-        lastY = y
         val tapDistanceX = abs(x - downX)
         val tapDistanceY = abs(y - downY)
         val wasTap = activePointerId >= 0 &&

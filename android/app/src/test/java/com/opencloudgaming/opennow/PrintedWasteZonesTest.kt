@@ -32,6 +32,70 @@ class PrintedWasteZonesTest {
     }
 
     @Test
+    fun mappingStillListsServersWhenQueueIsEmptyOrFails() {
+        val now = 1_793_190_000_000L
+        val mapping = mapOf(
+            "NP-LAX-01" to entry("Southern California", "US Southwest"),
+            "NP-LAX-02" to entry("Southern California", "US Southwest").copy(nuked = true),
+            "NPA-LON-01" to entry("London", "EU West"),
+        )
+        for (queue in listOf(null, PrintedWasteQueueSnapshot(emptyMap(), now, 0L))) {
+            val options = printedWasteZoneOptions(queue, mapping, emptyList(), emptyMap(), now)
+            assertEquals(
+                mapOf(
+                    "NP-LAX-01" to PrintedWasteUnavailableReason.MissingQueueData,
+                    "NP-LAX-02" to PrintedWasteUnavailableReason.MarkedUnavailable,
+                ),
+                options.associate { it.zoneId to it.unavailableReason },
+            )
+            assertEquals(2, printedWasteLocations(options, mapping).size)
+            assertTrue(options.all { it.routingUrl == null })
+            assertNull(recommendedPrintedWasteZone(options))
+        }
+        assertTrue(printedWasteZoneOptions(null, emptyMap(), emptyList(), emptyMap(), now).isEmpty())
+    }
+
+    @Test
+    fun disabledServersRetainTheirReasonsAlongsideAnAvailableServer() {
+        val now = 1_793_190_000_000L
+        val fresh = PrintedWasteZone(QueuePosition = 2, LastUpdated = now / 1000, Region = "US")
+        val queue = PrintedWasteQueueSnapshot(
+            mapOf(
+                "NP-LAX-01" to fresh,
+                "NP-LAX-02" to fresh.copy(LastUpdated = fresh.LastUpdated - 1801),
+                "NP-LAX-03" to fresh.copy(LastUpdated = fresh.LastUpdated + 3600),
+                "NP-LAX-04" to fresh,
+                "NP-LAX-05" to fresh,
+            ),
+            now,
+            0L,
+        )
+        val california = entry("Southern California", "US Southwest")
+        val mapping = mapOf(
+            "NP-LAX-01" to california,
+            "NP-LAX-02" to california,
+            "NP-LAX-03" to california,
+            "NP-LAX-05" to entry("Texas", "US Central"),
+        )
+        val url = "https://us-california-south.cloudmatchbeta.nvidiagrid.net/"
+        val regions = listOf(StreamRegion("Southern California", url))
+        val options = printedWasteZoneOptions(queue, mapping, regions, emptyMap(), now)
+        assertEquals(
+            mapOf(
+                "NP-LAX-01" to null,
+                "NP-LAX-02" to PrintedWasteUnavailableReason.StaleQueueData,
+                "NP-LAX-03" to PrintedWasteUnavailableReason.InvalidQueueTime,
+                "NP-LAX-04" to PrintedWasteUnavailableReason.MissingServerMapping,
+                "NP-LAX-05" to PrintedWasteUnavailableReason.MissingRegionalRoute,
+            ),
+            options.associate { it.zoneId to it.unavailableReason },
+        )
+        assertEquals(5, printedWasteLocations(options, mapping).size)
+        assertEquals(url, options.single { it.routingUrl != null }.routingUrl)
+        assertEquals("NP-LAX-01", recommendedPrintedWasteZone(options)?.zoneId)
+    }
+
+    @Test
     fun selectedZonesRouteThroughAdvertisedRegions() {
         val mapping = mapOf(
             "NP-SJC6-06" to entry("Northern California", "US West"),

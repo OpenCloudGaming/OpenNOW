@@ -1,14 +1,10 @@
 package com.opencloudgaming.opennow.ui.theme
 
 import androidx.compose.material3.Typography
-import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import com.opencloudgaming.opennow.R
 
 /**
  * Inter Variable, SIL Open Font License 1.1 (see `app/licenses/Inter-OFL-1.1.txt`).
@@ -17,23 +13,16 @@ import com.opencloudgaming.opennow.R
  * figures and a slashed zero (the UI is full of numeric readouts), its tall x-height and open
  * apertures read far better at TV viewing distance, and one variable file covers every weight.
  *
- * `minSdk` is 23 but variable-font axes need API 26. On 23–25 the file loads at its default
+ * Variable-font axes need API 26. On 24–25 the file loads at its default
  * instance and Compose applies synthetic bolding — an acceptable degradation on a shrinking
  * slice of devices.
  */
-@OptIn(ExperimentalTextApi::class)
-private fun interWeight(weight: FontWeight) = Font(
-    resId = R.font.inter_variable,
-    weight = weight,
-    variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight)),
-)
-
 val Inter = FontFamily(
-    interWeight(FontWeight.Normal),
-    interWeight(FontWeight.Medium),
-    interWeight(FontWeight.SemiBold),
-    interWeight(FontWeight.Bold),
-    interWeight(FontWeight.ExtraBold),
+    InterFont(FontWeight.Normal),
+    InterFont(FontWeight.Medium),
+    InterFont(FontWeight.SemiBold),
+    InterFont(FontWeight.Bold),
+    InterFont(FontWeight.ExtraBold),
 )
 
 /**

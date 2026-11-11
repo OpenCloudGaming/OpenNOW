@@ -143,13 +143,17 @@ class GfnSessionConnectionsTest {
         assertEquals("wss://webrtc.example/nvst/", result.signalingUrl)
     }
 
-    @Test fun nativeAllocationSelectsNvstWithoutPersistingExperimentalOptIn() {
+    @Test fun nativeAllocationCannotEnableNvstWithoutExplicitOptIn() {
         val settings = StreamSettings(experimentalNvst = false)
         val session = SessionInfo("id", 2, serverIp = "seat.example",
             signalingServer = "seat.example:443", signalingUrl = "wss://seat.example/nvst/",
             rtspsEndpoints = listOf("rtsps://seat.example:322"), nativeTransportRequired = true)
-        assertTrue(session.usesNvstTransport(settings))
+        assertFalse(session.usesNvstTransport(settings))
+        assertTrue(session.nvstTransportOptInError(settings)!!.contains("NVST is disabled"))
         assertFalse(settings.experimentalNvst)
+        assertNull(session.nvstTransportOptInError(settings.copy(experimentalNvst = true)))
+        assertTrue(session.usesNvstTransport(settings.copy(experimentalNvst = true)))
+        assertNull(session.copy(nativeTransportRequired = false).nvstTransportOptInError(settings))
         assertFalse(session.copy(nativeTransportRequired = false).usesNvstTransport(settings))
         assertTrue(session.copy(nativeTransportRequired = false).usesNvstTransport(settings.copy(experimentalNvst = true)))
         assertNotEquals(session.nativeStreamTransportIdentity(), session.copy(nativeTransportRequired = false).nativeStreamTransportIdentity())

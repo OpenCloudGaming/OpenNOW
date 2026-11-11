@@ -272,6 +272,9 @@ object NativeStreamInputRouter {
     private var captureAllTouch = false
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
+    @Volatile
+    private var controllerKeyboardHandler: (() -> Unit)? = null
+    private val controllerKeyboardShortcut = ControllerKeyboardShortcut()
     private val controllerMenuHoldHandler by lazy { Handler(Looper.getMainLooper()) }
     private var controllerMenuHold: Runnable? = null
     private var controllerMenuHoldDownEvent: KeyEvent? = null
@@ -321,6 +324,7 @@ object NativeStreamInputRouter {
         if (client === next) {
             releaseInputForLifecycle("stream-detached")
             consumedControllerMenuHoldDeviceId = null
+            controllerKeyboardShortcut.reset()
             client = null
             touchMouseOutput = null
             decodedStreamResolution = 0 to 0
@@ -426,6 +430,10 @@ object NativeStreamInputRouter {
 
     fun setSystemMenuHandler(handler: (() -> Unit)?) {
         systemMenuHandler = handler
+    }
+
+    fun setControllerKeyboardHandler(handler: (() -> Unit)?) {
+        controllerKeyboardHandler = handler
     }
 
     fun setSystemBackHandler(handler: (() -> Unit)?) {
@@ -748,6 +756,25 @@ object NativeStreamInputRouter {
 
     fun dispatchKey(event: KeyEvent): Boolean {
         val controllerInputDevice = event.isControllerInputDevice()
+        val keyboardHandler = controllerKeyboardHandler
+        when (controllerKeyboardShortcut.route(
+            keyCode = event.keyCode,
+            action = event.action,
+            repeatCount = event.repeatCount,
+            deviceId = event.deviceId,
+            controllerInputDevice = controllerInputDevice,
+            enabled = client != null && keyboardHandler != null,
+            streamUiActive = streamUiActive,
+        )) {
+            ControllerKeyboardShortcut.Route.OpenKeyboard -> {
+                NativeInputDiagnostics.addRetained("stream.keyboard.open", "stream keyboard open origin=controller-y")
+                setStreamUiActive(true)
+                keyboardHandler?.invoke()
+                return true
+            }
+            ControllerKeyboardShortcut.Route.Consume -> return true
+            ControllerKeyboardShortcut.Route.Pass -> Unit
+        }
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_START && controllerInputDevice) {
             when (event.action) {
                 KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0 &&

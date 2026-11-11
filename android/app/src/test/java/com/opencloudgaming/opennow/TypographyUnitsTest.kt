@@ -2,10 +2,13 @@ package com.opencloudgaming.opennow
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontListFontFamily
+import androidx.compose.ui.text.font.FontLoadingStrategy
 import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.lerp
 import com.opencloudgaming.opennow.ui.theme.OpenNowTypography
+import com.opencloudgaming.opennow.ui.theme.Inter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +24,15 @@ import org.junit.Test
  * catches that, so it is checked here.
  */
 class TypographyUnitsTest {
+
+    @Test
+    fun interWeightsDoNotLoadSynchronouslyDuringTextMeasurement() {
+        val fonts = Inter as FontListFontFamily
+        assertEquals(5, fonts.fonts.size)
+        fonts.fonts.forEach { font ->
+            assertEquals(FontLoadingStrategy.Async, font.loadingStrategy)
+        }
+    }
 
     private fun allStyles(typography: Typography): List<Pair<String, TextStyle>> = listOf(
         "displayLarge" to typography.displayLarge,

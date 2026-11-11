@@ -62,6 +62,8 @@ class AppSettingsDefaultsTest {
         assertTrue(metrics.battery)
         assertFalse(metrics.sessionBattery)
         assertFalse(metrics.playtime)
+        assertFalse(metrics.clock)
+        assertFalse(metrics.wifiSsid)
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)

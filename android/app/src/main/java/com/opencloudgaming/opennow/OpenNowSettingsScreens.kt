@@ -939,6 +939,7 @@ private fun SettingsContent(
                     min = 1f,
                     max = 150f,
                     step = 1f,
+                    description = stringResource(R.string.settings_stream_bitrate_help),
                     descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
@@ -980,7 +981,7 @@ private fun SettingsContent(
                     label = stringResource(R.string.settings_codec),
                     options = codecChoices.options,
                     selectedLabel = codecChoices.selectedLabel,
-                    description = stringResource(R.string.settings_codec_desc),
+                    description = stringResource(R.string.settings_stream_codec_help),
                 ) { value ->
                     val selectedCodec = VideoCodec.valueOf(value)
                     val downgradedTenBit = selectedCodec == VideoCodec.AV1 &&
@@ -1019,7 +1020,7 @@ private fun SettingsContent(
                     } else {
                         "${settings.stream.colorQuality.label} -> ${effectiveColorQuality.label}"
                     },
-                    description = stringResource(R.string.settings_color_desc),
+                    description = stringResource(R.string.settings_stream_color_help),
                 ) { value ->
                     viewModel.updateStreamSettings { s ->
                         s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()

@@ -13,6 +13,26 @@ import org.junit.Test
  */
 class SettingsPersistenceTest {
     @Test
+    fun clockAndWifiNameStayOffForExistingSettingsAndPersistIndependently() {
+        val old = OpenNowJson.decodeFromString<AppSettings>(
+            """{"streamStatsMetrics":{"fps":false,"playtime":true,"connection":false}}""",
+        )
+        assertFalse(old.streamStatsMetrics.clock)
+        assertFalse(old.streamStatsMetrics.wifiSsid)
+        assertFalse(old.streamStatsMetrics.fps)
+        assertTrue(old.streamStatsMetrics.playtime)
+
+        for (item in listOf(StreamStatusItem.Clock, StreamStatusItem.WifiSsid)) {
+            val enabled = item.setEnabled(old, true)
+            val restored = OpenNowJson.decodeFromString<AppSettings>(OpenNowJson.encodeToString(enabled))
+                .normalizedForAndroid()
+            assertTrue(item.enabledIn(restored))
+            assertEquals(old.streamStatsMetrics.enabledCount() + 1, restored.streamStatsMetrics.enabledCount())
+            assertEquals(old.streamStatsMetrics, item.setEnabled(restored, false).streamStatsMetrics)
+        }
+    }
+
+    @Test
     fun backAsEscapeDefaultsOffAndSurvivesSettingsReload() {
         assertFalse(OpenNowJson.decodeFromString<AppSettings>("{}").androidBackAsEscape)
         val saved = AppSettings(androidBackAsEscape = true)

@@ -1,4 +1,5 @@
 //! Android owns presentation and the allocated CloudMatch session. This adapter owns only an attachment.
+mod audio_worker;
 mod microphone;
 mod nvst_rtsp;
 
@@ -183,6 +184,38 @@ fn event(
         Ok(())
     })
 }
+fn deliver_frame(
+    env: &mut JNIEnv,
+    callback: &JObject,
+    frame: &EncodedMediaFrame,
+) -> Result<bool, String> {
+    env.with_local_frame(8, |env| -> jni::errors::Result<bool> {
+        let codec = env.new_string(&frame.codec)?;
+        // The Arc stays alive through this synchronous call. Java consumes the borrowed
+        // buffer before returning or retains its own copy for asynchronous video decode.
+        let bytes = unsafe {
+            env.new_direct_byte_buffer(frame.payload.as_ptr() as *mut u8, frame.payload.len())?
+        };
+        env.call_method(
+            callback,
+            "onNativeMedia",
+            "(Ljava/lang/String;Ljava/nio/ByteBuffer;JZZ)Z",
+            &[
+                JValue::Object(&codec),
+                JValue::Object(&bytes),
+                JValue::Long(
+                    (frame.rtp_timestamp.saturating_mul(1_000_000_000)
+                        / u64::from(frame.clock_rate_hz.max(1))) as i64,
+                ),
+                JValue::Bool(frame.keyframe as u8),
+                JValue::Bool(frame.contiguous as u8),
+            ],
+        )?
+        .z()
+    })
+    .map_err(|error| error.to_string())
+}
+
 struct Receivers {
     bundle: Option<NvstUdpReceiverSession>,
     video: Option<NvstUdpReceiverSession>,
@@ -239,11 +272,38 @@ fn run(
     *state.feedback.lock().unwrap() = Some(feedback.clone());
     prepared.announce().map_err(|e| e.message)?;
     let (socket, rtc, video_socket) = bundle.into_parts();
+    let vm = env.get_java_vm().map_err(|error| error.to_string())?;
+    let audio_callback = env
+        .new_global_ref(callback)
+        .map_err(|error| error.to_string())?;
+    let audio_worker = audio_worker::AudioWorker::start(move |work| {
+        let mut env = vm
+            .attach_current_thread()
+            .map_err(|error| error.to_string())?;
+        let result = work.run(|frame| {
+            if let Some(frame) = frame {
+                deliver_frame(&mut env, audio_callback.as_obj(), &frame)?;
+            } else {
+                env.call_method(audio_callback.as_obj(), "onNativeAudioTick", "()V", &[])
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        // Never leave a pending Java exception on a thread attached by Rust.
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+        }
+        result.map_err(|error| format!("NVST audio playback failed: {error}"))
+    })?;
     let (sender, media) = mpsc::sync_channel(8);
     let (events_sender, events) = mpsc::channel();
     let transport = spawn_nvst_udp_receiver_with_socket(
         config.clone(),
-        sender.clone(),
+        NvstMediaConsumers {
+            video: sender.clone(),
+            audio: audio_worker.consumer(),
+        },
         events_sender.clone(),
         Some(socket),
         Some(rtc),
@@ -301,6 +361,7 @@ fn run(
     let mut round_trip_ms = None;
     let mut duplicate_stun_responses = 0;
     while !state.stopped.load(Ordering::Acquire) {
+        audio_worker.check()?;
         for notification in pending_events.drain(..).chain(events.try_iter()).take(128) {
             match notification {
                 NvstReceiveEvent::RoundTripTime {
@@ -339,37 +400,7 @@ fn run(
         }
         match media.recv_timeout(Duration::from_millis(10)) {
             Ok(frame) => {
-                let accepted = env
-                    .with_local_frame(8, |env| -> jni::errors::Result<bool> {
-                        let codec = env.new_string(&frame.codec)?;
-                        // The Arc stays alive through this synchronous call. Audited Android
-                        // decoders copy into MediaCodec before returning, or retain their own
-                        // pending-input copy. Unknown decoders use an owned staging copy.
-                        let bytes = unsafe {
-                            env.new_direct_byte_buffer(
-                                frame.payload.as_ptr() as *mut u8,
-                                frame.payload.len(),
-                            )?
-                        };
-                        env.call_method(
-                            callback,
-                            "onNativeMedia",
-                            "(Ljava/lang/String;Ljava/nio/ByteBuffer;JZZ)Z",
-                            &[
-                                JValue::Object(&codec),
-                                JValue::Object(&bytes),
-                                JValue::Long(
-                                    (frame.rtp_timestamp.saturating_mul(1_000_000_000)
-                                        / u64::from(frame.clock_rate_hz.max(1)))
-                                        as i64,
-                                ),
-                                JValue::Bool(frame.keyframe as u8),
-                                JValue::Bool(frame.contiguous as u8),
-                            ],
-                        )?
-                        .z()
-                    })
-                    .map_err(|e| e.to_string())?;
+                let accepted = deliver_frame(env, callback, &frame)?;
                 if let Some(index) = frame.frame_index {
                     if accepted {
                         feedback.publish_accepted_frame(index, frame.payload.len() as u32);

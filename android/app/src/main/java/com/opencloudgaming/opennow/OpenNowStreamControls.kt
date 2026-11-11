@@ -1044,6 +1044,61 @@ internal fun StreamControlsPanel(
                     )
                 }
             }
+            if (!compactHeight || advancedControlsVisible) item {
+                ControlSection(stringResource(R.string.stream_panel_section_display)) {
+                    if (advancedControlsVisible) {
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_stretch_to_fit),
+                            checked = settings.stretchStreamToFit,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onStretchToFitToggle()
+                            },
+                            value = onOffLabel(settings.stretchStreamToFit),
+                        )
+                    }
+                    if (!compactHeight) {
+                        StreamAudioRow(audioMuted) { onButtonTone(); onAudioToggle() }
+                        StreamStatusBarRow(settings, statsVisible) { onButtonTone(); page = StreamControlsPage.StatusBar }
+                    }
+                    if (advancedControlsVisible) {
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_sharpening),
+                            checked = settings.stream.streamSharpeningEnabled,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onSharpeningToggle()
+                            },
+                            value = onOffLabel(settings.stream.streamSharpeningEnabled),
+                        )
+                        if (settings.stream.streamSharpeningEnabled) {
+                            ControlSliderRow(
+                                label = stringResource(R.string.stream_panel_sharpening_amount),
+                                value = settings.stream.streamSharpeningAmount,
+                                min = 0f,
+                                max = 1f,
+                                step = SHARPENING_SLIDER_STEP,
+                                onChange = onSharpeningAmountChange,
+                            )
+                        }
+                        ControlSliderRow(
+                            label = stringResource(R.string.settings_bitrate),
+                            value = settings.stream.maxBitrateMbps.toFloat(),
+                            min = 1f,
+                            max = 150f,
+                            step = 1f,
+                            unit = "Mbps",
+                            descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
+                            onChange = { value -> onMaxBitrateChange(value.roundToInt()) },
+                        )
+                        // A requested ceiling can be queued for a later offer. Only measured
+                        // receive traffic can truthfully be shown as live in the current session.
+                        receivedBitrateKbps?.takeIf { it >= 0 }?.let { bitrate ->
+                            ControlBitrateLiveHint(liveBitrateMbps = bitrate / 1000)
+                        }
+                    }
+                }
+            }
             item {
                 ControlSection(stringResource(R.string.keyboard_overlay_category_mouse)) {
                     ControlNavigationRow(
@@ -1135,70 +1190,6 @@ internal fun StreamControlsPanel(
                     }
                 }
             }
-            item {
-                ControlActionRow(
-                    label = if (advancedControlsVisible) stringResource(R.string.stream_panel_less_controls)
-                        else stringResource(R.string.stream_panel_more_controls),
-                    actionLabel = if (advancedControlsVisible) stringResource(R.string.action_close)
-                        else stringResource(R.string.action_open),
-                    onClick = { advancedControlsVisible = !advancedControlsVisible },
-                )
-            }
-            if (!compactHeight || advancedControlsVisible) item {
-                ControlSection(stringResource(R.string.stream_panel_section_display)) {
-                    if (advancedControlsVisible) {
-                        ControlSwitchRow(
-                            label = stringResource(R.string.stream_panel_stretch_to_fit),
-                            checked = settings.stretchStreamToFit,
-                            onCheckedChange = {
-                                onButtonTone()
-                                onStretchToFitToggle()
-                            },
-                            value = onOffLabel(settings.stretchStreamToFit),
-                        )
-                    }
-                    if (!compactHeight) {
-                        StreamAudioRow(audioMuted) { onButtonTone(); onAudioToggle() }
-                        StreamStatusBarRow(settings, statsVisible) { onButtonTone(); page = StreamControlsPage.StatusBar }
-                    }
-                    if (advancedControlsVisible) {
-                        ControlSwitchRow(
-                            label = stringResource(R.string.stream_panel_sharpening),
-                            checked = settings.stream.streamSharpeningEnabled,
-                            onCheckedChange = {
-                                onButtonTone()
-                                onSharpeningToggle()
-                            },
-                            value = onOffLabel(settings.stream.streamSharpeningEnabled),
-                        )
-                        if (settings.stream.streamSharpeningEnabled) {
-                            ControlSliderRow(
-                                label = stringResource(R.string.stream_panel_sharpening_amount),
-                                value = settings.stream.streamSharpeningAmount,
-                                min = 0f,
-                                max = 1f,
-                                step = SHARPENING_SLIDER_STEP,
-                                onChange = onSharpeningAmountChange,
-                            )
-                        }
-                        ControlSliderRow(
-                            label = stringResource(R.string.settings_bitrate),
-                            value = settings.stream.maxBitrateMbps.toFloat(),
-                            min = 1f,
-                            max = 150f,
-                            step = 1f,
-                            unit = "Mbps",
-                            descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
-                            onChange = { value -> onMaxBitrateChange(value.roundToInt()) },
-                        )
-                        // A requested ceiling can be queued for a later offer. Only measured
-                        // receive traffic can truthfully be shown as live in the current session.
-                        receivedBitrateKbps?.takeIf { it >= 0 }?.let { bitrate ->
-                            ControlBitrateLiveHint(liveBitrateMbps = bitrate / 1000)
-                        }
-                    }
-                }
-            }
             if (advancedControlsVisible || microphoneRequested) item {
                 ControlSection(stringResource(R.string.stream_panel_section_input)) {
                     if (advancedControlsVisible) ControlSliderRow(
@@ -1254,6 +1245,15 @@ internal fun StreamControlsPanel(
                         }
                     }
                 }
+            }
+            item {
+                ControlActionRow(
+                    label = if (advancedControlsVisible) stringResource(R.string.stream_panel_less_controls)
+                        else stringResource(R.string.stream_panel_more_controls),
+                    actionLabel = if (advancedControlsVisible) stringResource(R.string.action_close)
+                        else stringResource(R.string.action_open),
+                    onClick = { advancedControlsVisible = !advancedControlsVisible },
+                )
             }
             item {
                 ControlSection(stringResource(R.string.stream_panel_section_support)) {
@@ -2755,6 +2755,7 @@ private fun LazyListScope.statusBarPageItems(
             verticalPadding = 6.dp,
             labelStyle = MaterialTheme.typography.labelMedium,
         )
+        val requestWifiNamePermission = rememberRequestStreamWifiNamePermission()
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val columns = when {
                 maxWidth >= 800.dp -> 5
@@ -2776,6 +2777,7 @@ private fun LazyListScope.statusBarPageItems(
                         checked = item.enabledIn(settings),
                         onCheckedChange = { enabled ->
                             onButtonTone()
+                            if (item == StreamStatusItem.WifiSsid && enabled) requestWifiNamePermission()
                             if (item == StreamStatusItem.Keyboard) {
                                 onKeyboardButtonToggle()
                             } else {
@@ -2788,6 +2790,9 @@ private fun LazyListScope.statusBarPageItems(
                 }
             }
         }
+    }
+    if (settings.streamStatsMetrics.wifiSsid) {
+        item { StreamWifiNamePermissionHint() }
     }
 }
 

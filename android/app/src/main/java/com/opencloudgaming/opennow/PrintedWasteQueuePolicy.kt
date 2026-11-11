@@ -48,8 +48,30 @@ internal fun selectablePrintedWasteRegionalUrl(
     regions: List<StreamRegion>,
     nowEpochMs: Long,
 ): String? {
-    if (mapping[zoneId]?.nuked == true || !isPrintedWasteQueueFresh(zone.LastUpdated, nowEpochMs)) return null
+    if (printedWasteQueueUnavailableReason(zone, mapping[zoneId], nowEpochMs) != null) return null
     return printedWasteRegionalUrl(zoneId, mapping, regions)
+}
+
+internal enum class PrintedWasteUnavailableReason {
+    MarkedUnavailable,
+    MissingQueueData,
+    InvalidQueueTime,
+    StaleQueueData,
+    MissingServerMapping,
+    MissingRegionalRoute,
+}
+
+internal fun printedWasteQueueUnavailableReason(
+    zone: PrintedWasteZone?,
+    entry: PrintedWasteServerMappingEntry?,
+    nowEpochMs: Long,
+): PrintedWasteUnavailableReason? = when {
+    entry?.nuked == true -> PrintedWasteUnavailableReason.MarkedUnavailable
+    zone == null -> PrintedWasteUnavailableReason.MissingQueueData
+    zone.LastUpdated <= 0 || zone.LastUpdated > nowEpochMs / 1000 -> PrintedWasteUnavailableReason.InvalidQueueTime
+    !isPrintedWasteQueueFresh(zone.LastUpdated, nowEpochMs) -> PrintedWasteUnavailableReason.StaleQueueData
+    entry?.title.isNullOrBlank() -> PrintedWasteUnavailableReason.MissingServerMapping
+    else -> null
 }
 
 internal fun shouldUsePrintedWasteQueue(

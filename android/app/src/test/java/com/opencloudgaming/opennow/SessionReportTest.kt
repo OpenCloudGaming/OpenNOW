@@ -8,6 +8,21 @@ import org.junit.Test
 
 class SessionReportTest {
     @Test
+    fun resumedSessionProfileIsNotAttributedToTheDeviceProbeOrRecovery() {
+        val requested = StreamSettings(fps = 360)
+        val active = requested.copy(fps = 60)
+        val accumulator = StreamSessionReportAccumulator(
+            StreamReportLaunchProfile("Test Game", requested, requested, active, resumedSession = true),
+            startedAtMs = 0L,
+        )
+        accumulator.record(StreamRuntimeStats(fps = 60, receivedFps = 60, decodedFps = 60))
+        val report = requireNotNull(accumulator.finish(1_000L))
+        assertTrue(report.downgrades.any { it.reasonCode == "resumed_session_profile" })
+        assertFalse(report.downgrades.any { it.reasonCode == "device_compatibility_adjustment" })
+        assertFalse(report.downgrades.any { it.reasonCode == "safe_video_recovery" })
+    }
+
+    @Test
     fun delayedNetworkSamplesDoNotDuplicateOrInterruptMediaStatistics() {
         val settings = StreamSettings(fps = 60)
         val accumulator = StreamSessionReportAccumulator(

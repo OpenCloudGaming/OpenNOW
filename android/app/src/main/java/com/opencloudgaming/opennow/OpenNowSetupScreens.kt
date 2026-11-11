@@ -1676,6 +1676,7 @@ private fun SetupStreamStatusItems(
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit,
 ) {
+    val requestWifiNamePermission = rememberRequestStreamWifiNamePermission()
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val columns = when {
             maxWidth >= 720.dp -> 4
@@ -1696,7 +1697,10 @@ private fun SetupStreamStatusItems(
                     modifier = Modifier
                         .width(itemWidth)
                         .clip(RoundedCornerShape(OpenNowRadius.md))
-                        .clickable { onSettingsChange(item.setEnabled(settings, !enabled)) },
+                        .clickable {
+                            if (item == StreamStatusItem.WifiSsid && !enabled) requestWifiNamePermission()
+                            onSettingsChange(item.setEnabled(settings, !enabled))
+                        },
                     shape = RoundedCornerShape(OpenNowRadius.md),
                     color = if (enabled) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
@@ -1734,6 +1738,9 @@ private fun SetupStreamStatusItems(
                 }
             }
         }
+    }
+    if (settings.streamStatsMetrics.wifiSsid) {
+        StreamWifiNamePermissionHint()
     }
 }
 

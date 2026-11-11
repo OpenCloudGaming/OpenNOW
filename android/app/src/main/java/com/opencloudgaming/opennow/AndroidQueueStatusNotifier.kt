@@ -5,15 +5,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.IBinder
 import android.util.Log
-import androidx.core.app.ServiceCompat
 import java.util.concurrent.atomic.AtomicLong
 
 internal const val QUEUE_CHANNEL_ID = "opennow_queue_status"
@@ -76,8 +73,8 @@ class AndroidQueueStatusNotifier(context: Context) {
         activeText = text
         val version = commandVersion.incrementAndGet()
         AndroidServiceCommandDispatcher.dispatch("queue-update") {
+            if (commandVersion.get() != version) return@dispatch
             runCatching {
-                ensureQueueNotificationChannel(appContext)
                 val intent = Intent(appContext, AndroidQueueStatusService::class.java).apply {
                     action = QUEUE_SERVICE_ACTION_UPDATE
                     putExtra(QUEUE_SERVICE_EXTRA_TITLE, title)
@@ -89,10 +86,12 @@ class AndroidQueueStatusNotifier(context: Context) {
                     appContext.startService(intent)
                 }
             }.onFailure { error ->
-                if (commandVersion.get() == version) serviceStartRequested = false
                 Log.w(QUEUE_SERVICE_TAG, "Unable to start queue foreground service", error)
+                if (commandVersion.get() != version) return@onFailure
+                serviceStartRequested = false
                 if (canPostNotifications()) {
                     runCatching {
+                        ensureQueueNotificationChannel(appContext)
                         appContext.getSystemService(NotificationManager::class.java).notify(
                             QUEUE_NOTIFICATION_ID,
                             buildQueueNotification(appContext, title, text),
@@ -109,7 +108,7 @@ class AndroidQueueStatusNotifier(context: Context) {
 
     private fun cancel(preserveReadyAlert: Boolean) {
         if (!serviceStartRequested && cancellationApplied && (preserveReadyAlert || !queueReadyAlertSent)) return
-        commandVersion.incrementAndGet()
+        val version = commandVersion.incrementAndGet()
         val startWasRequested = serviceStartRequested
         serviceStartRequested = false
         if (!preserveReadyAlert) queueReadyAlertSent = false
@@ -117,6 +116,7 @@ class AndroidQueueStatusNotifier(context: Context) {
         activeText = null
         cancellationApplied = true
         AndroidServiceCommandDispatcher.dispatch("queue-stop") {
+            if (commandVersion.get() != version) return@dispatch
             val intent = Intent(appContext, AndroidQueueStatusService::class.java).apply {
                 action = QUEUE_SERVICE_ACTION_STOP
             }
@@ -139,50 +139,19 @@ class AndroidQueueStatusNotifier(context: Context) {
 
 }
 
-class AndroidQueueStatusService : Service() {
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        runCatching {
-            when (intent?.action) {
-                QUEUE_SERVICE_ACTION_STOP -> {
-                    startQueueForeground("OpenNOW", localizedAndroidContext(this).getString(R.string.queue_status))
-                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
-                }
-                QUEUE_SERVICE_ACTION_UPDATE, null -> {
-                    val title = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TITLE) ?: "OpenNOW"
-                    val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT)
-                        ?: localizedAndroidContext(this).getString(R.string.queue_status)
-                    startQueueForeground(title, text)
-                }
-                else -> {
-                    startQueueForeground("OpenNOW", localizedAndroidContext(this).getString(R.string.queue_status))
-                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
-                }
-            }
-        }.onFailure { error ->
-            Log.e(QUEUE_SERVICE_TAG, "Queue foreground service failed to start", error)
-            stopSelf(startId)
-        }
-        return START_NOT_STICKY
-    }
+class AndroidQueueStatusService : AndroidForegroundService() {
+    override val notificationId: Int get() = QUEUE_NOTIFICATION_ID
+    override fun prepareNotificationChannel() = ensureQueueNotificationChannel(this)
 
-    override fun onTimeout(startId: Int, fgsType: Int) {
-        Log.w(QUEUE_SERVICE_TAG, "Queue foreground service timed out startId=$startId type=$fgsType; stopping")
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
-    }
+    override fun isActiveCommand(intent: Intent?): Boolean = intent?.action == QUEUE_SERVICE_ACTION_UPDATE
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun foregroundServiceType(intent: Intent?): Int = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
 
-    private fun startQueueForeground(title: String, text: String) {
-        ensureQueueNotificationChannel(this)
-        val notification = buildQueueNotification(this, title, text)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(QUEUE_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(QUEUE_NOTIFICATION_ID, notification)
-        }
+    override fun foregroundNotification(intent: Intent?): Notification {
+        val title = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TITLE) ?: "OpenNOW"
+        // Bootstrap promotion uses already-loaded resources, without reading locale preferences.
+        val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT) ?: getString(R.string.queue_status)
+        return buildQueueNotification(this, title, text)
     }
 }
 

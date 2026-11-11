@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.content.Context
+import android.text.format.DateFormat
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -101,6 +102,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.Date
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
 import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
@@ -265,7 +267,7 @@ internal fun StreamStatsPill(
 ) {
     if (metrics.enabledCount() == 0 && !keyboardButtonEnabled) return
     val compact = style == StreamStatsStyle.Compact
-    val deviceStatus = rememberCompactStreamDeviceStatus()
+    val deviceStatus = rememberCompactStreamDeviceStatus(includeWifiName = metrics.wifiSsid)
     Surface(
         modifier = modifier
             .padding(OpenNowSpacing.sm)
@@ -808,12 +810,12 @@ internal fun activeStreamModeCauseAssessment(
             "The cloud server selected ${status.displayedResolution} instead of the requested ${status.requestedResolution}. This was a server/session negotiation decision, not a change to your saved setting."
         status.resolutionSource == StreamResolutionChangeSource.ProviderOrGameModeChange ->
             "The decoded stream changed to ${status.displayedResolution} after startup without matching the server's initial mode. This points to a game or cloud-provider output-mode change."
+        status.profileChangeSource == ActiveStreamProfileChangeSource.ResumedSession ->
+            "OpenNOW resumed an existing cloud session using its previous stream settings. Start a new session to request your saved profile."
         recordedReason != null ->
             "OpenNOW recorded this recovery reason: $recordedReason"
-        status.safeVideoRecoveryActive ->
-            "The original video transport stopped progressing, so OpenNOW adjusted the local profile to keep video playing without ending the cloud session."
         else ->
-            "The live stream profile no longer matched the requested profile."
+            "The active stream profile differs from the requested profile. No video recovery event was recorded."
     }
     return ActiveStreamModeCauseAssessment(summary)
 }
@@ -830,10 +832,15 @@ internal fun activeStreamModeDeveloperReport(
     val changes = activeStreamModeDisplayChanges(status)
     val primary = activeStreamModeNoticeChanges(status).firstOrNull() ?: changes.first()
     val cause = activeStreamModeCauseAssessment(status, recoveryReason)
+    val titlePrefix = when {
+        status.profileChangeSource == ActiveStreamProfileChangeSource.ResumedSession -> "Resumed stream profile"
+        status.safeVideoRecoveryActive || status.resolutionSource != null -> "Automatic stream change"
+        else -> "Stream profile difference"
+    }
     return ActiveStreamModeDeveloperReport(
-        title = "Automatic stream change: ${primary.label} ${primary.requestedValue} to ${primary.actualValue}",
+        title = "$titlePrefix: ${primary.label} ${primary.requestedValue} to ${primary.actualValue}",
         description = buildString {
-            appendLine("OpenNOW detected an automatic stream profile change while the session was active.")
+            appendLine("OpenNOW observed a difference between the requested and active stream profiles.")
             appendLine()
             appendLine("Cause assessment:")
             appendLine(cause.summary)
@@ -939,8 +946,19 @@ private fun StreamStatsMetricItems(
             contentDescription = stringResource(R.string.stream_stats_playtime_cd, elapsed),
         )
     }
+    if (metrics.clock) {
+        StreamClockIndicator(itemModifier)
+    }
     if (metrics.connection) {
         StreamNetworkIndicator(deviceStatus, itemModifier)
+    }
+    if (metrics.wifiSsid && deviceStatus.networkKind == AndroidNetworkKind.Wifi) {
+        val ssid = deviceStatus.wifiName
+        StreamStatsText(
+            value = ssid ?: stringResource(R.string.stream_stats_wifi_ssid_unavailable),
+            modifier = itemModifier.widthIn(max = 160.dp),
+            contentDescription = ssid?.let { stringResource(R.string.stream_stats_wifi_ssid_cd, it) },
+        )
     }
     if (metrics.resolution) {
         StreamStatsText(
@@ -960,6 +978,25 @@ private fun StreamStatsMetricItems(
 
 /** Shown in place of a metric that has not been measured yet. */
 private const val NO_STAT_VALUE = "--"
+
+@Composable
+private fun StreamClockIndicator(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            // The clock needs minute precision, independently of the optional playtime timer.
+            delay(60_000L - nowMs % 60_000L)
+        }
+    }
+    val time = DateFormat.getTimeFormat(context).format(Date(nowMs))
+    StreamStatsText(
+        value = time,
+        modifier = modifier,
+        contentDescription = stringResource(R.string.stream_stats_clock_cd, time),
+    )
+}
 
 @Composable
 private fun StreamStatsText(
@@ -987,6 +1024,7 @@ private fun StreamStatsText(
         style = MaterialTheme.typography.labelSmall.numeric(),
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
     )
 }
 
@@ -1003,6 +1041,7 @@ private data class CompactStreamDeviceStatus(
     val networkKind: AndroidNetworkKind = AndroidNetworkKind.Unknown,
     val networkBars: Int? = null,
     val cellularGeneration: String? = null,
+    val wifiName: String? = null,
 )
 
 @Composable
@@ -1019,20 +1058,20 @@ internal fun rememberSessionStartBatteryPercent(sessionId: String?): Int? {
 }
 
 @Composable
-private fun rememberCompactStreamDeviceStatus(): CompactStreamDeviceStatus {
+private fun rememberCompactStreamDeviceStatus(includeWifiName: Boolean): CompactStreamDeviceStatus {
     val context = LocalContext.current
     val appContext = remember(context) { context.applicationContext }
-    var status by remember(appContext) { mutableStateOf(CompactStreamDeviceStatus()) }
-    LaunchedEffect(appContext) {
+    var status by remember(appContext, includeWifiName) { mutableStateOf(CompactStreamDeviceStatus()) }
+    LaunchedEffect(appContext, includeWifiName) {
         while (true) {
-            status = withContext(Dispatchers.IO) { readCompactStreamDeviceStatus(appContext) }
+            status = withContext(Dispatchers.IO) { readCompactStreamDeviceStatus(appContext, includeWifiName) }
             delay(COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS)
         }
     }
     return status
 }
 
-private fun readCompactStreamDeviceStatus(context: Context): CompactStreamDeviceStatus {
+private fun readCompactStreamDeviceStatus(context: Context, includeWifiName: Boolean): CompactStreamDeviceStatus {
     val diagnostics = AndroidRuntimeDiagnostics.snapshot(context)
     return CompactStreamDeviceStatus(
         batteryPercent = diagnostics.batteryPercent,
@@ -1040,6 +1079,7 @@ private fun readCompactStreamDeviceStatus(context: Context): CompactStreamDevice
         networkKind = diagnostics.networkKind,
         networkBars = diagnostics.networkSignalBars,
         cellularGeneration = diagnostics.cellularGeneration,
+        wifiName = if (includeWifiName && diagnostics.networkKind == AndroidNetworkKind.Wifi) readStreamWifiName(context) else null,
     )
 }
 

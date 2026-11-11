@@ -276,10 +276,6 @@ private fun cloudMatchPlatformName(identity: CloudMatchClientIdentity, appLaunch
         identity.platformName
     }
 
-/** Keep YES allocation aligned with its working native Android streaming path. */
-private fun CloudMatchClientIdentity.requiresNativeSessionTransport(streamingBaseUrl: String?): Boolean =
-    clientType != "BROWSER" && (this == NVIDIA_NATIVE_ANDROID_CLOUD_MATCH_IDENTITY || requiresNativeAllianceCloudMatchTransport(streamingBaseUrl))
-
 internal fun isNvidiaShieldTvDevice(
     androidTvProfile: Boolean,
     manufacturer: String?,
@@ -560,12 +556,12 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
     }
 
 /** CloudMatch's native allocation must agree with the subsequent NVST RTSP handshake. */
-private fun JsonObjectBuilder.putStreamTransportRequest(settings: StreamSettings?, nativeAndroidTransport: Boolean = false) {
+private fun JsonObjectBuilder.putStreamTransportRequest(settings: StreamSettings?) {
     val nvst = settings?.experimentalNvst == true
     if (nvst) put("streamerVersion", "14") else put("streamerVersion", 1)
     put("sdkVersion", if (nvst) "2.0" else "1.0")
     put("enhancedStreamMode", if (nvst) 0 else 1)
-    put("secureRTSPSupported", nvst || nativeAndroidTransport)
+    put("secureRTSPSupported", nvst)
     if (nvst) {
         put("requestedAudioFormat", 0)
         put("transport", JsonNull)
@@ -603,11 +599,8 @@ private fun streamSessionMetadata(
     profile: StreamRequestProfile,
     physicalDisplayResolution: Pair<Int, Int>? = null,
     streamingBaseUrl: String? = null,
-    nativeAndroidTransport: Boolean = false,
 ): JsonArray = buildJsonArray {
-    baseWebRtcSessionMetadata(streamingBaseUrl).forEach { entry ->
-        if ((!settings.experimentalNvst && !nativeAndroidTransport) || entry.jsonObject["key"]?.jsonPrimitive?.content != "GSStreamerType") add(entry)
-    }
+    baseWebRtcSessionMetadata(streamingBaseUrl, nativeTransport = settings.experimentalNvst).forEach(::add)
     val requestedResolution = profile.width to profile.height
     val (physicalWidth, physicalHeight) = physicalDisplayResolution
         ?.takeIf { (width, height) ->
@@ -722,7 +715,7 @@ internal fun buildMinimalClaimRequestBody(
                 controllerCapabilities.supportedControllerTypes.forEach { add(JsonPrimitive(it)) }
             }
             put("clientVersion", "30.0")
-            putStreamTransportRequest(settings, identity.requiresNativeSessionTransport(streamingBaseUrl))
+            putStreamTransportRequest(settings)
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
             put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
@@ -734,9 +727,9 @@ internal fun buildMinimalClaimRequestBody(
             put(
                 "metaData",
                 if (settings != null && profile != null) {
-                    streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl))
+                    streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl)
                 } else {
-                    baseWebRtcSessionMetadata(streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl))
+                    baseWebRtcSessionMetadata(streamingBaseUrl)
                 },
             )
             put("surroundAudioInfo", 0)
@@ -1270,8 +1263,16 @@ class GfnAuthRepository(
             authStore.reload()
             val restored = authStore.activeSession() ?: return@withLock null
             var session = restored
+            var clientTokenFailure: Exception? = null
             if (session.tokens.clientToken.isNullOrBlank() || isNearExpiry(session.tokens.clientTokenExpiresAt, CLIENT_TOKEN_REFRESH_WINDOW_MS)) {
-                val withClientToken = runCatching { ensureClientToken(session.tokens) }.getOrElse { session.tokens }
+                val withClientToken = try {
+                    ensureClientToken(session.tokens)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    clientTokenFailure = error
+                    session.tokens
+                }
                 if (withClientToken != session.tokens) {
                     val updatedSession = session.copy(tokens = withClientToken)
                     if (!authStore.updateSessionIfUnchanged(session, updatedSession)) {
@@ -1286,6 +1287,7 @@ class GfnAuthRepository(
                     session = session,
                     forceRefresh = forceRefresh || throwOnRefreshFailure,
                     removeExpiredSessionOnFailure = removeExpiredSessionOnFailure,
+                    clientTokenFailure = clientTokenFailure,
                 )
             } else {
                 session
@@ -1408,9 +1410,11 @@ class GfnAuthRepository(
         session: AuthSession,
         forceRefresh: Boolean,
         removeExpiredSessionOnFailure: Boolean,
+        clientTokenFailure: Exception?,
     ): AuthSession {
         val tokens = session.tokens
         val refreshErrors = mutableListOf<String>()
+        val refreshFailures = mutableListOf<Exception>().apply { clientTokenFailure?.let(::add) }
         val refreshClientIds = authenticationRefreshClientIds(
             savedClientId = tokens.authClientId,
             browserClientId = CLIENT_ID,
@@ -1429,6 +1433,7 @@ class GfnAuthRepository(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
+                    refreshFailures += error
                     refreshErrors += "client_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
                 }
             }
@@ -1443,16 +1448,17 @@ class GfnAuthRepository(
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
+                    refreshFailures += error
                     refreshErrors += "refresh_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
                 }
             }
         }
 
         val hasRefreshMechanism = !tokens.clientToken.isNullOrBlank() || !tokens.refreshToken.isNullOrBlank()
-        if (!hasRefreshMechanism) {
+        if (!hasRefreshMechanism && clientTokenFailure == null) {
             if (isExpired(tokens.expiresAt)) {
                 if (removeExpiredSessionOnFailure) {
-                    authStore.removeSession(session.user.userId)
+                    authStore.removeSessionIfUnchanged(session)
                 }
                 error("Saved session expired and has no refresh mechanism. Please log in again.")
             }
@@ -1460,11 +1466,14 @@ class GfnAuthRepository(
         }
 
         if (isExpired(tokens.expiresAt)) {
-            if (removeExpiredSessionOnFailure) {
-                authStore.removeSession(session.user.userId)
+            if (refreshCredentialsRejected(refreshFailures)) {
+                if (removeExpiredSessionOnFailure) authStore.removeSessionIfUnchanged(session)
+                error("Saved sign-in was rejected. Please log in again.")
             }
-            val detail = refreshErrors.takeIf { it.isNotEmpty() }?.joinToString(" | ")
-            error("Token refresh failed and the saved session expired. Please log in again.${detail?.let { " $it" }.orEmpty()}")
+            throw java.io.IOException(
+                "Could not refresh sign-in. Your saved account has been kept. Check your connection and try again.",
+                refreshFailures.lastOrNull(),
+            )
         }
 
         if (forceRefresh && refreshErrors.isNotEmpty()) {
@@ -1486,8 +1495,7 @@ class GfnAuthRepository(
             .post(body)
             .build()
         val (code, text) = http.awaitText(request)
-        check(code in 200..299) { "Client-token refresh failed ($code): ${text.take(400)}" }
-        return OpenNowJson.parseToJsonElement(text).jsonObject
+        return authRefreshResponse(code, text)
     }
 
     private suspend fun refreshAuthTokens(refresh: String, base: AuthTokens, authClientId: String): AuthTokens {
@@ -1502,8 +1510,7 @@ class GfnAuthRepository(
             .post(body)
             .build()
         val (code, text) = http.awaitText(request)
-        check(code in 200..299) { "Token refresh failed ($code): ${text.take(400)}" }
-        val root = OpenNowJson.parseToJsonElement(text).jsonObject
+        val root = authRefreshResponse(code, text)
         return AuthTokens(
             accessToken = requireNotNull(root.string("access_token")) { "Missing access token" },
             refreshToken = root.string("refresh_token") ?: refresh,
@@ -1939,7 +1946,8 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
         .orEmpty()
 
 internal fun catalogGameDescription(app: JsonObject): String? =
-    app.string("description") ?: app.string("shortDescription")
+    app.string("description")?.takeIf { it.isNotBlank() }
+        ?: app.string("shortDescription")?.takeIf { it.isNotBlank() }
 
 internal fun gameStoreFromVariant(variant: JsonObject, publisherNameFallback: String? = null): String {
     variant.string("appStore")?.trim()
@@ -3060,9 +3068,7 @@ class PrintedWasteRepository(
                 Region = region,
                 eta = zone.long("eta"),
             )
-        }.toMap().also {
-            check(it.isNotEmpty()) { "PrintedWaste queue returned no usable zones" }
-        }
+        }.toMap()
         return printedWasteQueueSnapshot(zones, response.headers, response.receivedWallTimeMs, response.receivedElapsedMs)
     }
 
@@ -3542,14 +3548,14 @@ class GfnSessionRepository(
                 put("clientIdentification", "GFN-PC")
                 put("deviceHashId", deviceId)
                 put("clientVersion", "30.0")
-                putStreamTransportRequest(settings, identity.requiresNativeSessionTransport(streamingBaseUrl))
+                putStreamTransportRequest(settings)
                 put("clientPlatformName", cloudMatchPlatformName(identity, appLaunchMode))
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl, identity.requiresNativeSessionTransport(streamingBaseUrl)))
+                put("metaData", streamSessionMetadata(settings, profile, physicalDisplayResolution, streamingBaseUrl))
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)

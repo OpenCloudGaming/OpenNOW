@@ -65,6 +65,18 @@ pub struct EncodedMediaFrame {
 
 pub type MediaConsumer = SyncSender<EncodedMediaFrame>;
 
+/// Independent bounded sinks prevent a stalled video decoder from starving audio.
+pub struct NvstMediaConsumers {
+    pub video: MediaConsumer,
+    pub audio: MediaConsumer,
+}
+
+impl From<MediaConsumer> for NvstMediaConsumers {
+    fn from(video: MediaConsumer) -> Self {
+        Self { audio: video.clone(), video }
+    }
+}
+
 pub fn install_crypto() {
     INSTALL_CRYPTO.call_once(|| from_feature_flags().install_process_default());
 }

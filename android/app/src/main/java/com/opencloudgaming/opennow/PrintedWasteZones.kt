@@ -62,8 +62,7 @@ internal fun printedWasteGpuTier(entry: PrintedWasteServerMappingEntry?): Printe
 /**
  * The name to show for a zone: the mapping's title, or the raw id when the mapping has no entry.
  *
- * Falling back to the id rather than to something like "Unknown" keeps a newly added server
- * selectable and still identifiable the day it appears, before the mapping catches up.
+ * The raw id still identifies a newly added server before the mapping catches up.
  */
 internal fun printedWasteZoneTitle(zoneId: String, entry: PrintedWasteServerMappingEntry?): String =
     entry?.title?.trim()?.takeIf { it.isNotEmpty() } ?: zoneId
@@ -89,7 +88,7 @@ internal fun printedWasteContinentLabel(region: String): String = when (region.u
 }
 
 /**
- * One selectable location, standing for every zone id that shares its name.
+ * One location row. Available zones that share a name are folded into one choice.
  *
  * [primary] is the id a launch actually routes to — the best of the group. [alternateCount] is how
  * many others were folded in, shown so the row does not silently hide capacity the player might
@@ -114,19 +113,23 @@ internal fun printedWasteLocations(
     mapping: Map<String, PrintedWasteServerMappingEntry>,
 ): List<PrintedWasteLocation> {
     if (zones.isEmpty()) return emptyList()
-    val maxPing = zones.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
-    val maxQueue = zones.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
+    val available = zones.filter { it.routingUrl != null }
+    val maxPing = available.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
+    val maxQueue = available.mapNotNull { it.zone?.QueuePosition }.maxOrNull()?.coerceAtLeast(1) ?: 1
     return zones
-        .groupBy { printedWasteZoneTitle(it.zoneId, mapping[it.zoneId]) }
-        .map { (title, group) ->
+        .groupBy { zone ->
+            val title = printedWasteZoneTitle(zone.zoneId, mapping[zone.zoneId])
+            title to zone.zoneId.takeIf { zone.routingUrl == null }
+        }
+        .map { (key, group) ->
             val ordered = group.sortedWith(
                 compareBy<PrintedWasteZoneOption> { printedWasteScore(it, maxPing, maxQueue) }
                     .thenBy { it.zoneId },
             )
             val primary = ordered.first()
             PrintedWasteLocation(
-                title = title,
-                region = printedWasteZoneRegion(mapping[primary.zoneId], primary.zone.Region),
+                title = key.first,
+                region = printedWasteZoneRegion(mapping[primary.zoneId], primary.zone?.Region.orEmpty()),
                 primary = primary,
                 alternateCount = ordered.size - 1,
                 // Report the best GPU anywhere in the group: the row stands for the location, and
@@ -164,10 +167,33 @@ internal fun printedWasteRegionGroups(
 
 internal data class PrintedWasteZoneOption(
     val zoneId: String,
-    val zone: PrintedWasteZone,
-    val routingUrl: String,
+    val zone: PrintedWasteZone?,
+    val routingUrl: String?,
     val pingMs: Long?,
+    val unavailableReason: PrintedWasteUnavailableReason? = null,
 )
+
+internal fun printedWasteZoneOptions(
+    queue: PrintedWasteQueueSnapshot?,
+    mapping: Map<String, PrintedWasteServerMappingEntry>,
+    regions: List<StreamRegion>,
+    pings: Map<String, Long?>,
+    queueTimeMs: Long,
+): List<PrintedWasteZoneOption> {
+    val zones = queue?.zones.orEmpty()
+    return (zones.keys + mapping.keys).filter(::isStandardPrintedWasteZone).map { zoneId ->
+        val zone = zones[zoneId]
+        val queueReason = printedWasteQueueUnavailableReason(zone, mapping[zoneId], queueTimeMs)
+        val url = if (queueReason == null) printedWasteRegionalUrl(zoneId, mapping, regions) else null
+        PrintedWasteZoneOption(
+            zoneId = zoneId,
+            zone = zone,
+            routingUrl = url,
+            pingMs = url?.let(pings::get),
+            unavailableReason = if (url == null) queueReason ?: PrintedWasteUnavailableReason.MissingRegionalRoute else null,
+        )
+    }
+}
 
 /** Whether [selected] has more measured latency than another selectable server. */
 internal fun hasHigherPingThanClosestPrintedWasteZone(
@@ -180,14 +206,15 @@ internal fun hasHigherPingThanClosestPrintedWasteZone(
 }
 
 internal fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): PrintedWasteZoneOption? {
-    if (zones.isEmpty()) return null
-    val pool = zones.filter { it.pingMs != null }.ifEmpty { zones }
+    val available = zones.filter { it.routingUrl != null }
+    if (available.isEmpty()) return null
+    val pool = available.filter { it.pingMs != null }.ifEmpty { available }
     val maxPing = pool.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
-    val maxQueue = pool.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
+    val maxQueue = pool.mapNotNull { it.zone?.QueuePosition }.maxOrNull()?.coerceAtLeast(1) ?: 1
     val queueAwareRecommendation = pool.minWithOrNull(
         compareBy<PrintedWasteZoneOption> { printedWasteScore(it, maxPing, maxQueue) }
             .thenBy { it.pingMs ?: Long.MAX_VALUE }
-            .thenBy { it.zone.QueuePosition },
+            .thenBy { it.zone?.QueuePosition },
     )
     if ((queueAwareRecommendation?.pingMs ?: 0L) <= MAX_QUEUE_AWARE_RECOMMENDED_PING_MS) {
         return queueAwareRecommendation
@@ -195,12 +222,13 @@ internal fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): P
 
     return pool.minWithOrNull(
         compareBy<PrintedWasteZoneOption> { it.pingMs ?: Long.MAX_VALUE }
-            .thenBy { it.zone.QueuePosition }
+            .thenBy { it.zone?.QueuePosition }
             .thenBy { it.zoneId },
     )
 }
 
 internal fun printedWasteScore(zone: PrintedWasteZoneOption, maxPing: Long, maxQueue: Int): Double {
+    if (zone.routingUrl == null || zone.zone == null) return Double.POSITIVE_INFINITY
     val pingScore = ((zone.pingMs ?: maxPing).toDouble() / maxPing.toDouble()) * 0.75
     val queueScore = (zone.zone.QueuePosition.toDouble() / maxQueue.toDouble()) * 0.25
     return pingScore + queueScore

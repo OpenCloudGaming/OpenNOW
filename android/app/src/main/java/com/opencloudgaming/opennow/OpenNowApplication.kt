@@ -98,6 +98,9 @@ class OpenNowApplication : Application(), SingletonImageLoader.Factory {
             // old UI-side pause replaced every newly composed card with shimmer until scrolling
             // stopped. A small fetch pool and an even smaller decode pool protect low-end devices
             // without unmounting cached images as they move in and out of the Lazy grid window.
+            // Mapping and cache-key creation precede fetching. Keep that work off the UI thread
+            // too; fetcher/decoder dispatchers alone do not move Coil's interceptor chain.
+            .interceptorCoroutineContext(Dispatchers.IO.limitedParallelism(IMAGE_FETCH_PARALLELISM))
             .fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(IMAGE_FETCH_PARALLELISM))
             .decoderCoroutineContext(Dispatchers.IO.limitedParallelism(IMAGE_DECODE_PARALLELISM))
             // Artwork that is already in memory should appear instantly; a fade on every cell makes

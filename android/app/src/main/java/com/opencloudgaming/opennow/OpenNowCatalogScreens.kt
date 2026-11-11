@@ -3278,6 +3278,7 @@ internal fun catalogCardImageUrl(
     game: GameInfo,
     tvProfile: Boolean,
     requestWidth: Int = if (tvProfile) TV_CARD_IMAGE_REQUEST_WIDTH else MOBILE_CARD_IMAGE_REQUEST_WIDTH,
+    androidSdk: Int = android.os.Build.VERSION.SDK_INT,
 ): String? {
     // Keep TV and handheld cards on the same GAME_BOX_ART source. Older caches can contain a
     // TV_BANNER in imageUrl, so apply the same validation on both surfaces and use the dedicated
@@ -3291,6 +3292,7 @@ internal fun catalogCardImageUrl(
     return optimizedNvidiaImageUrl(
         source,
         width = requestWidth,
+        androidSdk = androidSdk,
     )
 }
 
@@ -4474,16 +4476,6 @@ internal fun gameTvBannerImageUrl(context: Context, game: GameInfo?): String? {
         ?: game?.imageUrl?.takeIf { it.isNotBlank() }
         ?: return null
     return optimizedNvidiaImageUrl(url, wideImageRequestWidth(context))
-}
-
-private fun optimizedNvidiaImageUrl(url: String, width: Int): String {
-    if (!url.contains("img.nvidiagrid.net")) return url
-    val base = url
-        .substringBefore(";f=")
-        .substringBefore(";w=")
-        .substringBefore(";h=")
-        .substringBefore(";dpr=")
-    return "$base;f=webp;w=$width"
 }
 
 /**

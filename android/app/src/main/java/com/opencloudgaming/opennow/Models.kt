@@ -122,8 +122,10 @@ data class StreamStatsMetrics(
     val location: Boolean = false,
     val latency: Boolean = false,
     val packetLoss: Boolean = false,
+    val clock: Boolean = false,
+    val wifiSsid: Boolean = false,
 ) {
-    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, sessionBattery, playtime, connection, resolution, codec, location, latency, packetLoss).count { it }
+    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, sessionBattery, playtime, connection, resolution, codec, location, latency, packetLoss, clock, wifiSsid).count { it }
 }
 
 @Serializable
@@ -788,8 +790,9 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
     return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
 }
 
+// Geometry alone must never opt a user into native transport.
 internal fun StreamSettings.requiresNativeAndroidCloudMatchMode(): Boolean =
-    streamResolutionPixels(this) == parseResolutionPixels(PORTAL_STREAM_RESOLUTION)
+    experimentalNvst && streamResolutionPixels(this) == parseResolutionPixels(PORTAL_STREAM_RESOLUTION)
 
 /** Use desktop WebRTC only for profiles outside the mobile mode matrix. */
 internal fun StreamSettings.prefersDesktopWebRtcCloudMatchMode(): Boolean =
@@ -839,6 +842,12 @@ internal fun StreamSettings.toActiveStreamTransportProfile(): ActiveStreamTransp
         streamSharpeningEnabled = streamSharpeningEnabled,
     )
 
+internal enum class ActiveStreamProfileChangeSource {
+    ResumedSession,
+    LocalProfileAdjustment,
+    VideoRecovery,
+}
+
 internal data class ActiveStreamModeStatus(
     val requestedResolution: String,
     val displayedResolution: String,
@@ -846,6 +855,7 @@ internal data class ActiveStreamModeStatus(
     val serverFinalSelectedResolution: String? = null,
     val resolutionSource: StreamResolutionChangeSource? = null,
     val safeVideoRecoveryActive: Boolean = false,
+    val profileChangeSource: ActiveStreamProfileChangeSource? = null,
     val requestedProfile: ActiveStreamTransportProfile,
     val transportProfile: ActiveStreamTransportProfile,
 ) {
@@ -882,6 +892,8 @@ internal fun activeStreamModeStatus(
     decodedResolution: String?,
     serverNegotiatedResolution: String? = null,
     serverFinalSelectedResolution: String? = null,
+    resumedSession: Boolean = false,
+    recoveryReason: String? = null,
 ): ActiveStreamModeStatus? {
     val requestedPixels = streamResolutionPixels(requestedSettings)
     val requestedResolution = "${requestedPixels.first}x${requestedPixels.second}"
@@ -905,15 +917,21 @@ internal fun activeStreamModeStatus(
     }
     val requestedProfile = requestedSettings.toActiveStreamTransportProfile()
     val transportProfile = transportSettings.toActiveStreamTransportProfile()
-    val safeVideoRecoveryActive = requestedProfile != transportProfile
-    if (resolutionSource == null && !safeVideoRecoveryActive) return null
+    val profileChanged = requestedProfile != transportProfile
+    val profileChangeSource = if (!profileChanged) null else when {
+        !recoveryReason.isNullOrBlank() -> ActiveStreamProfileChangeSource.VideoRecovery
+        resumedSession -> ActiveStreamProfileChangeSource.ResumedSession
+        else -> ActiveStreamProfileChangeSource.LocalProfileAdjustment
+    }
+    if (resolutionSource == null && !profileChanged) return null
     return ActiveStreamModeStatus(
         requestedResolution = requestedResolution,
         displayedResolution = "${displayedPixels.first}x${displayedPixels.second}",
         serverNegotiatedResolution = negotiatedPixels?.let { "${it.first}x${it.second}" },
         serverFinalSelectedResolution = finalSelectedPixels?.let { "${it.first}x${it.second}" },
         resolutionSource = resolutionSource,
-        safeVideoRecoveryActive = safeVideoRecoveryActive,
+        safeVideoRecoveryActive = profileChangeSource == ActiveStreamProfileChangeSource.VideoRecovery,
+        profileChangeSource = profileChangeSource,
         requestedProfile = requestedProfile,
         transportProfile = transportProfile,
     )
@@ -1828,8 +1846,8 @@ internal fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
     return left.copy(
         uuid = left.uuid ?: right.uuid,
         launchAppId = left.launchAppId ?: right.launchAppId,
-        description = left.description ?: right.description,
-        longDescription = left.longDescription ?: right.longDescription,
+        description = left.description?.takeIf { it.isNotBlank() } ?: right.description,
+        longDescription = left.longDescription?.takeIf { it.isNotBlank() } ?: right.longDescription,
         imageUrl = left.imageUrl ?: right.imageUrl,
         tvCardImageUrl = left.tvCardImageUrl ?: right.tvCardImageUrl,
         screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,

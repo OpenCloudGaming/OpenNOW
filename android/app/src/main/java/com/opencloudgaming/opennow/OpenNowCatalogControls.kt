@@ -530,24 +530,15 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
             delay((nextExpiry - now).coerceIn(1, 60_000))
         }
     }
-    val zones = remember(state.printedWasteQueue, state.printedWasteMapping, state.printedWastePings, state.regions, queueTimeMs) {
-        queue?.zones.orEmpty()
-            .mapNotNull { (zoneId, zone) ->
-                val routingUrl = selectablePrintedWasteRegionalUrl(zoneId, zone, state.printedWasteMapping, state.regions, queueTimeMs)
-                    ?: return@mapNotNull null
-                PrintedWasteZoneOption(
-                    zoneId = zoneId,
-                    zone = zone,
-                    routingUrl = routingUrl,
-                    pingMs = state.printedWastePings[routingUrl],
-                )
-            }
+    val zones = remember(queue, state.printedWasteMapping, state.printedWastePings, state.regions, queueTimeMs) {
+        printedWasteZoneOptions(queue, state.printedWasteMapping, state.regions, state.printedWastePings, queueTimeMs)
     }
     val autoZone = remember(zones) { recommendedPrintedWasteZone(zones) }
-    // One row per physical location rather than per server id — see PrintedWasteZones.kt.
+    // Available zones share location rows. Disabled zones keep their own reason and server id.
     val regionGroups = remember(zones, state.printedWasteMapping) {
-        val maxPing = zones.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
-        val maxQueue = zones.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
+        val available = zones.filter { it.routingUrl != null }
+        val maxPing = available.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
+        val maxQueue = available.mapNotNull { it.zone?.QueuePosition }.maxOrNull()?.coerceAtLeast(1) ?: 1
         printedWasteRegionGroups(
             printedWasteLocations(zones, state.printedWasteMapping),
             maxPing = maxPing,
@@ -562,17 +553,26 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
         val autoTitle = autoZone?.let {
             printedWasteZoneTitle(it.zoneId, state.printedWasteMapping[it.zoneId])
         }
-        locations.firstOrNull { it.title == autoTitle }
+        locations.firstOrNull { it.title == autoTitle && it.primary.routingUrl != null }
     }
     var selectedZoneId by remember(game.id, locations) {
         mutableStateOf<String?>((autoLocation ?: locations.firstOrNull())?.primary?.zoneId)
     }
-    val selectedZone = locations.firstOrNull { it.primary.zoneId == selectedZoneId }?.primary ?: autoZone
-    val selectableZones = remember(locations) { locations.map { it.primary } }
+    val selectedZone = locations.firstOrNull { it.primary.zoneId == selectedZoneId }?.primary
+        ?.takeIf { it.routingUrl != null }
+    val selectableZones = remember(locations) { locations.map { it.primary }.filter { it.routingUrl != null } }
     var pendingHigherPingLaunch by remember(game.id) {
         mutableStateOf<PrintedWasteZoneOption?>(null)
     }
     var dismissHigherPingWarning by remember(game.id) { mutableStateOf(false) }
+    fun launchIfAvailable(zone: PrintedWasteZoneOption) {
+        val url = zone.routingUrl
+        if (queue != null && url != null && isPrintedWasteQueueFresh(zone.zone?.LastUpdated ?: 0L, queue.nowEpochMs())) {
+            onLaunch(url)
+        } else {
+            onRetry()
+        }
+    }
     val launchSelectedZone: () -> Unit = {
         selectedZone?.let { zone ->
             if (
@@ -581,10 +581,8 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
             ) {
                 dismissHigherPingWarning = false
                 pendingHigherPingLaunch = zone
-            } else if (queue != null && isPrintedWasteQueueFresh(zone.zone.LastUpdated, queue.nowEpochMs())) {
-                onLaunch(zone.routingUrl)
             } else {
-                onRetry()
+                launchIfAvailable(zone)
             }
         }
     }
@@ -640,7 +638,6 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
                             autoLocation = autoLocation,
                             showRecommendedCard = !LocalSpaceUiPresentation.current,
                             onSelectZone = { selectedZoneId = it },
-                            onRetry = onRetry,
                             onDismiss = onDismiss,
                             onDefault = { onLaunch(null) },
                             onLaunch = launchSelectedZone,
@@ -674,7 +671,6 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
                             autoLocation = autoLocation,
                             showRecommendedCard = !LocalSpaceUiPresentation.current,
                             onSelectZone = { selectedZoneId = it },
-                            onRetry = onRetry,
                             onDismiss = onDismiss,
                             onDefault = { onLaunch(null) },
                             onLaunch = launchSelectedZone,
@@ -729,7 +725,7 @@ internal fun PrintedWasteSelectorContent(state: OpenNowUiState, game: GameInfo, 
                         }
                         dismissHigherPingWarning = false
                         pendingHigherPingLaunch = null
-                        if (queue != null && isPrintedWasteQueueFresh(zone.zone.LastUpdated, queue.nowEpochMs())) onLaunch(zone.routingUrl) else onRetry()
+                        launchIfAvailable(zone)
                     },
                 ) {
                     Text(stringResource(R.string.action_ok))
@@ -780,7 +776,6 @@ private fun PrintedWasteOptionsColumn(
     autoLocation: PrintedWasteLocation?,
     showRecommendedCard: Boolean,
     onSelectZone: (String) -> Unit,
-    onRetry: () -> Unit,
     onDismiss: () -> Unit,
     onDefault: () -> Unit,
     onLaunch: () -> Unit,
@@ -790,7 +785,6 @@ private fun PrintedWasteOptionsColumn(
     val zoneListFocusRequester = remember { FocusRequester() }
     val defaultFocusRequester = remember { FocusRequester() }
     val launchFocusRequester = remember { FocusRequester() }
-    var zoneListFocused by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun selectZoneAt(index: Int) {
         val next = locations.getOrNull(index) ?: return
@@ -805,12 +799,8 @@ private fun PrintedWasteOptionsColumn(
             zoneListState.animateScrollToItem(index + headingsAbove)
         }
     }
-    LaunchedEffect(state.printedWasteLoading, state.printedWasteError, locations.size) {
-        val initialFocusRequester = if (
-            !state.printedWasteLoading &&
-            state.printedWasteError == null &&
-            locations.isNotEmpty()
-        ) {
+    LaunchedEffect(state.printedWasteLoading, autoLocation != null) {
+        val initialFocusRequester = if (!state.printedWasteLoading && autoLocation != null) {
             launchFocusRequester
         } else {
             defaultFocusRequester
@@ -825,18 +815,11 @@ private fun PrintedWasteOptionsColumn(
                     Text(stringResource(R.string.catalog_checking_queues), color = TextMuted)
                 }
             }
-        } else if (state.printedWasteError != null) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(state.printedWasteError, color = Color(0xffff9f9f))
-                    OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
-                }
-            }
         } else {
-            if (showRecommendedCard) {
-                autoLocation?.let {
-                    RecommendedPrintedWasteCard(it)
-                }
+            if (autoLocation == null) {
+                Text(stringResource(R.string.catalog_queue_use_default), color = TextMuted, style = MaterialTheme.typography.bodySmall)
+            } else if (showRecommendedCard) {
+                RecommendedPrintedWasteCard(autoLocation)
             }
             var listFocused by remember { mutableStateOf(false) }
             LazyColumn(
@@ -871,7 +854,8 @@ private fun PrintedWasteOptionsColumn(
                                         selectZoneAt(selectedIndex + 1)
                                         true
                                     } else {
-                                        runCatching { launchFocusRequester.requestFocus() }.isSuccess
+                                        val action = if (selectedZone == null) defaultFocusRequester else launchFocusRequester
+                                        action.requestFocus()
                                     }
                                 }
                                 else -> false
@@ -911,7 +895,13 @@ private fun PrintedWasteOptionsColumn(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             if (LocalSpaceUiPresentation.current) {
                 SpaceControl(stringResource(R.string.action_cancel), Modifier.weight(1f), minHeight = 52.dp, onClick = onDismiss)
-                SpaceControl(stringResource(R.string.store_selector_default), Modifier.weight(1f).focusRequester(defaultFocusRequester), minHeight = 52.dp, onClick = onDefault)
+                SpaceControl(
+                    stringResource(R.string.store_selector_default),
+                    Modifier.weight(1f).focusRequester(defaultFocusRequester)
+                        .focusProperties { if (!state.printedWasteLoading) up = zoneListFocusRequester },
+                    minHeight = 52.dp,
+                    onClick = onDefault,
+                )
                 SpaceControl(stringResource(R.string.action_launch), Modifier.weight(1f).focusRequester(launchFocusRequester).focusProperties { up = zoneListFocusRequester },
                     filled = true, enabled = !state.printedWasteLoading && selectedZone != null, onClick = onLaunch)
             } else {
@@ -920,7 +910,8 @@ private fun PrintedWasteOptionsColumn(
                 onClick = onDefault,
                 modifier = Modifier
                     .weight(1f)
-                    .focusRequester(defaultFocusRequester),
+                    .focusRequester(defaultFocusRequester)
+                    .focusProperties { if (!state.printedWasteLoading) up = zoneListFocusRequester },
             ) {
                 Text(stringResource(R.string.store_selector_default), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -942,6 +933,7 @@ private fun PrintedWasteOptionsColumn(
 @Composable
 private fun RecommendedPrintedWasteCard(location: PrintedWasteLocation) {
     val zoneOption = location.primary
+    val zone = requireNotNull(zoneOption.zone)
     Surface(
         contentColor = TextPrimary,
         modifier = Modifier.fillMaxWidth(),
@@ -980,8 +972,8 @@ private fun RecommendedPrintedWasteCard(location: PrintedWasteLocation) {
             )
             QueueMetricPill(
                 stringResource(R.string.queue_metric_ahead),
-                zoneOption.zone.QueuePosition.toString(),
-                queueColor(zoneOption.zone.QueuePosition),
+                zone.QueuePosition.toString(),
+                queueColor(zone.QueuePosition),
             )
         }
     }
@@ -997,7 +989,7 @@ private fun RecommendedPrintedWasteCard(location: PrintedWasteLocation) {
 @Composable
 private fun printedWasteLocationDetail(location: PrintedWasteLocation): String {
     val parts = buildList {
-        add(location.region)
+        if (location.region.isNotBlank()) add(location.region)
         location.gpuTier?.let { add(it.label) }
         if (location.alternateCount > 0) {
             add(pluralStringResource(R.plurals.queue_location_servers, location.alternateCount + 1, location.alternateCount + 1))
@@ -1018,27 +1010,28 @@ private fun PrintedWasteLocationRow(
     val space = LocalSpaceUiPresentation.current
     val motion = if (space) rememberSpaceInteraction(focused) else null
     val zoneOption = location.primary
-    val zone = zoneOption.zone
+    val available = zoneOption.routingUrl != null
     val detail = printedWasteLocationDetail(location)
     Box(Modifier.fillMaxWidth()) {
         Surface(
-        contentColor = TextPrimary,
+            contentColor = if (available) TextPrimary else TextMuted,
             modifier = Modifier
                 .fillMaxWidth()
                 .then(motion?.modifier ?: Modifier)
-                .then(if (motion != null) Modifier.hoverable(motion.source) else Modifier)
+                .then(if (motion != null && available) Modifier.hoverable(motion.source) else Modifier)
                 .focusProperties { canFocus = false }
-                .then(if (motion != null) Modifier.clickable(interactionSource = motion.source, indication = null, onClick = onClick)
-                    else Modifier.clickable(onClick = onClick)),
+                .then(if (motion != null) Modifier.clickable(
+                    interactionSource = motion.source, indication = null, enabled = available, onClick = onClick,
+                ) else Modifier.clickable(enabled = available, onClick = onClick)),
             shape = RoundedCornerShape(if (space) 4.dp else 12.dp),
             color = if (focused) {
                 Color.White.copy(alpha = 0.16f)
-            } else if (selected) {
+            } else if (selected && available) {
                 LocalSelectionTintColor.current.copy(alpha = 0.16f)
             } else {
                 PanelAlt
             },
-            tonalElevation = if (selected) 2.dp else 0.dp,
+            tonalElevation = if (selected && available) 2.dp else 0.dp,
             border = if (!space && selected && listFocused && !liveSelectedOutlines) {
                 BorderStroke(2.dp, LocalSelectionTintColor.current)
             } else {
@@ -1051,19 +1044,36 @@ private fun PrintedWasteLocationRow(
                     Text(
                         location.title,
                         fontWeight = FontWeight.Bold,
-                        color = if (selected) LocalSelectionTintColor.current else TextPrimary,
+                        color = when {
+                            !available -> TextMuted
+                            selected -> LocalSelectionTintColor.current
+                            else -> TextPrimary
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        detail,
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (available) {
+                        Text(
+                            detail,
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else {
+                        if (location.title != zoneOption.zoneId) {
+                            Text(zoneOption.zoneId, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            stringResource(requireNotNull(zoneOption.unavailableReason).labelRes()),
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
-                if (compact) {
+                if (!available) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), content = nameBlock)
+                } else if (compact) {
                     Column(
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -1095,7 +1105,7 @@ private fun PrintedWasteLocationRow(
             }
         }
         ControllerFocusFrame(
-            visible = !space && shouldShowActiveSelectionOutline(selected, liveSelectedOutlines),
+            visible = !space && shouldShowActiveSelectionOutline(selected && (available || focused), liveSelectedOutlines),
             cornerRadius = 12.dp,
             tint = LocalActiveSelectionColor.current,
             secondaryTint = LocalActiveSelectionSecondaryColor.current,
@@ -1103,9 +1113,18 @@ private fun PrintedWasteLocationRow(
     }
 }
 
+private fun PrintedWasteUnavailableReason.labelRes(): Int = when (this) {
+    PrintedWasteUnavailableReason.MarkedUnavailable -> R.string.catalog_queue_server_unavailable
+    PrintedWasteUnavailableReason.MissingQueueData -> R.string.catalog_queue_data_missing
+    PrintedWasteUnavailableReason.InvalidQueueTime -> R.string.catalog_queue_time_invalid
+    PrintedWasteUnavailableReason.StaleQueueData -> R.string.catalog_queue_data_stale
+    PrintedWasteUnavailableReason.MissingServerMapping -> R.string.catalog_queue_mapping_missing
+    PrintedWasteUnavailableReason.MissingRegionalRoute -> R.string.catalog_queue_route_missing
+}
+
 @Composable
 private fun PrintedWasteZoneMetrics(zoneOption: PrintedWasteZoneOption) {
-    val zone = zoneOption.zone
+    val zone = requireNotNull(zoneOption.zone)
     QueueMetricPill(
         stringResource(R.string.stream_statusbar_metric_ping),
         zoneOption.pingMs?.let { "$it ms" } ?: "--",

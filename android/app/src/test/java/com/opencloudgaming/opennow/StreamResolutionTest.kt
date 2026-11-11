@@ -215,12 +215,14 @@ class StreamResolutionTest {
             colorQuality = ColorQuality.TenBit420,
         )
         val recovery = requested.androidSafeVideoFallback()
+        val reason = "AV1 was requested but WebRTC did not negotiate it; restarting with safe H264 profile"
 
         val status = activeStreamModeStatus(
             requestedSettings = requested,
             transportSettings = recovery,
             decodedResolution = "3840x2160",
             serverNegotiatedResolution = "3840x2160",
+            recoveryReason = reason,
         )
 
         assertEquals(null, status?.resolutionSource)
@@ -237,7 +239,6 @@ class StreamResolutionTest {
             status?.let(::activeStreamModeDisplayChanges)?.first(),
         )
         assertFalse(status?.let(::activeStreamModeDisplayChanges).orEmpty().any { it.label == "Resolution" })
-        val reason = "AV1 was requested but WebRTC did not negotiate it; restarting with safe H264 profile"
         assertEquals(
             "WebRTC could not negotiate the requested AV1 codec for this connection, so OpenNOW retried the local video transport with H264.",
             status?.let { activeStreamModeCauseAssessment(it, reason).summary },
@@ -246,6 +247,38 @@ class StreamResolutionTest {
         assertEquals("Automatic stream change: Codec AV1 to H264", report?.title)
         assertTrue(report?.description.orEmpty().contains("- Codec: AV1 -> H264"))
         assertTrue(report?.description.orEmpty().contains("Recorded recovery event:"))
+    }
+
+    @Test
+    fun resumingSixtyFpsSessionDoesNotInventA360FpsVideoStall() {
+        val requested = StreamSettings(fps = 360)
+        val status = requireNotNull(activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = requested.copy(fps = 60),
+            decodedResolution = "1920x1080",
+            resumedSession = true,
+        ))
+        assertFalse(status.safeVideoRecoveryActive)
+        assertEquals(ActiveStreamProfileChangeSource.ResumedSession, status.profileChangeSource)
+        val report = activeStreamModeDeveloperReport(status, null)
+        assertEquals("Resumed stream profile: FPS 360 to 60", report.title)
+        assertTrue(report.description.contains("existing cloud session"))
+        assertFalse(report.description.contains("stopped progressing"))
+        assertFalse(report.description.contains("Recorded recovery event"))
+    }
+
+    @Test
+    fun profileMismatchWithoutRecordedRecoveryUsesNeutralCause() {
+        val requested = StreamSettings(fps = 120)
+        val status = requireNotNull(activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = requested.copy(fps = 60),
+            decodedResolution = "1920x1080",
+            recoveryReason = " ",
+        ))
+        assertFalse(status.safeVideoRecoveryActive)
+        assertEquals(ActiveStreamProfileChangeSource.LocalProfileAdjustment, status.profileChangeSource)
+        assertTrue(activeStreamModeCauseAssessment(status, null).summary.contains("No video recovery event"))
     }
 
     @Test
@@ -482,14 +515,15 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun freePlanPhoneResolutionFallbackPreservesAspectAndUsesAndroidIdentity() {
+    fun freePlanPhoneResolutionFallbackPreservesAspectWithoutEnablingNvst() {
         val adjusted = StreamSettings(resolution = "2340x1080", aspectRatio = "19.5:9", fps = 120)
             .eligibleForAndroidLaunch(SubscriptionInfo(membershipTier = "FREE"), null, androidTvProfile = false)
 
         assertEquals("1376x640", adjusted.resolution)
         assertEquals("19.5:9", adjusted.aspectRatio)
         assertEquals(60, adjusted.fps)
-        assertTrue(adjusted.requiresNativeAndroidCloudMatchMode())
+        assertFalse(adjusted.requiresNativeAndroidCloudMatchMode())
+        assertTrue(adjusted.copy(experimentalNvst = true).requiresNativeAndroidCloudMatchMode())
     }
 
     @Test

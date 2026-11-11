@@ -17,8 +17,11 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.collectLatest
@@ -296,6 +299,8 @@ data class OpenNowUiState(
     val streamSession: SessionInfo? = null,
     val manuallySelectedServerForReport: Boolean = false,
     val activeStreamSettings: StreamSettings? = null,
+    val resumedStreamSession: Boolean = false,
+    val streamVideoRecoveryReason: String? = null,
     val streamInputModeAtLaunch: StreamInputMode? = null,
     val awaitingLaunchInputModeChoice: Boolean = false,
     val streamGame: GameInfo? = null,
@@ -319,7 +324,6 @@ data class OpenNowUiState(
     val printedWasteMapping: Map<String, PrintedWasteServerMappingEntry> = emptyMap(),
     val printedWastePings: Map<String, Long?> = emptyMap(),
     val printedWasteLoading: Boolean = false,
-    val printedWasteError: String? = null,
     val appMessage: AppMessage? = null,
     val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
     val dismissedAndroidUpdateNoticeKey: String? = null,
@@ -474,7 +478,9 @@ private fun List<GameInfo>.withHydratedGameDetails(details: GameInfo): List<Game
 }
 
 internal fun shouldHydrateGameDetails(game: GameInfo): Boolean =
-    game.genres.isEmpty() && !game.uuid.isNullOrBlank()
+    !game.uuid.isNullOrBlank() &&
+        (game.genres.isEmpty() ||
+            (game.description.isNullOrBlank() && game.longDescription.isNullOrBlank()))
 
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
     private val openNowApplication = application as OpenNowApplication
@@ -593,6 +599,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var gamesJob: Job? = null
     private var gameDetailsJob: Job? = null
     private var launchJob: Job? = null
+    private var printedWasteLoadJob: Job? = null
     private var activeSubscriptionJob: Job? = null
     private var pendingActiveSessionLaunch: PendingActiveSessionLaunch? = null
     private var launchInputModeChoice: CompletableDeferred<LaunchInputModeChoice>? = null
@@ -603,6 +610,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var bugReportUpdateCheckActive: Boolean = false
     private var settingsRefreshJob: Job? = null
     private var authRefreshJob: Job? = null
+    private var accountLinkRefreshJob: Job? = null
     private var catalogRetryJob: Job? = null
     /** Handed to [refreshAfterAuth] so startup parses the cache once, not twice. */
     @Volatile
@@ -1674,17 +1682,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             val snapshot = state.value
-            val summaryHeader = diagnosticSummaryHeader(snapshot)
-            val sanitizedLog = sanitizedDebugLogText()
-            val payload = sanitizeDiagnosticExport(
-                buildString {
-                    appendLine(summaryHeader)
-                    appendLine()
-                    append(sanitizedLog)
-                },
-            )
-            runCatching { uploadAndroidDiagnosticPaste(http, payload) }
-                .onSuccess { pasteUrl ->
+            runCatching {
+                // Exporting the log already uses a worker, but its continuation returns to Main.
+                // Header redaction and the final full-payload scan must stay off Main as well.
+                withContext(Dispatchers.IO) {
+                    val summaryHeader = diagnosticSummaryHeader(snapshot)
+                    val sanitizedLog = sanitizedDebugLogText()
+                    val payload = sanitizeDiagnosticExport(
+                        buildString {
+                            appendLine(summaryHeader)
+                            appendLine()
+                            append(sanitizedLog)
+                        },
+                    )
+                    summaryHeader to uploadAndroidDiagnosticPaste(http, payload)
+                }
+            }
+                .onSuccess { (summaryHeader, pasteUrl) ->
                     _state.update {
                         it.copy(
                             diagnosticShare = DiagnosticShareState(
@@ -2465,20 +2479,30 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun refreshAccountConnectors(session: AuthSession) {
+    private suspend fun refreshAccountConnectors(session: AuthSession): List<AccountConnector>? =
         accountConnectorRefreshMutex.withLock {
+            if (!state.value.authSession.isSameAuthAccount(session)) return@withLock null
             val token = accountConnectorAuthToken(session)
+            if (!state.value.authSession.isSameAuthAccount(session)) return@withLock null
             _state.update { it.copy(loadingAccountConnectors = true) }
-            runCatching { withTimeout(15_000L) { accountConnectorRepository.fetchConnectors(token) } }
+            val result = runCatching { withTimeout(15_000L) { accountConnectorRepository.fetchConnectors(token) } }
                 .onSuccess { connectors ->
-                    _state.update { it.copy(accountConnectors = connectors, loadingAccountConnectors = false) }
+                    _state.update {
+                        if (it.authSession.isSameAuthAccount(session)) {
+                            it.copy(accountConnectors = connectors, loadingAccountConnectors = false)
+                        } else it
+                    }
                 }
                 .onFailure { error ->
-                    if (error is CancellationException) return@onFailure
-                    _state.update { it.copy(loadingAccountConnectors = false, error = error.message ?: "Failed to load account connections") }
+                    if (error is CancellationException) throw error
+                    _state.update {
+                        if (it.authSession.isSameAuthAccount(session)) {
+                            it.copy(loadingAccountConnectors = false, error = error.message ?: "Failed to load account connections")
+                        } else it
+                    }
                 }
+            result.getOrNull()
         }
-    }
 
     private suspend fun refreshSettingsAccountData(session: AuthSession) {
         val token = accountConnectorAuthToken(session)
@@ -2513,14 +2537,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun connectAccountConnector(store: String, openUrl: (String) -> Unit) {
         val session = state.value.authSession ?: return
+        val initialConnectors = state.value.accountConnectors
         viewModelScope.launch {
             val token = accountConnectorAuthToken(session)
             _state.update { it.copy(connectorActionStore = store, error = null) }
             runCatching { withTimeout(20_000L) { accountConnectorRepository.loginUrl(store, token) } }
                 .onSuccess { url ->
+                    if (!state.value.authSession.isSameAuthAccount(session)) return@onSuccess
                     _state.update { it.copy(connectorActionStore = null) }
                     openUrl(url)
-                    refreshAccountConnectorsAfterLinking()
+                    refreshAccountConnectorsAfterLinking(session, store, initialConnectors)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
@@ -2540,6 +2566,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("auth", "Account token refresh failed error=${error.debugMessage()}")
             },
         )
+        if (!latestSession.isSameAuthAccount(session)) throw CancellationException("The signed-in account changed")
         return latestSession.tokens.idToken ?: latestSession.tokens.accessToken
     }
 
@@ -2557,13 +2584,43 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return refreshed.tokens.idToken ?: refreshed.tokens.accessToken
     }
 
-    private fun refreshAccountConnectorsAfterLinking() {
-        viewModelScope.launch {
-            repeat(6) { attempt ->
-                delay(if (attempt == 0) 5_000L else 10_000L)
-                val session = state.value.authSession ?: return@launch
-                refreshAccountConnectors(session)
-            }
+    private fun refreshAccountConnectorsAfterLinking(
+        session: AuthSession,
+        store: String,
+        initialConnectors: List<AccountConnector>,
+    ) {
+        accountLinkRefreshJob?.cancel()
+        val baseUrl = effectiveStreamingBaseUrl(session)
+        val isCurrentScope = {
+            state.value.authSession.isSameAuthAccount(session) &&
+                state.value.authSession?.let(::effectiveStreamingBaseUrl) == baseUrl
+        }
+        accountLinkRefreshJob = viewModelScope.launch {
+            refreshLibraryAfterAccountLink(
+                store = store,
+                initialConnectors = initialConnectors,
+                isCurrentScope = isCurrentScope,
+                pause = { delay(it) },
+                loadConnectors = { refreshAccountConnectors(session) },
+                refreshLibrary = refresh@{
+                    try {
+                        val currentSession = state.value.authSession ?: return@refresh
+                        val token = accountConnectorAuthToken(currentSession)
+                        if (isCurrentScope()) {
+                            val library = withContext(Dispatchers.IO) {
+                                catalogRepository.fetchLibraryGames(token, baseUrl, isCurrentScope).also {
+                                    if (isCurrentScope()) catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, it)
+                                }
+                            }
+                            _state.update { if (isCurrentScope()) it.copy(libraryGames = library) else it }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        recordDebugEvent("catalog", "Post-link library refresh failed; keeping saved library error=${error.debugMessage()}")
+                    }
+                },
+            )
         }
     }
 
@@ -2759,7 +2816,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         streamSettingsOverride: StreamSettings? = null,
     ) {
         if (state.value.streamStatus == "stopping") return
-        if (launchJob?.isActive == true) {
+        if (launchJob?.isActive == true || printedWasteLoadJob?.isActive == true) {
             recordDebugEvent("launch", "Ignored play request while another launch is active game=${game.title}")
             return
         }
@@ -2908,7 +2965,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     pendingPrintedWasteGame = null,
                     pendingLaunchRecovery = null,
                     activeSessionDecision = null,
-                    printedWasteError = null,
                     printedWastePings = emptyMap(),
                     sessionReport = null,
                 )
@@ -3134,7 +3190,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         selectedSettings: StreamSettings,
         eligibleSettings: StreamSettings,
         initialSettings: StreamSettings,
+        resumedSession: Boolean = false,
     ) {
+        _state.update { it.copy(resumedStreamSession = resumedSession, streamVideoRecoveryReason = null) }
         if (!sessionReportFinalizedForStop && diagnosticStreamHistory.capture().samples.isNotEmpty()) {
             retainMeasuredStream(streamSessionReportAccumulator?.finish(System.currentTimeMillis()))
         }
@@ -3147,6 +3205,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             selectedSettings = selectedSettings,
             eligibleSettings = eligibleSettings,
             initialSettings = initialSettings,
+            resumedSession = resumedSession,
         )
         streamSessionReportAccumulator = null
         streamRuntimeDiagnosticsSampler.reset()
@@ -3163,6 +3222,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             selectedSettings = snapshot.settings.stream,
             eligibleSettings = initialSettings,
             initialSettings = initialSettings,
+            resumedSession = snapshot.resumedStreamSession,
         ).also { streamReportLaunchProfile = it }
         streamSessionReportAccumulator = StreamSessionReportAccumulator(profile, startedAtMs = nowMs)
         streamRuntimeDiagnosticsSampler.reset()
@@ -3229,6 +3289,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         )
         launchJob?.cancel()
         launchJob = null
+        if (beforeStop.pendingPrintedWasteGame != null) dismissPrintedWasteSelector()
         pendingActiveSessionLaunch = null
         // Stop local retries before awaiting CloudMatch's DELETE response. The cloud session
         // remains available to the request below, but is no longer eligible for attachment.
@@ -3295,10 +3356,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshPrintedWasteQueues() {
         val game = state.value.pendingPrintedWasteGame ?: return
-        recordDebugEvent("queue", "Refreshing PrintedWaste queues game=${game.title}")
-        viewModelScope.launch {
-            loadPrintedWasteQueue(game)
-        }
+        if (printedWasteLoadJob?.isActive == true) return
+        startPrintedWasteQueueLoad(game)
     }
 
     fun minimizeStreamLaunch() {
@@ -3489,6 +3548,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     selectedSettings = state.value.settings.stream,
                     eligibleSettings = streamSettingsBeforeDeviceAdjustment(),
                     initialSettings = resumeSettings,
+                    resumedSession = true,
                 )
                 recordDebugEvent("queue", "Resume found active ${active.debugSummary()} base=${hostForDebug(baseUrl)} settings=${resumeSettings.debugSummary()}")
                 val matchingGame = gameForActiveSession(active)
@@ -3549,6 +3609,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 selectedSettings = state.value.settings.stream,
                 eligibleSettings = streamSettingsBeforeDeviceAdjustment(),
                 initialSettings = resumeSettings,
+                resumedSession = true,
             )
             _state.update {
                 it.copy(
@@ -3615,13 +3676,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             refreshPrintedWasteQueues()
             return
         }
+        printedWasteLoadJob?.cancel()
         recordDebugEvent("queue", "PrintedWaste selection game=${game.title} zone=${hostForDebug(zoneUrl)} auto=${zoneUrl == null}")
         launchJob?.cancel()
         launchJob = null
         _state.update {
             it.copy(
                 pendingPrintedWasteGame = null,
-                printedWasteError = null,
                 printedWasteLoading = false,
             )
         }
@@ -3690,11 +3751,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun dismissPrintedWasteSelector() {
+        printedWasteLoadJob?.cancel()
         _state.update {
             it.copy(
                 pendingPrintedWasteGame = null,
                 printedWasteLoading = false,
-                printedWasteError = null,
             )
         }
     }
@@ -3869,7 +3930,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             if (current.streamSession == null || current.streamStatus in setOf("idle", "stopping")) {
                 current
             } else {
-                current.copy(activeStreamSettings = fallbackSettings)
+                current.copy(activeStreamSettings = fallbackSettings, streamVideoRecoveryReason = reason)
             }
         }
         streamSessionReportAccumulator?.recordRecovery(reason, fallbackSettings)
@@ -3893,6 +3954,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             status.serverFinalSelectedResolution.orEmpty(),
             status.resolutionSource?.name.orEmpty(),
             status.safeVideoRecoveryActive.toString(),
+            status.profileChangeSource?.name.orEmpty(),
             status.transportCodec.name,
         ).joinToString("|")
         if (!runtimeResolutionNoticeKeys.add(noticeKey)) return
@@ -3904,7 +3966,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val recovery = if (status.safeVideoRecoveryActive) {
             " clientRecovery=safe-${status.transportCodec.name}"
         } else {
-            ""
+            " profileSource=${status.profileChangeSource?.name ?: "server"}"
         }
         recordDebugEvent(
             "stream",
@@ -4921,98 +4983,82 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private suspend fun showPrintedWasteSelector(game: GameInfo) {
+    private fun showPrintedWasteSelector(game: GameInfo) {
         recordDebugEvent("queue", "Loading PrintedWaste selector game=${game.title}")
         _state.update {
             it.copy(
                 pendingStoreChoiceGame = null,
                 pendingPrintedWasteGame = game,
                 printedWasteLoading = true,
-                printedWasteError = null,
                 printedWasteQueue = null,
                 printedWasteMapping = emptyMap(),
                 printedWastePings = emptyMap(),
             )
         }
-        loadPrintedWasteQueue(game)
+        startPrintedWasteQueueLoad(game)
     }
 
-    private suspend fun loadPrintedWasteQueue(game: GameInfo) {
-        recordDebugEvent("queue", "Fetching PrintedWaste queue data game=${game.title}")
-        _state.update {
-            it.copy(
-                pendingStoreChoiceGame = null,
-                pendingPrintedWasteGame = game,
-                printedWasteLoading = true,
-                printedWasteError = null,
-            )
+    private fun startPrintedWasteQueueLoad(game: GameInfo) {
+        printedWasteLoadJob?.cancel()
+        val auth = state.value.authSession ?: run {
+            dismissPrintedWasteSelector()
+            return
         }
-        runCatching {
-            coroutineScope {
-                val auth = state.value.authSession ?: error("No GeForce NOW account is active")
-                val token = auth.tokens.idToken ?: auth.tokens.accessToken
-                val queue = async { printedWasteRepository.fetchQueue() }
-                val mapping = async { printedWasteRepository.fetchServerMapping() }
-                val providerRegions = async {
+        val cachedRegions = state.value.regions
+        _state.update { it.copy(printedWasteLoading = true) }
+        printedWasteLoadJob = viewModelScope.launch {
+            val token = auth.tokens.idToken ?: auth.tokens.accessToken
+            val queueRequest = async { fetchPrintedWasteSelectorData("queue", printedWasteRepository::fetchQueue) }
+            val mappingRequest = async { fetchPrintedWasteSelectorData("mapping", printedWasteRepository::fetchServerMapping) }
+            val regionsRequest = async {
+                fetchPrintedWasteSelectorData("regional routes") {
                     serverInfoRepository.regions(token, auth.provider.streamingServiceUrl)
-                        .ifEmpty { state.value.regions }
                 }
-                val queueData = queue.await()
-                val mappingData = mapping.await()
-                val advertisedRegions = providerRegions.await()
-                check(advertisedRegions.isNotEmpty()) { "GeForce NOW regional routes are unavailable" }
-                val queueTimeMs = queueData.nowEpochMs()
-                val regionsToPing = queueData.zones
-                    .mapNotNull { (zoneId, zone) ->
-                        selectablePrintedWasteRegionalUrl(zoneId, zone, mappingData, advertisedRegions, queueTimeMs)
-                    }
-                    .distinct()
-                    .map { StreamRegion(name = it, url = it) }
-                val pings = printedWasteRepository.pingRegions(regionsToPing).associate { it.url to it.pingMs }
-                Triple(queueData, mappingData, advertisedRegions to pings)
             }
-        }.onSuccess { (queue, mapping, regionAndPings) ->
-            val (advertisedRegions, pings) = regionAndPings
-            val queueTimeMs = queue.nowEpochMs()
-            val usableZones = queue.zones
-                .filter { (zoneId, zone) ->
-                    selectablePrintedWasteRegionalUrl(zoneId, zone, mapping, advertisedRegions, queueTimeMs) != null
-                }
-                .keys
-            val bestZone = usableZones
-                .mapNotNull { zoneId ->
-                    val zone = queue.zones[zoneId] ?: return@mapNotNull null
-                    val url = printedWasteRegionalUrl(zoneId, mapping, advertisedRegions) ?: return@mapNotNull null
-                    Triple(zoneId, zone.QueuePosition, pings[url])
-                }
-                .minWithOrNull(
-                    compareBy<Triple<String, Int, Long?>>(
-                        { it.third ?: Long.MAX_VALUE },
-                        { it.second },
-                    ),
-                )
-            recordDebugEvent(
-                "queue",
-                "PrintedWaste queue loaded zones=${queue.zones.size} usable=${usableZones.size} best=${bestZone?.first.orEmpty()} bestQueue=${bestZone?.second ?: 0} bestPing=${bestZone?.third ?: -1}",
-            )
-            _state.update {
-                it.copy(
-                    printedWasteQueue = queue,
-                    printedWasteMapping = mapping,
-                    printedWastePings = pings,
-                    regions = advertisedRegions,
-                    printedWasteLoading = false,
-                    printedWasteError = null,
-                )
+
+            val queue = queueRequest.await()
+            val mapping = mappingRequest.await().orEmpty()
+            val regions = regionsRequest.await().orEmpty().ifEmpty { cachedRegions }
+            val options = printedWasteZoneOptions(queue, mapping, regions, emptyMap(), queue?.nowEpochMs() ?: 0L)
+            val routes = options.mapNotNull { it.routingUrl }.distinct()
+            val pings = printedWasteRepository.pingRegions(routes.map { StreamRegion(name = it, url = it) })
+                .associate { it.url to it.pingMs }
+
+            currentCoroutineContext().ensureActive()
+            val current = state.value
+            if (current.pendingPrintedWasteGame !== game) return@launch
+            if (current.authSession?.user?.userId != auth.user.userId || current.authSession.provider != auth.provider) {
+                dismissPrintedWasteSelector()
+                return@launch
             }
-        }.onFailure { error ->
-            if (error is CancellationException) return@onFailure
-            recordDebugEvent(
-                "queue",
-                "PrintedWaste queue load failed error=${error.debugMessage()} using=default",
-            )
-            launchWithPrintedWaste(null)
+
+            if (options.isEmpty()) {
+                recordDebugEvent("queue", "PrintedWaste returned no NVIDIA servers, using default routing")
+                launchWithPrintedWaste(null)
+            } else {
+                recordDebugEvent("queue", "PrintedWaste queue loaded zones=${options.size} usable=${options.count { it.routingUrl != null }}")
+                _state.update {
+                    it.copy(
+                        printedWasteQueue = queue,
+                        printedWasteMapping = mapping,
+                        printedWastePings = pings,
+                        regions = regions,
+                        printedWasteLoading = false,
+                    )
+                }
+            }
         }
+    }
+
+    private suspend fun <T : Any> fetchPrintedWasteSelectorData(source: String, fetch: suspend () -> T): T? = try {
+        withTimeoutOrNull(7_000L) { fetch() }.also {
+            if (it == null) recordDebugEvent("queue", "PrintedWaste $source request timed out")
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        recordDebugEvent("queue", "PrintedWaste $source request failed: ${error.debugMessage()}")
+        null
     }
 
     private suspend fun refreshActiveSession() {

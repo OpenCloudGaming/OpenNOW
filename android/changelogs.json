@@ -1,5 +1,15 @@
 {
-  "194": {
+  "198": {
+    "version": "2.4.2",
+    "notes": [
+      "2.3.8 release notes were broken (again) (sorry), so you can check out more information below.",
+      "NVST fixes (this fixes lag as well)",
+      "Controller fixes",
+      "You can now add your wifi name and the time to the status bar. Your location is not shared.",
+      "TV Enhancements to reduce lag on Space UI (default mode for new installs)"
+    ]
+  },
+  "193": {
     "version": "2.3.8",
     "notes": [
       "Apologies for the same release notes, there are some new things but I accidentally messed it up for last version cause I was trying to push it so quickly.",

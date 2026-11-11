@@ -28,8 +28,10 @@ private val DIAGNOSTIC_SENSITIVE_TEXT_PATTERN = Regex(
     """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code|sub)(\s*[=:]\s*)([^\s,;&]+)""",
 )
 private val DIAGNOSTIC_BEARER_PATTERN = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""")
+// Disjoint escape/plain-character branches and possessive repetition keep large quoted values
+// stack-safe and linear, including incomplete JSON previews retained from truncated responses.
 private val DIAGNOSTIC_JSON_IDENTITY_PATTERN = Regex(
-    """(?i)([\"']?(?:email|user(?:[_-]?id|[_-]?name)?|display[_-]?name|account[_-]?id|profile[_-]?id|session[_-]?id|server[_-]?ip|device[_-]?id|device[_-]?name|ip[_-]?address)[\"']?\s*:\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^,}\r\n]+)""",
+    """(?i)(["']?(?:email|user(?:[_-]?id|[_-]?name)?|display[_-]?name|account[_-]?id|profile[_-]?id|session[_-]?id|server[_-]?ip|device[_-]?id|device[_-]?name|ip[_-]?address)["']?\s*:\s*)("(?:\\.|[^"\\])*+(?:"|$)|'(?:\\.|[^'\\])*+(?:'|$)|[^,}\r\n]+)""",
 )
 private val DIAGNOSTIC_LINE_IDENTITY_PATTERN = Regex(
     """(?im)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)(.*?)(?=\s+[a-z][a-z0-9_.-]*\s*[=:]|$)""",
@@ -185,7 +187,7 @@ private fun redactDiagnosticText(text: String): String {
 
 private val DIAGNOSTIC_PARSER_BLOCK = Regex("(?ms)^<parser>\\r?\\n(.*?)^</parser>$")
 private val DIAGNOSTIC_JSON_SECRET_PATTERN = Regex(
-    """(?i)(["'](?:authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|credential|password|secret|cookie|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete)["']\s*:\s*)("(?:\\.|[^"\\])*(?:"|$)|[^,}\r\n]+)""",
+    """(?i)(["'](?:authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|credential|password|secret|cookie|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete)["']\s*:\s*)("(?:\\.|[^"\\])*+(?:"|$)|[^,}\r\n]+)""",
 )
 
 /** Sanitize JSON structurally so redaction can never break a parser block's quoting. */

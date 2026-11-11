@@ -15,20 +15,25 @@ opening the derived WSS endpoint registered a peer but never produced an SDP
 offer. After timeout, reconnects could receive peerRemoved. The same phone,
 resolution, H.264 decoder, and login streamed successfully in Website client mode.
 
-Native Android create and RESUME now share the native request profile. Endpoint
-resolution records whether the selected descriptor requires native RTSP. The
-stream client uses NVST for that descriptor, including during reconnect, without
-changing the persisted experimental NVST preference. An explicit WebRTC endpoint
-wins over native alternatives. Existing experimental NVST version-14 requests,
-alliance identities, touch-friendly profiles, TV profiles, and browser requests
-retain their request behavior.
+The October 28 fix made native Android CREATE and RESUME share the native request
+profile and automatically attached native allocations with NVST. That automatic
+selection is now removed: NVST requires the user's explicit experimental NVST
+setting. The 1376x640 phone profile uses the browser/WebRTC identity when NVST is
+off. CREATE and RESUME both send secureRTSPSupported false and GSStreamerType
+WebRTC unless the user enables NVST. Explicit NVST requests retain the version-14
+profile, including native Android allocation for the 1376x640 profile.
+
+Endpoint resolution still records a native-only allocation, but cannot override
+the transport preference. Attachment and reconnect both reject an incompatible
+native allocation with an actionable error while retaining the cloud session.
+Provider identities, stable device IDs, and saved NVST preferences are preserved.
 
 The native Java HTTP User-Agent and the official CloudMatch WebView bridge's
 User-Agent differ. OpenNOW uses the current native Android app User-Agent; it
 does not claim byte-for-byte parity with the WebView bridge. No OAuth client or
 saved authentication migration is part of this fix.
 
-## Validation
+## Historical validation of the October 28 automatic selection
 
 On October 28, 2026, the debug APK was installed on the POCO X5 Pro. With both
 Website client mode and experimental NVST disabled, a resumed Satisfactory cloud

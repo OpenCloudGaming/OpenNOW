@@ -62,6 +62,10 @@ ported from dev commit `3002e5c67`. NVST defaults off for all distributions. On 
 launch, a persisted migration also switches off the previous automatic APK opt-in. Users can
 enable the experiment again afterward; that choice survives subsequent launches and upgrades.
 The choice applies when attaching a stream; changing settings does not replace a running transport.
+Resolution choices, server allocation metadata, and reconnects cannot enable NVST. With NVST off,
+the 1376x640 phone profile requests WebRTC on both CREATE and RESUME. If an existing session only
+supports native transport, OpenNOW reports the mismatch and retains the cloud session instead of
+attaching with NVST.
 
 The NVST runtime performs RTSP-over-WebSocket negotiation, authenticated SRTP UDP video with
 FEC/NACK recovery, Opus audio, and native SCTP keyboard/mouse/gamepad input. Android keeps its

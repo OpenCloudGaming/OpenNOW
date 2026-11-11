@@ -2,6 +2,8 @@ package com.opencloudgaming.opennow
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
+import java.net.SocketTimeoutException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -9,6 +11,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidAuthRefreshTest {
+    @Test
+    fun expiredCredentialsAreKeptForOfflineTimeoutServerAndUnknownFailures() {
+        val rejected = AuthRefreshException(400, "invalid_grant")
+        for (failure in listOf(
+            IOException("Offline"), SocketTimeoutException("Timed out"),
+            AuthRefreshException(503, null), AuthRefreshException(429, "temporarily_unavailable"),
+            AuthRefreshException(401, null), AuthRefreshException(400, "invalid_client"),
+            IllegalStateException("Invalid user-info response"),
+        )) {
+            assertFalse(refreshCredentialsRejected(listOf(failure)))
+            assertFalse(refreshCredentialsRejected(listOf(rejected, failure)))
+        }
+        assertFalse(refreshCredentialsRejected(emptyList()))
+    }
+
+    @Test
+    fun onlyExplicitCredentialRejectionsInvalidateEveryRefreshMechanism() {
+        val failures = listOf(
+            runCatching { authRefreshResponse(400, """{"error":"invalid_grant"}""") }.exceptionOrNull(),
+            runCatching { authRefreshResponse(401, """{"error":"invalid_token"}""") }.exceptionOrNull(),
+        ).map { it as AuthRefreshException }
+        assertTrue(refreshCredentialsRejected(failures))
+    }
+
+    @Test
+    fun refreshResponseDoesNotExposeServerPayloadInErrorMessage() {
+        val failure = runCatching {
+            authRefreshResponse(503, """{"error":"temporarily_unavailable","detail":"private-token"}""")
+        }.exceptionOrNull()
+        assertTrue(failure is AuthRefreshException)
+        assertFalse(failure?.message.orEmpty().contains("private-token"))
+        assertFalse((failure as AuthRefreshException).credentialsRejected)
+    }
+
+    @Test
+    fun malformedSuccessfulRefreshIsRetryableRatherThanCredentialRejection() {
+        val failure = runCatching { authRefreshResponse(200, "not JSON") }.exceptionOrNull()
+        assertTrue(failure is IOException)
+        assertFalse(refreshCredentialsRejected(listOf(failure as Exception)))
+        assertEquals("access-token", authRefreshResponse(200, """{"access_token":"access-token"}""")["access_token"].toString().trim('"'))
+    }
+
     @Test
     fun legacySessionTriesBothKnownAuthClients() {
         assertEquals(

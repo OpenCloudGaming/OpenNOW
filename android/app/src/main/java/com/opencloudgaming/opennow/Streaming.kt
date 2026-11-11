@@ -358,9 +358,7 @@ class NativeStreamClient(
     @Volatile
     private var partiallyReliableInputState: DataChannel.State? = null
     private val pendingInputSends = AtomicInteger(0)
-    private val synchronousInputFallback = AtomicBoolean(false)
     private val workerInputSendConfirmed = AtomicBoolean(false)
-    private val directInputSendConfirmed = AtomicBoolean(false)
     private var statsChannel: DataChannel? = null
     private var lastParsedGameFps: Int? = null
     // The host advertises which controller slots use its low-latency gamepad path. Protocol v3
@@ -2608,6 +2606,11 @@ class NativeStreamClient(
         recordStreamDiagnostic(
             "transport start generation=$generation reconnectAttempts=$reconnectAttempts session=${streamDiagnosticId(session.sessionId)} iceServers=${session.iceServers.size} media=${session.mediaConnectionInfo?.let { "${it.ip}:${it.port}" } ?: "unknown"}",
         )
+        session.nvstTransportOptInError(settings)?.let { message ->
+            recordStreamDiagnostic("native allocation rejected: NVST is disabled")
+            failStream(message, generation)
+            return
+        }
         if (session.usesNvstTransport(settings)) {
             recordStreamDiagnostic(
                 "native transport selected experimentalNvst=${settings.experimentalNvst} " +
@@ -3716,7 +3719,6 @@ class NativeStreamClient(
         externalMouseMoveSentLogged = false
         externalMouseCapturedMoveSentLogged = false
         workerInputSendConfirmed.set(false)
-        directInputSendConfirmed.set(false)
         NativeInputDiagnostics.addRetained(
             key = "protocol",
             message = "input handshake protocol=$version bytes=$size",
@@ -4695,16 +4697,8 @@ class NativeStreamClient(
             }
             return false
         }
-        // WebRTC normally accepts sends from the dedicated input worker. A small set of Android
-        // WebRTC builds instead returns false there without throwing; the old code ignored that
-        // Boolean and continued reporting every packet as sent. Fall back to the caller only after
-        // an observed worker rejection, and only after the old worker queue has drained so packet
-        // ordering is preserved. The direct fallback deliberately uses the cached OPEN state above
-        // and calls only send(), avoiding the state()/bufferedAmount() JNI calls implicated in the
-        // original input-dispatch ANR.
-        if (synchronousInputFallback.get() && pendingInputSends.get() == 0) {
-            return sendInputSynchronously(queuedChannel, bytes, partiallyReliable, resultDiagnosticKey)
-        }
+        // A rejected send is a transport failure, not permission to use the UI thread. Keep
+        // subsequent packets on this same bounded worker queue even after a send fails.
         val pending = pendingInputSends.incrementAndGet()
         if (pending > MAX_PENDING_INPUT_SENDS) {
             pendingInputSends.decrementAndGet()
@@ -4819,13 +4813,12 @@ class NativeStreamClient(
                     )
                 }
             } else {
-                synchronousInputFallback.set(true)
                 NativeInputDiagnostics.retainThrottled(
                     key = "input.last-send-error",
                     minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
                 ) {
                     "input send rejected path=worker requestedPartial=$partiallyReliable " +
-                        "bytes=${bytes.size}; directFallback=true"
+                        "bytes=${bytes.size}"
                 }
             }
         }.onFailure { error ->
@@ -4834,7 +4827,6 @@ class NativeStreamClient(
                     "path=worker reason=${error.javaClass.simpleName} requestedPartial=$partiallyReliable"
                 }
             }
-            synchronousInputFallback.set(true)
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-send-error",
                 minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
@@ -4844,57 +4836,6 @@ class NativeStreamClient(
             }
         }
     }
-
-    private fun sendInputSynchronously(
-        channel: DataChannel,
-        bytes: ByteArray,
-        partiallyReliable: Boolean,
-        resultDiagnosticKey: String? = null,
-    ): Boolean = runCatching {
-        restampProtocolV3OuterTimestamp(bytes)
-        channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
-    }.fold(
-        onSuccess = { accepted ->
-            resultDiagnosticKey?.let { key ->
-                NativeInputDiagnostics.retainResult(key, accepted) {
-                    "path=direct-fallback requestedPartial=$partiallyReliable"
-                }
-            }
-            if (accepted) {
-                if (directInputSendConfirmed.compareAndSet(false, true)) {
-                    NativeInputDiagnostics.addRetained(
-                        key = "input.send-path",
-                        message = "input data channel accepted path=direct-fallback requestedPartial=$partiallyReliable " +
-                            "bytes=${bytes.size}",
-                    )
-                }
-            } else {
-                NativeInputDiagnostics.retainThrottled(
-                    key = "input.last-send-error",
-                    minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
-                ) {
-                    "input send rejected path=direct-fallback requestedPartial=$partiallyReliable " +
-                        "bytes=${bytes.size}"
-                }
-            }
-            accepted
-        },
-        onFailure = { error ->
-            resultDiagnosticKey?.let { key ->
-                NativeInputDiagnostics.retainResult(key, succeeded = false) {
-                    "path=direct-fallback reason=${error.javaClass.simpleName} requestedPartial=$partiallyReliable"
-                }
-            }
-            NativeInputDiagnostics.retainThrottled(
-                key = "input.last-send-error",
-                minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
-            ) {
-                "input send failed path=direct-fallback requestedPartial=$partiallyReliable " +
-                    "bytes=${bytes.size} error=${error.javaClass.simpleName}"
-            }
-            false
-        },
-    )
 
     private fun clearPhysicalControllerInputState() {
         physicalControllerActive = false

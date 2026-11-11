@@ -4569,7 +4569,7 @@ pub fn spawn_nvst_udp_receiver(
 
 pub fn spawn_nvst_udp_receiver_with_socket(
     config: NvstVideoConfig,
-    media_consumer: MediaConsumer,
+    media_consumer: impl Into<super::NvstMediaConsumers>,
     event_sender: Sender<NvstReceiveEvent>,
     reserved_socket: Option<UdpSocket>,
     reserved_rtc: Option<Rtc>,
@@ -4609,7 +4609,7 @@ pub fn spawn_nvst_udp_receiver_with_socket(
         "opennow-nvst-video",
         socket,
         config,
-        media_consumer,
+        media_consumer.into(),
         event_sender,
         rtc,
     )
@@ -4643,7 +4643,7 @@ pub fn spawn_nvst_mjolnir_receiver(
         "opennow-nvst-mjolnir",
         socket,
         config,
-        media_consumer,
+        media_consumer.into(),
         event_sender,
         None,
     )
@@ -4651,6 +4651,7 @@ pub fn spawn_nvst_mjolnir_receiver(
 
 struct NvstReceiverOutputs {
     media_consumer: MediaConsumer,
+    audio_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
     input_ready: Arc<AtomicBool>,
 }
@@ -4659,7 +4660,7 @@ fn spawn_receiver_thread(
     name: &str,
     socket: UdpSocket,
     config: NvstVideoConfig,
-    media_consumer: MediaConsumer,
+    media_consumers: super::NvstMediaConsumers,
     event_sender: Sender<NvstReceiveEvent>,
     rtc: Option<Rtc>,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
@@ -4678,7 +4679,8 @@ fn spawn_receiver_thread(
                 config,
                 receiver,
                 NvstReceiverOutputs {
-                    media_consumer,
+                    media_consumer: media_consumers.video,
+                    audio_consumer: media_consumers.audio,
                     event_sender,
                     input_ready: worker_input_ready.clone(),
                 },
@@ -4908,6 +4910,7 @@ fn run_nvst_webrtc_bundle(
 ) {
     let NvstReceiverOutputs {
         media_consumer,
+        audio_consumer,
         event_sender,
         input_ready,
     } = outputs;
@@ -5728,7 +5731,7 @@ fn run_nvst_webrtc_bundle(
                                 {
                                     frame.contiguous = false;
                                 }
-                                match deliver_media_frame(&media_consumer, frame) {
+                                match deliver_media_frame(&audio_consumer, frame) {
                                     Ok(()) => audio_discontinuity_pending = false,
                                     Err(TransportError::MediaConsumerBackpressured) => {
                                         // Mark the next accepted packet discontinuous so the

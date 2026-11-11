@@ -1,31 +1,22 @@
 package com.opencloudgaming.opennow
 
-import android.os.Build
-import android.view.View
 import android.view.Window
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 /** The window owns visibility; stream input, pointer capture and keep-awake remain independent. */
 internal fun applyOpenNowSystemBars(window: Window, immersive: Boolean) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.insetsController?.let { controller ->
-            if (immersive) {
-                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-            } else {
-                controller.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-            }
-        }
+    // Keep edge-to-edge active when returning from a stream on API 24–29 too. Clearing
+    // systemUiVisibility to zero restores decor fitting while Compose still applies insets.
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    val controller = WindowCompat.getInsetsController(window, window.decorView)
+    val bars = WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+    if (immersive) {
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(bars)
     } else {
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = if (immersive) {
-            View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-        } else 0
+        controller.show(bars)
     }
 }
 

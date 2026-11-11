@@ -246,14 +246,31 @@ class LaunchOwnershipTest {
     }
 
     @Test
-    fun detailMetadataHydrationOnlyRunsWhenCatalogGenresAreMissing() {
+    fun detailMetadataReplacesBlankCachedDescriptionsWithoutDiscardingExistingCopy() {
+        val cached = game(variants = emptyList()).copy(description = " ", longDescription = "")
+        val details = cached.copy(description = "Short description", longDescription = "Full description")
+
+        val merged = mergePanelGameWithMetadata(cached, details)
+
+        assertEquals("Short description", merged.description)
+        assertEquals("Full description", merged.longDescription)
+        assertEquals(merged.description, mergeGameInfo(merged, cached).description)
+        assertEquals(merged.longDescription, mergeGameInfo(merged, cached).longDescription)
+    }
+
+    @Test
+    fun detailMetadataHydrationFetchesMissingGenresOrDescriptions() {
         val catalogGame = game(
             variants = listOf(variant(libraryStatus = "NOT_OWNED")),
             uuid = "catalog-app",
         )
 
         assertTrue(shouldHydrateGameDetails(catalogGame))
-        assertFalse(shouldHydrateGameDetails(catalogGame.copy(genres = listOf("ACTION"))))
+        val libraryGame = catalogGame.copy(genres = listOf("ACTION"))
+        assertTrue(shouldHydrateGameDetails(libraryGame))
+        assertTrue(shouldHydrateGameDetails(libraryGame.copy(description = " ", longDescription = "")))
+        assertFalse(shouldHydrateGameDetails(libraryGame.copy(description = "A tactical shooter")))
+        assertFalse(shouldHydrateGameDetails(libraryGame.copy(longDescription = "Full game description")))
         assertFalse(shouldHydrateGameDetails(catalogGame.copy(uuid = null)))
     }
 

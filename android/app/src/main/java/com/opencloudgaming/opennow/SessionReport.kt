@@ -30,6 +30,7 @@ internal data class StreamReportLaunchProfile(
     val selectedSettings: StreamSettings,
     val eligibleSettings: StreamSettings,
     val initialSettings: StreamSettings,
+    val resumedSession: Boolean = false,
 )
 
 @Serializable
@@ -426,7 +427,11 @@ private fun buildSessionDowngrades(
     }
     if (!eligible.hasSameSessionReportProfile(initial)) {
         add(
-            SessionReportFinding(
+            if (launchProfile.resumedSession) SessionReportFinding(
+                reasonCode = "resumed_session_profile",
+                title = "Resumed session profile",
+                detail = "The existing cloud session kept ${profileSummary(initial)} instead of the requested ${profileSummary(eligible)}. Start a new session to request a different profile.",
+            ) else SessionReportFinding(
                 reasonCode = "device_compatibility_adjustment",
                 title = "Device compatibility adjustment",
                 detail = "The device probe changed ${profileSummary(eligible)} to ${profileSummary(initial)} to stay within the detected decoder and performance limits.",

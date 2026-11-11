@@ -589,6 +589,15 @@ class AuthStore(context: Context) {
         true
     }
 
+    /** Do not remove credentials replaced by a concurrent sign-in or background refresh. */
+    fun removeSessionIfUnchanged(expected: AuthSession): Boolean = synchronized(AUTH_STORE_LOCK) {
+        if (_state.value.sessions.firstOrNull { it.user.userId == expected.user.userId } != expected) {
+            return@synchronized false
+        }
+        removeSession(expected.user.userId)
+        true
+    }
+
     fun removeSession(userId: String) = synchronized(AUTH_STORE_LOCK) {
         val current = _state.value
         val sessions = current.sessions.filterNot { it.user.userId == userId }

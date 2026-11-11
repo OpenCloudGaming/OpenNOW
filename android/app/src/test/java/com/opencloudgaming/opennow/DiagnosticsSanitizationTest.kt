@@ -7,6 +7,29 @@ import kotlinx.serialization.json.*
 import org.junit.Test
 
 class DiagnosticsSanitizationTest {
+    @Test(timeout = 5_000)
+    fun longEscapedAndUnterminatedIdentityValuesAreRedactedWithoutRecursiveMatching() {
+        val escaped = "private\\\"name".repeat(10_000)
+        for (quote in listOf("\"", "'")) {
+            val value = if (quote == "\"") escaped else "private\\'name".repeat(10_000)
+            for (end in listOf(quote, "")) {
+                val sanitized = sanitizeDiagnosticExport("{${quote}displayName${quote}:$quote$value$end}")
+                assertFalse(sanitized.contains("private"))
+                assertTrue(sanitized.contains("[redacted]"))
+            }
+        }
+    }
+
+    @Test(timeout = 5_000)
+    fun longEscapedSecretValuesAreRedactedWithoutRecursiveMatching() {
+        val value = "private\\\"token".repeat(10_000)
+        for (end in listOf("\"", "")) {
+            val sanitized = sanitizeDiagnosticExport("{\"accessToken\":\"$value$end}")
+            assertFalse(sanitized.contains("private"))
+            assertTrue(sanitized.contains("[redacted]"))
+        }
+    }
+
     @Test
     fun timestampsSurviveWhileBothIpv6FormsAreRedacted() {
         val raw = "2026-09-13T08:37:17.123Z old=8:37:17 AM ipv6=2001:0db8:0000:0000:0000:0000:0000:1234 compressed=2001:db8::1234"

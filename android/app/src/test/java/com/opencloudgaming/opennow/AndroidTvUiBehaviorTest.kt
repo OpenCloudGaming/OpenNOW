@@ -427,7 +427,8 @@ class AndroidTvUiBehaviorTest {
             tvCardImageUrl = gameBoxArt,
         )
 
-        assertEquals("$gameBoxArt;f=webp;w=512", catalogCardImageUrl(game, tvProfile = false))
+        assertEquals("$gameBoxArt;f=webp;w=512", catalogCardImageUrl(game, tvProfile = false, androidSdk = 37))
+        assertEquals("$gameBoxArt;f=jpg;w=512", catalogCardImageUrl(game, tvProfile = false, androidSdk = 27))
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = false))
     }
 
@@ -453,7 +454,7 @@ class AndroidTvUiBehaviorTest {
 
         assertEquals(
             "https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg;f=webp;w=272",
-            catalogCardImageUrl(game, tvProfile = true),
+            catalogCardImageUrl(game, tvProfile = true, androidSdk = 37),
         )
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
     }
@@ -468,7 +469,7 @@ class AndroidTvUiBehaviorTest {
 
         assertEquals(
             "https://img.nvidiagrid.net/apps/123/ZZ/TV_BANNER_01_example.jpg;f=webp;w=272",
-            catalogCardImageUrl(game, tvProfile = true),
+            catalogCardImageUrl(game, tvProfile = true, androidSdk = 37),
         )
     }
 

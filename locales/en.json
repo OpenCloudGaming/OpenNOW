@@ -762,9 +762,29 @@
     "settings_video_output_texture": "Textures (MediaCodec)",
     "settings_video_output_direct_short": "Direct",
     "settings_video_output_textures_short": "Textures",
-    "settings_video_output_desc": "Applies the next time you start or resume a stream."
+    "settings_video_output_desc": "Default uses the recommended path. Direct displays decoded video on a surface. Textures allows GPU effects and compatibility. Applies on start/resume.",
+    "settings_stream_bitrate_help": "Maximum bitrate limits video data, not FPS. Higher values can preserve detail in motion, but need stable bandwidth; too much can cause stutter.",
+    "settings_stream_codec_help": "H.264 is most compatible. H.265/AV1 can save bandwidth but need suitable hardware. For slow decoding, try H.264 or Recommended. AV1 uses 8-bit color.",
+    "settings_stream_color_help": "8-bit 4:2:0 is standard. 10-bit smooths gradients; 4:4:4 adds color detail. Higher formats need decoder support and bandwidth, and do not increase FPS."
+  },
+  "androidQueueSelector": {
+    "catalog_queue_use_default": "No servers are selectable. Choose Default to continue with your usual server settings.",
+    "catalog_queue_server_unavailable": "Marked unavailable by PrintedWaste",
+    "catalog_queue_data_missing": "No queue data from PrintedWaste",
+    "catalog_queue_time_invalid": "Queue update time could not be verified",
+    "catalog_queue_data_stale": "Queue data is out of date",
+    "catalog_queue_mapping_missing": "No location mapping for this server",
+    "catalog_queue_route_missing": "GeForce NOW did not provide a route for this location"
   },
   "androidSetup": {
+    "stream_statusbar_metric_clock": "Clock",
+    "stream_statusbar_metric_wifi_ssid": "Wi-Fi name (SSID)",
+    "setup_play_metric_clock_preview": "14:35",
+    "setup_play_metric_wifi_ssid_preview": "Home Wi-Fi",
+    "stream_stats_clock_cd": "Current time: %1$s",
+    "stream_stats_wifi_ssid_cd": "Wi-Fi network: %1$s",
+    "stream_stats_wifi_ssid_unavailable": "Wi-Fi name unavailable",
+    "stream_statusbar_wifi_ssid_permission_hint": "Showing the Wi-Fi name requires Android precise location permission and device Location to be on. If unavailable, try turning this option off and on to grant permission.",
     "discord_community_rules_notice": "BE POLITE, OBSERVE PROPER ETIQUETTE, AND DO NOT BRING UP POLITICS, ISSUES RELATED TO RACE, RELIGION, OR ETHNICITY, OR ADULT CONTENT!!",
     "discord_community_rules_enforcement": "By joining our Discord server community, you are agreeing to follow my rules. There will be zero tolerance for causing chaos, posting sensitive content, or provoking others—I will immediately kick you from my server!!",
     "discord_community_rules_remember": "I agree with your statement; please don’t post it again.",

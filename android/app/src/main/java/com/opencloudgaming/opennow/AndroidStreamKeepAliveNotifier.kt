@@ -5,16 +5,13 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
-import androidx.core.app.ServiceCompat
 import java.util.concurrent.atomic.AtomicLong
 
 private const val STREAM_CHANNEL_ID = "opennow_active_stream"
@@ -22,6 +19,7 @@ private const val STREAM_NOTIFICATION_ID = 4211
 private const val STREAM_SERVICE_ACTION_START = "com.opencloudgaming.opennow.stream.START"
 private const val STREAM_SERVICE_ACTION_STOP = "com.opencloudgaming.opennow.stream.STOP"
 private const val STREAM_SERVICE_EXTRA_TITLE = "title"
+private const val STREAM_SERVICE_EXTRA_TEXT = "text"
 private const val STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE = "microphone_capture"
 private const val STREAM_SERVICE_TAG = "OpenNOWStreamService"
 
@@ -102,11 +100,14 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
         activeMicrophoneCapture = microphoneCaptureActive
         val version = commandVersion.incrementAndGet()
         AndroidServiceCommandDispatcher.dispatch("stream-start") {
+            if (commandVersion.get() != version) return@dispatch
             runCatching {
-                ensureStreamNotificationChannel(appContext)
                 val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
                     action = STREAM_SERVICE_ACTION_START
                     putExtra(STREAM_SERVICE_EXTRA_TITLE, title)
+                    // Resolve app locale before starting Android's foreground-promotion timer.
+                    putExtra(STREAM_SERVICE_EXTRA_TEXT, localizedAndroidContext(appContext)
+                        .getString(R.string.stream_background_notification))
                     putExtra(STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE, microphoneCaptureActive)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -123,13 +124,14 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
 
     fun cancel() {
         if (!serviceStartRequested && cancellationApplied) return
-        commandVersion.incrementAndGet()
+        val version = commandVersion.incrementAndGet()
         val startWasRequested = serviceStartRequested
         serviceStartRequested = false
         activeTitle = null
         activeMicrophoneCapture = false
         cancellationApplied = true
         AndroidServiceCommandDispatcher.dispatch("stream-stop") {
+            if (commandVersion.get() != version) return@dispatch
             val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
                 action = STREAM_SERVICE_ACTION_STOP
             }
@@ -143,69 +145,35 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
     }
 }
 
-class AndroidStreamKeepAliveService : Service() {
+class AndroidStreamKeepAliveService : AndroidForegroundService() {
     private var streamWakeLock: PowerManager.WakeLock? = null
+    override val notificationId: Int get() = STREAM_NOTIFICATION_ID
+    override fun prepareNotificationChannel() = ensureStreamNotificationChannel(this)
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        runCatching {
-            when (intent?.action) {
-                STREAM_SERVICE_ACTION_STOP -> {
-                    releaseStreamWakeLock()
-                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
-                }
-                STREAM_SERVICE_ACTION_START, null -> {
-                    startStreamForeground(
-                        title = intent?.getStringExtra(STREAM_SERVICE_EXTRA_TITLE) ?: "OpenNOW",
-                        microphoneCaptureActive = intent?.getBooleanExtra(
-                            STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE,
-                            false,
-                        ) == true,
-                    )
-                }
-                else -> {
-                    releaseStreamWakeLock()
-                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
-                }
-            }
-        }.onFailure { error ->
-            Log.e(STREAM_SERVICE_TAG, "Stream foreground service failed", error)
-            stopSelf(startId)
-        }
-        return START_NOT_STICKY
+    override fun isActiveCommand(intent: Intent?): Boolean = intent?.action == STREAM_SERVICE_ACTION_START
+
+    override fun foregroundServiceType(intent: Intent?): Int = androidStreamForegroundServiceType(
+        microphoneCaptureActive = intent?.getBooleanExtra(STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE, false) == true,
+        sdkInt = Build.VERSION.SDK_INT,
+    )
+
+    override fun foregroundNotification(intent: Intent?): Notification {
+        return buildStreamNotification(
+            this,
+            intent?.getStringExtra(STREAM_SERVICE_EXTRA_TITLE) ?: "OpenNOW",
+            intent?.getStringExtra(STREAM_SERVICE_EXTRA_TEXT) ?: getString(R.string.stream_background_notification),
+        )
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onForegroundStarted() = acquireStreamWakeLock()
+    override fun onForegroundStopped() = releaseStreamWakeLock()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Leaving or swiping away the Android task is not the in-app End action. Tear down only
-        // this local keep-alive service so the allocated provider session remains resumable.
+        // Removing the task releases local resources; the cloud session remains resumable.
         Log.i(STREAM_SERVICE_TAG, "App task removed; preserving cloud session until explicit End")
-        releaseStreamWakeLock()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopForegroundService()
         stopSelf()
         super.onTaskRemoved(rootIntent)
-    }
-
-    override fun onDestroy() {
-        releaseStreamWakeLock()
-        super.onDestroy()
-    }
-
-    private fun startStreamForeground(title: String, microphoneCaptureActive: Boolean) {
-        ensureStreamNotificationChannel(this)
-        acquireStreamWakeLock()
-        val notification = buildStreamNotification(this, title)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                STREAM_NOTIFICATION_ID,
-                notification,
-                androidStreamForegroundServiceType(microphoneCaptureActive, Build.VERSION.SDK_INT),
-            )
-        } else {
-            startForeground(STREAM_NOTIFICATION_ID, notification)
-        }
     }
 
     private fun acquireStreamWakeLock() {
@@ -239,7 +207,7 @@ private fun ensureStreamNotificationChannel(context: Context) {
     notificationManager.createNotificationChannel(channel)
 }
 
-private fun buildStreamNotification(context: Context, title: String): Notification {
+private fun buildStreamNotification(context: Context, title: String, text: String): Notification {
     val appContext = context.applicationContext
     val openIntent = Intent(appContext, MainActivity::class.java).apply {
         action = Intent.ACTION_MAIN
@@ -261,7 +229,7 @@ private fun buildStreamNotification(context: Context, title: String): Notificati
     return builder
         .setSmallIcon(R.drawable.ic_tab_stream)
         .setContentTitle(title)
-        .setContentText(localizedAndroidContext(context).getString(R.string.stream_background_notification))
+        .setContentText(text)
         .setSubText("OpenNOW")
         .setCategory(Notification.CATEGORY_TRANSPORT)
         .setVisibility(Notification.VISIBILITY_PUBLIC)

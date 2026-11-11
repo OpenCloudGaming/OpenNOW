@@ -28,7 +28,9 @@ internal enum class StreamStatusItem(
     Battery(R.string.stream_statusbar_metric_battery, R.string.setup_play_metric_battery_preview),
     SessionBattery(R.string.stream_statusbar_metric_session_battery, R.string.setup_play_metric_session_battery_preview),
     Playtime(R.string.stream_statusbar_metric_playtime, R.string.setup_play_metric_playtime_preview),
+    Clock(R.string.stream_statusbar_metric_clock, R.string.setup_play_metric_clock_preview),
     Connection(R.string.stream_statusbar_metric_connection, R.string.setup_play_metric_connection_preview),
+    WifiSsid(R.string.stream_statusbar_metric_wifi_ssid, R.string.setup_play_metric_wifi_ssid_preview),
     Resolution(R.string.stream_statusbar_metric_resolution, R.string.setup_play_metric_resolution_preview),
     Codec(R.string.stream_statusbar_metric_codec, R.string.setup_play_metric_codec_preview),
     Server(R.string.stream_statusbar_metric_server, R.string.setup_play_metric_server_preview),
@@ -44,7 +46,9 @@ internal enum class StreamStatusItem(
         Battery -> settings.streamStatsMetrics.battery
         SessionBattery -> settings.streamStatsMetrics.sessionBattery
         Playtime -> settings.streamStatsMetrics.playtime
+        Clock -> settings.streamStatsMetrics.clock
         Connection -> settings.streamStatsMetrics.connection
+        WifiSsid -> settings.streamStatsMetrics.wifiSsid
         Resolution -> settings.streamStatsMetrics.resolution
         Codec -> settings.streamStatsMetrics.codec
         Server -> settings.streamStatsMetrics.location
@@ -65,7 +69,9 @@ internal enum class StreamStatusItem(
             Battery -> metrics.copy(battery = enabled)
             SessionBattery -> metrics.copy(sessionBattery = enabled)
             Playtime -> metrics.copy(playtime = enabled)
+            Clock -> metrics.copy(clock = enabled)
             Connection -> metrics.copy(connection = enabled)
+            WifiSsid -> metrics.copy(wifiSsid = enabled)
             Resolution -> metrics.copy(resolution = enabled)
             Codec -> metrics.copy(codec = enabled)
             Server -> metrics.copy(location = enabled)
