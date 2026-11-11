@@ -2,6 +2,7 @@
 
 #include <QTest>
 #include <QQuickGraphicsConfiguration>
+#include <QQuickGraphicsDevice>
 #include <QQuickWindow>
 #include <QSet>
 #include <QVariantMap>
