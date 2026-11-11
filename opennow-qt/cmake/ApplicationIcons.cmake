@@ -25,8 +25,9 @@ if(WIN32)
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/OpenNOW.ico")
     target_sources(opennow-qt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/OpenNOW.rc")
 elseif(APPLE)
-    set_source_files_properties(packaging/icons/OpenNOW.icns PROPERTIES
+    set(OPENNOW_MACOS_BUNDLE_ICONS packaging/icons/Assets.car packaging/icons/OpenNOW.icns)
+    set_source_files_properties(${OPENNOW_MACOS_BUNDLE_ICONS} PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources)
-    target_sources(opennow-qt PRIVATE packaging/icons/OpenNOW.icns)
+    target_sources(opennow-qt PRIVATE ${OPENNOW_MACOS_BUNDLE_ICONS})
     set_target_properties(opennow-qt PROPERTIES MACOSX_BUNDLE_ICON_FILE OpenNOW.icns)
 endif()

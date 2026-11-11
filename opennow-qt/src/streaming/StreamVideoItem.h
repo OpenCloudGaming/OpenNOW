@@ -14,6 +14,9 @@
 #include <QVariantMap>
 #include <QTimer>
 #include <QChronoTimer>
+#if defined(Q_OS_WIN)
+#include <QAbstractNativeEventFilter>
+#endif
 
 #include <memory>
 #include <optional>
@@ -22,6 +25,9 @@ class QHoverEvent;
 class NativeStreamRuntime;
 
 class StreamVideoItem : public QQuickItem
+#if defined(Q_OS_WIN)
+    , private QAbstractNativeEventFilter
+#endif
 {
     Q_OBJECT
     Q_PROPERTY(QSize videoSize READ videoSize WRITE setVideoSize NOTIFY videoSizeChanged)
@@ -220,6 +226,10 @@ private:
     [[nodiscard]] quint16 eventVirtualKey(const QKeyEvent *event) const;
     [[nodiscard]] Qt::KeyboardModifiers eventModifiers(const QKeyEvent *event) const;
     [[nodiscard]] quint32 keyIdentity(const QKeyEvent *event) const;
+#if defined(Q_OS_WIN)
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
+    QSet<quint32> m_windowsDeadKeys;
+#endif
     [[nodiscard]] static quint8 mouseButton(Qt::MouseButton button);
 
     static QPointer<NativeStreamRuntime> s_nativeRuntime;

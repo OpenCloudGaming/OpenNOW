@@ -1,5 +1,13 @@
 {
-  "fill" : "system-dark",
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
   "groups" : [
     {
       "layers" : [
@@ -7,7 +15,7 @@
           "image-name" : "logo.png",
           "name" : "logo",
           "position" : {
-            "scale" : 0.7,
+            "scale" : 0.595,
             "translation-in-points" : [
               0,
               0

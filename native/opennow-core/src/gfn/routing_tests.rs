@@ -766,7 +766,7 @@ fn fresh_create_provenance_failure_keeps_public_owner_and_durable_cleanup() {
                 .err()
                 .expect("restart must retain the allocation obligation")
                 .code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         let record: Value = serde_json::from_slice(&std::fs::read(&recovery).unwrap()).unwrap();
         assert_eq!(record["sessionId"], "fresh-seat");
@@ -831,7 +831,7 @@ fn fresh_create_write_ahead_record_survives_handoff_and_acceptance_until_stop() 
                 .err()
                 .expect("restart before or after acceptance must retain ownership")
                 .code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         assert_eq!(
             restarted
@@ -922,7 +922,7 @@ fn failed_fresh_seat_identification_keeps_original_write_ahead_and_exact_cleanup
     );
     assert_eq!(
         restarted.admit_create().err().unwrap().code,
-        "session_allocation_unresolved"
+        "session_allocation_recovery_required"
     );
     service.finish_session_create("fresh-seat", false).unwrap();
     assert!(!path.join("unresolved-allocation.json").exists());
@@ -976,7 +976,7 @@ fn unrelated_terminal_poll_preserves_the_durable_allocation_obligation() {
     );
     assert_eq!(
         restarted.admit_create().err().unwrap().code,
-        "session_allocation_unresolved"
+        "session_allocation_recovery_required"
     );
     service
         .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
@@ -1246,7 +1246,7 @@ fn native_session_end_releases_created_obligation_across_restart() {
     );
     assert_eq!(
         retained.admit_create().err().unwrap().code,
-        "session_allocation_unresolved"
+        "session_allocation_recovery_required"
     );
     assert_eq!(
         service.acknowledge_session_end(&notification).unwrap()["cleared"],
@@ -1651,7 +1651,7 @@ fn reject_concurrent_create_during(discovery: bool) {
     } else {
         assert_eq!(
             service.cloudmatch.admit_create().err().unwrap().code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
     }
     worker.join().unwrap();

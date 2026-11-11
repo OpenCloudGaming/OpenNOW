@@ -155,14 +155,28 @@ QtObject {
     function artworkUrl(game, preferHero) {
         if (!game)
             return ""
-        const raw = preferHero
-            ? String(game.heroImageUrl || game.imageUrl || game.screenshotUrl || game.boxArtUrl || "")
-            : String(game.imageUrl || game.heroImageUrl || game.screenshotUrl || game.boxArtUrl || "")
+        if (preferHero)
+            return decodeArtworkUrl(game.heroImageUrl || game.imageUrl || game.screenshotUrl || game.boxArtUrl)
+        const raw = String(game.boxArtUrl || game.imageUrl || "").trim()
+        // Existing catalog entries can carry wide NVIDIA art as imageUrl.
+        // Cropping those assets into a 2:3 card cuts off logos and titles.
+        if (/^https?:\/\/img\.nvidiagrid\.net\//i.test(raw)
+                && /\/(?:KEY_ART|KEY_IMAGE|(?:MARQUEE_)?HERO_IMAGE|TV_BANNER|FEATURE_IMAGE|SCREENSHOTS?)(?:[_./;?]|$)/i.test(raw))
+            return ""
         return decodeArtworkUrl(raw)
     }
 
     function decodeArtworkUrl(url) {
         return String(url || "").split(";f=webp").join(";f=jpg")
+    }
+
+    function artworkSourceSize(width, height, pixelRatio) {
+        // Raster sourceSize is measured in pixels. Keep nearby window sizes in
+        // the same decode bucket to avoid reloading on every resize step.
+        const bucket = 64
+        const scale = Math.max(1, pixelRatio)
+        return Qt.size(Math.max(bucket, Math.ceil(width * scale / bucket) * bucket),
+                       Math.max(bucket, Math.ceil(height * scale / bucket) * bucket))
     }
 
     function consoleModeOn(win) {

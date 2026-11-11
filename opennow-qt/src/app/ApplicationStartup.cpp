@@ -42,6 +42,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <thread>
 
 #ifdef Q_OS_WIN
@@ -148,7 +149,10 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     if (flyHighSelfTest >= 0 && flyHighSelfTest + 1 < application.arguments().size())
         return FrameGenerationBenchmark::flyHighSelfTest(application.arguments().at(flyHighSelfTest + 1));
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
+#ifndef Q_OS_MACOS
+    // On macOS, Cocoa must resolve the bundle's appearance-aware icon.
     QGuiApplication::setWindowIcon(applicationWindowIcon());
+#endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     LinuxVulkanGraphics::requestDeviceExtensions();
 #endif
@@ -349,9 +353,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
                      &macAwdl, [&] { macAwdl.setStreaming(nativeStreamRuntime.streaming()); });
     macAwdl.setStreaming(nativeStreamRuntime.streaming());
 #endif
-    QQmlApplicationEngine engine;
+    std::optional<QQmlApplicationEngine> qmlEngine(std::in_place);
+    auto &engine = *qmlEngine;
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
-    AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
+    std::optional<AcceptanceSession> acceptance(std::in_place, application, engine, controller,
+                                               coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
@@ -371,7 +377,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
             : arguments.contains(u"--console"_s) ? u"console"_s : QString{});
     engine.rootContext()->setContextProperty(
         u"QuitAfterSession"_s, arguments.contains(u"--quit-after-session"_s));
-    acceptance.configureContext();
+    acceptance->configureContext();
     QObject::connect(&localization, &Localization::localeChanged,
                      &engine, &QQmlApplicationEngine::retranslate);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
@@ -429,13 +435,13 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         return EXIT_FAILURE;
     }
 #endif
-    if (acceptance.prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
+    if (acceptance->prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
     if (rootWindow && arguments.contains(u"--fullscreen"_s)) rootWindow->showFullScreen();
     else if (rootWindow && !rootWindow->isVisible()) rootWindow->show();
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,
-                     &application, [&engine] {
+                     &engine, [&engine] {
                          if (engine.rootObjects().isEmpty()) return;
                          auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
                          if (!window) return;
@@ -464,12 +470,12 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         QObject::connect(rootWindow, SIGNAL(sessionQuitCancelled()),
                          &singleInstance, SLOT(cancelQuitRequest()));
 
-    if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
+    if (acceptance->measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
         return EXIT_FAILURE;
 
     if (!coreProgram.isEmpty()) coreClient.start(coreProgram);
 
-    if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
+    if (acceptance->startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
     const auto exitCode = application.exec();
     auto *qmlCoreClient = engine.rootContext()->contextProperty(u"CoreClient"_s).value<QObject *>();
@@ -479,9 +485,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         && engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s)->property("sessionWorkIdle").toBool();
     armTeardownDeadline(exitCode);
     coreClient.stop();
+    // Let the engine tear down its roots, queued QML work and singletons while
+    // the GUI platform, fonts, controllers and native presentation are alive.
+    acceptance.reset();
+    qmlEngine.reset();
 #ifdef OPENNOW_EMBEDDED_STREAMER
-    const auto roots = engine.rootObjects();
-    for (auto *root : roots) delete root;
     StreamVideoItem::setNativeStreamRuntime(nullptr);
     if (!nativeStreamRuntime.shutdown()) {
         qWarning("Could not complete embedded streamer shutdown: %s",

@@ -298,6 +298,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopKeyHint.qml
         qml/desktop/components/DesktopPoster.qml
         qml/desktop/components/DesktopPosterOverlay.qml
+        qml/desktop/components/DesktopPosterSkeleton.qml
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
         qml/desktop/home/DesktopHomePoster.qml
