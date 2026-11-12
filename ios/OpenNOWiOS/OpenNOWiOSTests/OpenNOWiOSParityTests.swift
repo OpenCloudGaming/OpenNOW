@@ -4569,6 +4569,55 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testWheelClicksAndTrackpadScrollsReachTheHostAsWheelDeltas() {
+        // A wheel click is one notch whatever distance iOS reports for it; up is positive.
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: 3), 120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: -40), -120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: 0), 0)
+        // A trackpad scroll is proportional, and too little travel sends nothing yet.
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 800, surfaceHeight: 800), 2400)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: -40, surfaceHeight: 800), -120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 0.2, surfaceHeight: 800), 0)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 10, surfaceHeight: 0), 0)
+
+        let bridge = NativeStreamInputBridge()
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+        bridge.sendMouseWheel(delta: -120)
+        XCTAssertEqual(sink.reliablePackets.count, 1)
+        let wheel = Array(sink.reliablePackets[0].suffix(22))
+        XCTAssertEqual(Array(wheel[0..<4]), [10, 0, 0, 0])
+        XCTAssertEqual(Array(wheel[6..<8]), [0xff, 0x88])
+    }
+
+    @MainActor
+    func testStreamSurfaceReadsScrollGesturesOnItsHostViewWhileItIsOnScreen() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
+        let previous = window.rootViewController
+        defer { window.rootViewController = previous }
+        let bridge = NativeStreamInputBridge()
+        let host = NativeStreamHostingController(rootView: AnyView(NativeStreamTouchCaptureView(
+            inputBridge: bridge, inputEnabled: true, nativeTouchEnabled: false,
+            geometry: { NativeStreamTouchGeometry() }, onZoomGesture: { _, _ in })))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Scroll-only pans, on the host's own view so a control drawn above cannot swallow them.
+        func scrollTypes() -> [UIScrollTypeMask] {
+            (host.view.gestureRecognizers ?? []).compactMap { $0 as? UIPanGestureRecognizer }
+                .filter { $0.maximumNumberOfTouches == 0 }.map(\.allowedScrollTypesMask)
+        }
+        XCTAssertEqual(scrollTypes().count, 2)
+        XCTAssertTrue(scrollTypes().contains(.discrete))
+        XCTAssertTrue(scrollTypes().contains(.continuous))
+
+        host.rootView = AnyView(Color.black)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(scrollTypes().isEmpty)
+    }
+
     @MainActor
     private func makeTouchControlsCoordinator(settings: AppSettings,
         onTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
