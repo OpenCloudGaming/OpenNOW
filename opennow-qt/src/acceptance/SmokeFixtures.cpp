@@ -102,10 +102,22 @@ int AcceptanceSession::prepareWindow()
             const QVariantMap alliance{{u"idpId"_s, u"alliance-fixture"_s}, {u"displayName"_s, u"Alliance fixture"_s}, {u"code"_s, u"ALLIANCE"_s}};
             store->setProperty("providers", QVariantList{nvidia, alliance});
             store->setProperty("selectedProviderIdpId", u"alliance-fixture"_s);
-            const auto selected = store->property("selectedProvider").value<QJSValue>();
-            if (selected.property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            // A provider selected from the QVariantList remains a QVariantMap on
+            // newer Qt. Convert through the engine instead of extracting only
+            // an already-wrapped QJSValue (which silently yields undefined).
+            const auto selectedId = [this, store] {
+                return m_engine.toScriptValue(store->property("selectedProvider"))
+                    .property(u"idpId"_s).toString();
+            };
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: selecting the alliance provider did not retain its ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providers", QVariantList{alliance, nvidia});
-            if (store->property("selectedProvider").value<QJSValue>().property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: reordering providers changed the selected provider ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providerDiscoveryDegraded", true);
             store->setProperty("authRestorePending", false);
             store->setProperty("authSession", QVariant());
@@ -483,6 +495,18 @@ int AcceptanceSession::prepareWindow()
                             return false;
                         }
                     }
+                    if (item->objectName() == u"renewResolutionPicker"_s && !item->property("expanded").toBool()) {
+                        auto *selector = item->findChild<QQuickItem *>(u"settingsResolutionStepper"_s);
+                        if (!selector || !selector->isVisible() || selector->width() <= 0 || selector->height() <= 0
+                                || !QRectF(QPointF(-1, -1), item->size() + QSizeF(2, 2))
+                                    .contains(selector->mapRectToItem(item, selector->boundingRect()))) {
+                            const auto rect = selector ? selector->mapRectToItem(item, selector->boundingRect()) : QRectF{};
+                            qCritical("Collapsed resolution selector must remain visible inside its picker: found=%d visible=%d rect=%g,%g %gx%g picker=%gx%g",
+                                selector != nullptr, selector && selector->isVisible(),
+                                rect.x(), rect.y(), rect.width(), rect.height(), item->width(), item->height());
+                            return false;
+                        }
+                    }
                     if (item->objectName() == u"settingsButtonLabel"_s) {
                         auto *button = item->parentItem()->parentItem()->parentItem();
                         if (!button->property("menu").toBool() && button->width() >= button->implicitWidth()
@@ -494,17 +518,37 @@ int AcceptanceSession::prepareWindow()
                     if (item->objectName() == u"settingsRowLabels"_s) {
                         auto *row = item->parentItem();
                         auto *controls = row->findChild<QQuickItem *>(u"settingsRowControls"_s);
+                        const auto inset = row->property("verticalInset").toDouble();
                         if (!controls || item->width() <= 0 || item->x() < 0
                                 || item->x() + item->width() > row->width() + 1
-                                || item->y() + item->height() > row->height() + 1
+                                || item->y() < inset - 1
+                                || item->y() + item->height() > row->height() - inset + 1
                                 || controls->x() < 0 || controls->x() + controls->width() > row->width() + 1
-                                || controls->y() + controls->height() > row->height() + 1
+                                || controls->y() < inset - 1
+                                || controls->y() + controls->height() > row->height() - inset + 1
                                 || (!row->property("stacked").toBool()
                                     && item->x() + item->width() > controls->x() + 1)) {
                             qCritical("Settings row layout overflow: %s", qPrintable(row->property("title").toString()));
                             return false;
                         }
                         ++rows;
+                    }
+                    if (item->objectName() == u"settingsSegmentedOptions"_s) {
+                        auto *control = item->parentItem();
+                        const auto bounds = QRectF(QPointF(-1, -1), control->size() + QSizeF(2, 2));
+                        for (auto *option : item->childItems()) {
+                            if (!option->isVisible() || !option->property("index").isValid()) continue;
+                            if (!bounds.contains(option->mapRectToItem(control, option->boundingRect()))) {
+                                qCritical("Settings segmented option overflows its control");
+                                return false;
+                            }
+                        }
+                    }
+                    if (item->objectName() == u"settingsNavigationScroll"_s
+                            && item->property("horizontalNavigation").toBool()
+                            && item->property("contentHeight").toDouble() > item->height() + 1) {
+                        qCritical("Compact settings navigation must stay in one scrollable row");
+                        return false;
                     }
                     for (auto *child : item->childItems())
                         if (!self(self, child)) return false;

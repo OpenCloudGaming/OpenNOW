@@ -1,4 +1,5 @@
 #include "acceptance/AcceptanceSession.h"
+#include "acceptance/AcceptanceCoreClient.h"
 #include "acceptance/VirtualControllerInput.h"
 #include "app/AppController.h"
 #include "core/CoreClient.h"
@@ -801,6 +802,7 @@ int AcceptanceSession::startSmokeWorkload()
                      || m_arguments.contains(u"--smoke-titlebar-keyboard-check"_s)
                      || m_arguments.contains(u"--smoke-literal-game-title-check"_s)
                      || m_arguments.contains(u"--smoke-console-stream-end-notice-check"_s))) {
+        qmlRegisterType<AcceptanceCoreClient>("OpenNOW.Acceptance", 1, 0, "AcceptanceCoreClient");
         QQmlComponent component(&m_engine, QUrl(m_arguments.contains(u"--smoke-library-error"_s)
             ? u"qrc:/acceptance/LibraryErrorAcceptance.qml"_s
             : m_arguments.contains(u"--smoke-command-search"_s)
@@ -1137,6 +1139,8 @@ int AcceptanceSession::startSmokeWorkload()
         });
     } else if (m_smokeTest && (m_arguments.contains(u"--smoke-region-ping"_s) || m_arguments.contains(u"--smoke-store-paging"_s))) {
         const bool storePaging = m_arguments.contains(u"--smoke-store-paging"_s);
+        if (storePaging)
+            qmlRegisterType<AcceptanceCoreClient>("OpenNOW.Acceptance", 1, 0, "AcceptanceCoreClient");
         QTemporaryFile *artworkEvictionFile = nullptr;
         if (storePaging) {
             QVariantMap urls;
@@ -1158,6 +1162,8 @@ int AcceptanceSession::startSmokeWorkload()
         fixture->setParent(&m_engine);
         auto *client = fixture->property("client").value<QObject *>();
         if (!client) return EXIT_FAILURE;
+        if (storePaging)
+            fixture->setProperty("productionBoundary", QVariant::fromValue(static_cast<QObject *>(&m_coreClient)));
         m_engine.rootContext()->setContextProperty(u"CoreClient"_s, client);
         QTimer::singleShot(150, this, [this, fixture, storePaging, artworkEvictionFile] {
             auto *window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());

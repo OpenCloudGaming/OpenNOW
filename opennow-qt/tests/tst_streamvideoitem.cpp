@@ -1605,6 +1605,8 @@ private slots:
                                                 << quint32(0x11) << quint16(0xa2);
         QTest::newRow("no-scan-synthetic-altgr") << int(Qt::Key_AltGr) << quint32(0)
                                                << quint32(0) << quint16(0xa5);
+        QTest::newRow("german-circumflex-physical-position") << int(Qt::Key_AsciiCircum)
+            << quint32(0x29) << quint32(0xdc) << quint16(0xc0);
     }
 
     void windowsModifierScanCodesPreserveSides()

@@ -630,6 +630,9 @@ QtObject {
     function ensureFrameGenerationGpu() {
         if (frameGenerationGpu === "") frameGenerationGpu = String(FrameGenerationBenchmark.gpuName() || "")
     }
+    // The saved profile is keyed by the GPU name. Until that name is known the
+    // profile is invisible and a saved 4× comes up as off.
+    Component.onCompleted: ensureFrameGenerationGpu()
     // The measured cost depends on the engine, the GPU and the stream resolution only;
     // whether a level fits is decided live from the selected frame rate and the display.
     function frameGenerationProfileKey() {
@@ -827,7 +830,7 @@ QtObject {
         }
     }
     function frameGenerationEngineNotice() {
-        return qsTr("Experimental block-matching interpolation can produce artifacts on thin edges and fast motion.")
+        return qsTr("Experimental motion interpolation can show artifacts. Run the capability test for your GPU, resolution, and frame rate. FlyHigh is currently unavailable.")
     }
     // Description of the mode control: what will run for the selected mode.
     function frameGenerationDescription() {
@@ -1078,6 +1081,7 @@ QtObject {
             ["16:10 WIDESCREEN", [["800p","1280x800"],["900p","1440x900"],["1050p","1680x1050"],["1200p","1920x1200"],["1600p","2560x1600"],["3.5K","3456x2160"],["2400p","3840x2400"]]],
             ["21:9 ULTRAWIDE", [["UW 720p","1680x720"],["UW 1080p","2560x1080"],["UW 1440p","3440x1440"],["UW 1600p","3840x1600"],["UW 1800p","3840x1800"],["UW 2160p","5120x2160"]]],
             ["32:9 SUPER ULTRAWIDE", [["Dual 1080p","3840x1080"],["Dual 1440p","5120x1440"]]],
+            ["CUSTOM ULTRAWIDE", [["3640×1080","3640x1080"]]],
             ["4:3 STANDARD", [["768p","1024x768"],["834p","1112x834"],["1200p","1600x1200"]]],
             ["5:4 STANDARD", [["1024p","1280x1024"]]]
         ]

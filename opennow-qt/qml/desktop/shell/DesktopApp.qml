@@ -43,6 +43,8 @@ FocusScope {
         return qsTr("Home")
     }
     function subtitleForRoute(value) {
+        if ((value === "library" && ShellStore.catalogInitialLoading)
+            || (value === "store" && ShellStore.storeInitialLoading)) return ""
         if (value === "library" || value === "game-detail") return qsTr("%1 games").arg(ShellStore.catalogTotalCount || ShellStore.catalogGames.length)
         if (value === "store") return qsTr("%1 in catalog").arg(ShellStore.storeTotalCount || ShellStore.storeGames.length)
         if (value === "friends") return qsTr("Coming soon")
@@ -92,14 +94,21 @@ FocusScope {
     // Fit the design within bounded readable sizes, then apply the user's
     // interface scale. Qt handles device-pixel-ratio changes independently.
     function updateUiScale() {
-        if (root.width <= 0 || root.height <= 0)
+        if (!root || root.width <= 0 || root.height <= 0)
             return
         const fitted = DesktopTokens.scaleForWindow(root.width, root.height)
         const preference = Number(ShellStore.settings.desktopUiScale || 1)
         DesktopTokens.uiScale = Math.min(1.4, Math.max(0.9, fitted * preference))
     }
-    onWidthChanged: root.updateUiScale()
-    onHeightChanged: root.updateUiScale()
+    // A native resize changes both dimensions together. Publish one scale for
+    // the settled geometry instead of relaying out every token twice per event.
+    onWidthChanged: uiScaleTimer.restart()
+    onHeightChanged: uiScaleTimer.restart()
+    Timer {
+        id: uiScaleTimer
+        interval: 0
+        onTriggered: root.updateUiScale()
+    }
     Connections {
         target: ShellStore
         function onSettingsChanged() { root.updateUiScale() }
@@ -122,6 +131,24 @@ FocusScope {
         if (root.shellVisible && root.route !== "game-detail" && !root.commandOpen
                 && AppController.overlay === "" && pageLoader.item)
             pageLoader.item.forceActiveFocus()
+    }
+    // Keep deferred focus owned by this surface. A console/onboarding switch
+    // destroys DesktopApp synchronously; its timer is cancelled with it rather
+    // than leaving a callback that can access an already destroyed QML wrapper.
+    // Resolve the current target when the event loop settles so rapid route and
+    // overlay changes cannot restore focus to a superseded page.
+    Timer {
+        id: focusRestoreTimer
+        interval: 0
+        onTriggered: {
+            if (root.signInVisible)
+                desktopSignIn.forceActiveFocus()
+            else if (root.shellVisible && gameModal.opened && !root.commandOpen
+                    && AppController.overlay === "" && !streamEndNotice.opened && !bugReportNotice.opened)
+                gameModal.forceActiveFocus()
+            else
+                root.restoreShellFocus()
+        }
     }
 
     DesktopSignInScreen {
@@ -174,7 +201,7 @@ FocusScope {
         onCommandPaletteRequested: root.commandOpen = true
         accountSwitcherAllowed: root.shellVisible && !root.commandOpen && AppController.overlay === ""
             && !bugReportNotice.opened && !streamEndNotice.opened && root.route !== "game-detail"
-        onAccountSwitcherClosed: Qt.callLater(root.restoreShellFocus)
+        onAccountSwitcherClosed: focusRestoreTimer.restart()
 
         Loader {
             id: pageLoader
@@ -186,7 +213,7 @@ FocusScope {
             PageEntrance { id: pageEntrance; objectName: "desktopPageEntrance" }
             onLoaded: {
                 pageEntrance.restart()
-                Qt.callLater(root.restoreShellFocus)
+                focusRestoreTimer.restart()
             }
         }
     }
@@ -241,7 +268,7 @@ FocusScope {
         opened: root.shellVisible && AppController.overlay === "desktop-icon-guide"
         z: 110
         onCloseRequested: AppController.showOverlay("")
-        onOpenedChanged: if (!opened) Qt.callLater(root.restoreShellFocus)
+        onOpenedChanged: if (!opened) focusRestoreTimer.restart()
     }
     DesktopCommandPalette {
         objectName: "desktopCommandPalette"
@@ -266,7 +293,7 @@ FocusScope {
         z: 130
         onOpenedChanged: {
             if (opened) root.commandOpen = false
-            else Qt.callLater(root.restoreShellFocus)
+            else focusRestoreTimer.restart()
         }
     }
     DesktopStreamEndNotice {
@@ -278,7 +305,7 @@ FocusScope {
         z: 140
         onOpenedChanged: {
             if (opened) root.commandOpen = false
-            else Qt.callLater(() => gameModal.opened ? gameModal.forceActiveFocus() : root.restoreShellFocus())
+            else focusRestoreTimer.restart()
         }
     }
     DesktopBugReportToast {
@@ -371,7 +398,7 @@ FocusScope {
             // A settings route chosen while Settings is open (the update panel's
             // "Open in Settings", the palette) selects its page in place.
             root.selectSettingsPage(AppController.route)
-            Qt.callLater(root.restoreShellFocus)
+            focusRestoreTimer.restart()
         }
     }
     Connections {
@@ -383,24 +410,15 @@ FocusScope {
             modeErrorTimer.restart()
         }
     }
-    onSignInVisibleChanged: Qt.callLater(() => {
-        if (root.signInVisible)
-            desktopSignIn.forceActiveFocus()
-        else
-            root.restoreShellFocus()
-    })
-    onCommandOpenChanged: if (!commandOpen) Qt.callLater(root.restoreShellFocus)
+    onSignInVisibleChanged: focusRestoreTimer.restart()
+    onCommandOpenChanged: if (!commandOpen) focusRestoreTimer.restart()
     Component.onCompleted: {
-        // Synchronous: onCompleted always runs on a live instance, while a
-        // deferred call may fire after a surface switch destroyed it (method
-        // calls on dead wrappers throw; property reads just yield undefined).
+        // Initialize synchronously; subsequent resizes are coalesced by the
+        // surface-owned timer above.
         root.updateUiScale()
         if (root.requestedContentRoute !== "inserting" && root.requestedContentRoute !== "stream")
             root.contentRoute = root.requestedContentRoute
-        Qt.callLater(() => {
-            if (root.signInVisible)
-                desktopSignIn.forceActiveFocus()
-        })
+        focusRestoreTimer.restart()
     }
     Keys.onPressed: event => {
         if (bugReportNotice.opened) {

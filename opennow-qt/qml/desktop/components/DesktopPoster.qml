@@ -34,6 +34,7 @@ ItemDelegate {
             id: art
             x: root.artGutter; y: root.artGutter; width: root.artWidth; height: root.artHeight
             artwork: DesktopTokens.artworkUrl(root.game, false)
+            fallbackTitle: String(root.game && root.game.title || "")
             cornerRadius: 12
             scrimStart: root.cardLifted || root.showPlay ? 0.3 : 1
             fallbackColor: "#1A2232"

@@ -10,6 +10,7 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 
 
 BUNDLE_ID = "io.github.opencloudgaming.OpenNOW"
@@ -27,21 +28,27 @@ MACHO_MAGIC = {bytes.fromhex(value) for value in (
     "feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca",
     "cafebabf", "bfbafeca",
 )}
+STAPLER_RETRY_DELAYS = (5, 15, 30)
 
 
 def run(*args):
-    try:
-        result = subprocess.run(
-            [str(arg) for arg in args], check=False, text=True, capture_output=True,
-            env={key: value for key, value in os.environ.items() if key not in SECRET_NAMES},
-            timeout=2400,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{args[0]} {args[1]} timed out") from None
-    if result.returncode:
-        message = f"{args[0]} {args[1]} failed (exit {result.returncode})"
-        if args[0] == "codesign":
-            detail = result.stderr
+    stapler = args[:2] == ("xcrun", "stapler") and len(args) >= 3 and args[2] in {"staple", "validate"}
+    label = f"{args[0]} {args[1]}" + (f" {args[2]}" if stapler else "")
+    delays = STAPLER_RETRY_DELAYS if stapler else ()
+    for attempt in range(len(delays) + 1):
+        try:
+            result = subprocess.run(
+                [str(arg) for arg in args], check=False, text=True, capture_output=True,
+                env={key: value for key, value in os.environ.items() if key not in SECRET_NAMES},
+                timeout=60 if stapler else 2400,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{label} timed out") from None
+        if not result.returncode:
+            return result.stdout
+        message = f"{label} failed (exit {result.returncode})"
+        if args[0] == "codesign" or stapler:
+            detail = "\n".join((result.stdout, result.stderr)) if stapler else result.stderr
             values = sorted((os.environ[name] for name in SECRET_NAMES if os.environ.get(name)),
                             key=len, reverse=True)
             for value in values:
@@ -49,12 +56,18 @@ def run(*args):
             detail = " ".join(detail.split())[:4000]
             if detail:
                 message += f": {detail}"
+        # EX_NOHOST includes transient ticket-service failures. Missing, invalid,
+        # or revoked tickets and command timeouts must continue to fail immediately.
+        if stapler and result.returncode == 68 and attempt < len(delays):
+            print(f"{message}; retrying in {delays[attempt]}s ({attempt + 1}/{len(delays)} retries)", flush=True)
+            time.sleep(delays[attempt])
+            continue
         raise RuntimeError(message)
-    return result.stdout
 
 
 def verified_bundle_targets(app, architecture):
     targets = []
+    main_executable = app / "Contents/MacOS/OpenNOW"
     for path in app.rglob("*"):
         if path.is_symlink():
             continue
@@ -64,7 +77,11 @@ def verified_bundle_targets(app, architecture):
             with path.open("rb") as source:
                 if source.read(4) in MACHO_MAGIC:
                     run("lipo", path, "-verify_arch", architecture)
-                    targets.append(path)
+                    # Signing the main executable signs its containing bundle too,
+                    # which requires all sibling helpers to be signed already. The
+                    # final app signing owns its signature and entitlements.
+                    if path != main_executable:
+                        targets.append(path)
     return sorted(targets, key=lambda path: (-len(path.parts), str(path))) + [app]
 
 

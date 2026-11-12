@@ -55,6 +55,7 @@ Item {
         const badges = []
         if (shown("Video") && (profile.enableHdr === true || profile.hdr === true)) badges.push({text:"HDR", ink:"#C6A46A"})
         if (frameGenerationEnabled) badges.push({text:qsTr("FRAME GEN %1×").arg(ShellStore.frameGenerationFactor()), ink:"#F5A623"})
+        if (generatedFramesOnly) badges.push({text:qsTr("GENERATED ONLY"), ink:"#FF6B6B"})
         if (shown("Video") && Qt.platform.os === "osx" && ShellStore.settings.upscaling === "metalfx") badges.push({text:"METALFX", ink:"#7FD4FF"})
         if (flightVisible) badges.push({text:qsTr("FLIGHT") + " " + activeFlightDevices.length
             + (activeFlightDevices.length === flightDevices.length ? "" : "/" + flightDevices.length), ink:flightColor, glyph:"stick"})
@@ -62,6 +63,7 @@ Item {
     }
     readonly property bool telemetryActive: live.status === "streaming"
     readonly property bool frameGenerationEnabled: ShellStore.frameGenerationFactor() >= 2
+    readonly property bool generatedFramesOnly: frameGenerationEnabled && ShellStore.generatedFramesOnly
     readonly property var cards: metricCards()
     readonly property var compactMetrics: compactItems()
     property var history: ({})
@@ -99,6 +101,11 @@ Item {
         case "discontinuity": return qsTr("Discontinuity") + frameGenerationReasonSuffix()
         default: return qsTr("Unavailable")
         }
+    }
+    function frameGenerationLine() {
+        const ms = Number(frameGenerationStats.engineMs || 0)
+        const cost = ms > 0 ? " · " + ms.toFixed(1) + " ms" : ""
+        return frameGenerationState() + cost + (generatedFramesOnly ? " · " + qsTr("generated frames only") : "")
     }
     // Why the pacer re-warmed, from the render callback's last decision.
     function frameGenerationReasonSuffix() {
@@ -193,7 +200,7 @@ Item {
     function compactItems() {
         const items = cards.map(item => ({text:item.label + " " + metricValue(item) + (item.unit ? " " + item.unit : "")}))
         if (frameGenerationEnabled)
-            items.push({text:qsTr("FRAME GENERATION") + " " + frameGenerationState()})
+            items.push({text:qsTr("FRAME GENERATION") + " " + frameGenerationLine()})
         if (shown("Video")) items.push({text:videoText})
         if (shown("Region")) items.push({text:region})
         return items
@@ -202,7 +209,7 @@ Item {
         const lines = cards.map(item => item.label + ": " + metricValue(item) + (item.unit ? " " + item.unit : "")
             + (item.detail ? " · " + item.detail : ""))
         if (frameGenerationEnabled)
-            lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationState())
+            lines.push(qsTr("FRAME GENERATION") + ": " + frameGenerationLine())
         if (swapGated)
             lines.push(qsTr("SWAP GATE") + ": " + swapGateText())
         if (shown("Region")) lines.unshift(region + (rig ? " · " + rig : ""))
@@ -481,7 +488,7 @@ Item {
                     visible: root.frameGenerationEnabled
                     width: parent.width; height: 33
                     Rule { width: parent.width }
-                    Mono { objectName: "expandedFrameGenerationState"; x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationState(); font.pixelSize: 10; color: "#8CFFFFFF" }
+                    Mono { objectName: "expandedFrameGenerationState"; x: 16; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 32; text: qsTr("FRAME GENERATION") + " · " + root.frameGenerationLine(); font.pixelSize: 10; color: "#8CFFFFFF" }
                 }
                 Item {
                     width: parent.width; height: Math.max(41, footer.implicitHeight + 22)

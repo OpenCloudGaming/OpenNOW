@@ -662,12 +662,21 @@ private slots:
             return OPENNOW_STREAMER_OK;
         };
         NativeStreamRuntime runtime(api);
+        QSignalSpy errors(&runtime, &NativeStreamRuntime::presentationError);
         QVERIFY(runtime.start());
         QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
                               {QStringLiteral("id"), QStringLiteral("sender-fsr")}}));
         QTRY_VERIFY(runtime.presentationAllowed());
+        // Both native producers must import a real texture from the adopted QRhi
+        // device. The Vulkan fake can synthesize one, but D3D11 requires this source.
+        auto source = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(QRhiTexture::RGBA8, QSize(64, 64)));
+        QVERIFY(source->create());
+        producer.sourceTexture = source.get();
+        QImage image(QSize(64, 64), QImage::Format_RGBA8888);
+        image.fill(QColor(64, 128, 191, 255));
         auto texture = std::unique_ptr<QRhiTexture>(m_rhi->newTexture(
-            QRhiTexture::RGBA8, QSize(128, 128), 1, QRhiTexture::RenderTarget));
+            QRhiTexture::RGBA8, QSize(128, 128), 1,
+            QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
         QVERIFY(texture->create());
         auto target = std::unique_ptr<QRhiTextureRenderTarget>(m_rhi->newTextureRenderTarget(
             QRhiTextureRenderTargetDescription(QRhiColorAttachment(texture.get()))));
@@ -700,15 +709,34 @@ private slots:
             for (unsigned attempt = 0; attempt < 3; ++attempt) {
                 QRhiCommandBuffer *cb = nullptr;
                 QCOMPARE(m_rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+                if (index == 1 && attempt == 0) {
+                    auto *upload = m_rhi->nextResourceUpdateBatch();
+                    upload->uploadTexture(source.get(), image);
+                    cb->resourceUpdate(upload);
+                }
                 callback->initialize(m_rhi.get(), cb, target.get());
                 callback->prepareFrame(cb);
                 cb->beginPass(target.get(), Qt::black, {1.0f, 0});
                 cb->setViewport(QRhiViewport(0, 0, 128, 128));
                 callback->recordFrame(cb, QRect(0, 0, 128, 128));
                 cb->endPass();
+                QRhiReadbackResult readback;
+                bool completed = false;
+                readback.completed = [&] { completed = true; };
+                auto *updates = m_rhi->nextResourceUpdateBatch();
+                updates->readBackTexture(QRhiReadbackDescription(texture.get()), &readback);
+                cb->resourceUpdate(updates);
                 QCOMPARE(m_rhi->endOffscreenFrame(), QRhi::FrameOpSuccess);
                 callback->finishFrame();
                 callback->frameSwapped();
+                QVERIFY(completed);
+                QCOMPARE(readback.data.size(), 128 * 128 * 4);
+                const auto *pixel = reinterpret_cast<const unsigned char *>(readback.data.constData())
+                    + (64 * 128 + 64) * 4;
+                QVERIFY(qAbs(int(pixel[0]) - 64) <= 2);
+                QVERIFY(qAbs(int(pixel[1]) - 128) <= 2);
+                QVERIFY(qAbs(int(pixel[2]) - 191) <= 2);
+                QCOMPARE(pixel[3], 255);
                 const auto generation = callback->swapStats().value(QStringLiteral("fsrResourceGeneration")).toULongLong();
                 QVERIFY(generation > 0);
                 if (resources == 0) resources = generation;
@@ -727,6 +755,9 @@ private slots:
                  factor >= 2 ? QStringLiteral("unavailable") : QStringLiteral("off"));
         QCOMPARE(callback->frameGenerationStats().value(QStringLiteral("effectiveFactor")).toInt(), 0);
         QVERIFY(!callback->needsFrame());
+        QCoreApplication::processEvents();
+        QCOMPARE(errors.size(), 0);
+        QVERIFY(runtime.presentationAllowed());
 #else
         QSKIP("The native sender/FSR integration test requires D3D11 or Vulkan");
 #endif
@@ -834,8 +865,13 @@ private slots:
                 QVERIFY(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
                         != QStringLiteral("active"));
             } else if (callback->needsFrame()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                QVERIFY(present({}, image.pixelColor(0, 0)));
+                // Readback and the previous pair's drain can make arrival cadence slower
+                // than the synthetic 20 ms timestamps. Drain the actual bounded schedule
+                // rather than assuming its original frame is due after exactly 10 ms.
+                for (int drained = 0; callback->needsFrame() && drained < 24; ++drained) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    QVERIFY(present({}, image.pixelColor(0, 0)));
+                }
                 QVERIFY(!callback->needsFrame());
                 QCOMPARE(producer.releaseCount, producer.sourceCount);
             }
@@ -960,6 +996,12 @@ private slots:
             }
             QVERIFY(!callback->needsFrame());
             QCOMPARE(producer.releaseCount, producer.sourceCount + producer.borrowedEmptyCount);
+            const auto idleSources = producer.sourceCount;
+            for (int idle = 0; idle < 3; ++idle) {
+                QVERIFY(present({}));
+                QVERIFY2(!callback->needsFrame(), "A drained pair must not restart render requests while the source is idle");
+                QCOMPARE(producer.sourceCount, idleSources);
+            }
             QCoreApplication::processEvents();
             QCOMPARE(errors.size(), 0);
             QVERIFY2(callback->frameGenerationStats().value(QStringLiteral("status")).toString()
@@ -1149,12 +1191,15 @@ private slots:
             QCOMPARE(snapshot.value(QStringLiteral("refreshRateHz")).toDouble(), 165.0);
             const int sourceCount = producer.sourceCount;
             const int empty = producer.emptyCount;
+            const auto originalDue = std::chrono::steady_clock::now()
+                + std::chrono::duration<double, std::milli>(
+                    snapshot.value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0);
             std::this_thread::sleep_for(std::chrono::milliseconds(3));
             QVERIFY(present(false));
             QVERIFY(callback->needsFrame());
             if (moving) QCOMPARE(presented, midpoint);
             callback->frameSwapped();
-            std::this_thread::sleep_for(std::chrono::milliseconds(7));
+            std::this_thread::sleep_until(originalDue);
             QVERIFY(present());
             QVERIFY(!callback->needsFrame());
             if (moving) QCOMPARE(presented, sources[sequence]);
@@ -1186,7 +1231,8 @@ private slots:
                                                      16, 2'000'000'000};
             QVERIFY(present());
             if (callback->needsFrame()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(
+                    callback->frameGenerationStats().value(QStringLiteral("sourceIntervalMs")).toDouble() / 2.0));
                 QVERIFY(present());
                 QVERIFY(!callback->needsFrame());
             }

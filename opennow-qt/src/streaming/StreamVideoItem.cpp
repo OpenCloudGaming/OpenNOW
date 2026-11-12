@@ -8,6 +8,7 @@
 #include "streaming/rendering/StreamSenderPacer.h"
 
 #include <QCursor>
+#include <QCoreApplication>
 #include <QMetaObject>
 #include <QQmlEngine>
 #include <QQuickWindow>
@@ -152,10 +153,16 @@ StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCaptu
     };
     connect(this, &QQuickItem::windowChanged, this, attachWindow);
     attachWindow(window());
+#if defined(Q_OS_WIN)
+    QCoreApplication::instance()->installNativeEventFilter(this);
+#endif
 }
 
 StreamVideoItem::~StreamVideoItem()
 {
+#if defined(Q_OS_WIN)
+    QCoreApplication::instance()->removeNativeEventFilter(this);
+#endif
     m_windowsWindowMoveLoop.reset();
     disconnect(this, nullptr, this, nullptr);
     disconnect(m_frameSwapConnection);
@@ -309,6 +316,19 @@ void StreamVideoItem::setDisplayRefreshOverrideHz(int hz)
     if (m_displayRefreshOverrideHz == hz) return;
     m_displayRefreshOverrideHz = hz;
     emit displayRefreshOverrideHzChanged();
+    update();
+}
+
+bool StreamVideoItem::generatedFramesOnly() const
+{
+    return m_generatedFramesOnly;
+}
+
+void StreamVideoItem::setGeneratedFramesOnly(bool enabled)
+{
+    if (m_generatedFramesOnly == enabled) return;
+    m_generatedFramesOnly = enabled;
+    emit generatedFramesOnlyChanged();
     update();
 }
 

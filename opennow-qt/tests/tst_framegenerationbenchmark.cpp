@@ -1,4 +1,5 @@
 #include "streaming/rendering/FrameGenerationBenchmark.h"
+#include "streaming/rendering/FlyHighNetwork.h"
 
 #include <QTest>
 #include <QScopeGuard>
@@ -15,6 +16,52 @@ class FrameGenerationBenchmarkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void unsupportedRequestedEngineIsRejected_data()
+    {
+        QTest::addColumn<QString>("engine");
+        QTest::newRow("flyhigh") << QStringLiteral("flyhigh");
+        QTest::newRow("unknown") << QStringLiteral("unknown");
+        QTest::newRow("empty") << QString();
+    }
+
+    void unsupportedRequestedEngineIsRejected()
+    {
+        QFETCH(QString, engine);
+        const auto result = FrameGenerationBenchmark::measure(
+            {{QStringLiteral("engine"), engine}, {QStringLiteral("width"), 64},
+             {QStringLiteral("height"), 64}}, nullptr, {}, std::numeric_limits<quint64>::max());
+        QVERIFY(!result.value(QStringLiteral("ok")).toBool());
+        QCOMPARE(result.value(QStringLiteral("error")).toString(),
+                 QStringLiteral("Unsupported frame-generation benchmark engine: %1. Select motion.").arg(engine));
+        QVERIFY(!result.contains(QStringLiteral("engine")));
+    }
+
+    void explicitFlyHighRefusalDoesNotBlameTheGraphicsAdapter()
+    {
+#ifdef Q_OS_WIN
+        const bool hadFlyHigh = qEnvironmentVariableIsSet("OPENNOW_FLYHIGH");
+        const auto previousFlyHigh = qgetenv("OPENNOW_FLYHIGH");
+        const bool hadEngine = qEnvironmentVariableIsSet("OPENNOW_FRAME_GENERATION_ENGINE");
+        const auto previousEngine = qgetenv("OPENNOW_FRAME_GENERATION_ENGINE");
+        const auto restore = qScopeGuard([&] {
+            if (hadFlyHigh) qputenv("OPENNOW_FLYHIGH", previousFlyHigh);
+            else qunsetenv("OPENNOW_FLYHIGH");
+            if (hadEngine) qputenv("OPENNOW_FRAME_GENERATION_ENGINE", previousEngine);
+            else qunsetenv("OPENNOW_FRAME_GENERATION_ENGINE");
+        });
+        qputenv("OPENNOW_FLYHIGH", "1");
+        qunsetenv("OPENNOW_FRAME_GENERATION_ENGINE");
+        const auto result = FrameGenerationBenchmark::measure(
+            {{QStringLiteral("width"), 64}, {QStringLiteral("height"), 64}},
+            nullptr, {}, std::numeric_limits<quint64>::max());
+        QVERIFY(!result.value(QStringLiteral("ok")).toBool());
+        QCOMPARE(result.value(QStringLiteral("error")).toString(), FlyHighNetwork::unavailableReason());
+        QVERIFY(result.value(QStringLiteral("error")).toString().contains(QStringLiteral("OPENNOW_FLYHIGH")));
+#else
+        QSKIP("FlyHigh selection is Windows-only");
+#endif
+    }
+
     void selectedAdapterIsUsedAndMismatchesFailClosed()
     {
 #ifdef Q_OS_WIN
@@ -158,6 +205,7 @@ private slots:
             QSKIP(qPrintable(QStringLiteral("GPU benchmark unavailable here: ")
                              + result.value(QStringLiteral("error")).toString()));
         QVERIFY(result.value(QStringLiteral("frames")).toInt() >= 10);
+        QCOMPARE(result.value(QStringLiteral("engine")).toString(), QStringLiteral("motion"));
         QVERIFY(result.value(QStringLiteral("p50Ms")).toDouble() > 0.0);
         QVERIFY(result.value(QStringLiteral("p95Ms")).toDouble() >= result.value(QStringLiteral("p50Ms")).toDouble());
         QVERIFY(result.value(QStringLiteral("maxMs")).toDouble() >= result.value(QStringLiteral("p95Ms")).toDouble());

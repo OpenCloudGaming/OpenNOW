@@ -34,7 +34,8 @@ if(BUILD_TESTING)
     if(WIN32)
         target_link_libraries(opennow-graphicsdevices-tests PRIVATE user32 dxgi d3d11)
     endif()
-    add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt)
+    add_test(NAME opennow-graphicsdevices-tests COMMAND opennow-graphicsdevices-tests -o -,txt
+        -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/graphics-device-results.xml,junitxml")
     set_tests_properties(opennow-graphicsdevices-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     qt_add_executable(opennow-macawdl-tests tests/tst_macawdlcontroller.cpp
@@ -406,9 +407,20 @@ if(BUILD_TESTING)
         PREFIX "/opennow/shaders" BASE "shaders"
         FILES shaders/framegen.vert shaders/streamvideo.vert shaders/streamvideo.frag)
     opennow_add_fsr_shaders(opennow-fsrupscaler-tests)
+    qt_add_executable(opennow-flyhighpolicy-tests
+        tests/tst_flyhighpolicy.cpp src/streaming/rendering/FlyHighNetwork.cpp
+        src/streaming/rendering/StreamFrameInterpolator.cpp)
+    target_include_directories(opennow-flyhighpolicy-tests PRIVATE src)
+    target_link_libraries(opennow-flyhighpolicy-tests PRIVATE Qt6::Test Qt6::GuiPrivate)
+    target_compile_definitions(opennow-flyhighpolicy-tests PRIVATE
+        OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME opennow-flyhighpolicy-tests COMMAND opennow-flyhighpolicy-tests -o -,txt)
+    set_tests_properties(opennow-flyhighpolicy-tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
     qt_add_executable(opennow-frameinterpolator-tests
         tests/tst_frameinterpolator.cpp
-        src/streaming/rendering/StreamFrameInterpolator.cpp)
+        src/streaming/rendering/StreamFrameInterpolator.cpp
+        src/streaming/rendering/FlyHighNetwork.cpp)
     target_include_directories(opennow-frameinterpolator-tests PRIVATE src)
     target_link_libraries(opennow-frameinterpolator-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
@@ -450,7 +462,8 @@ if(BUILD_TESTING)
     qt_add_executable(opennow-framegenerationbenchmark-tests
         tests/tst_framegenerationbenchmark.cpp
         src/streaming/rendering/FrameGenerationBenchmark.cpp
-        src/streaming/rendering/StreamFrameInterpolator.cpp)
+        src/streaming/rendering/StreamFrameInterpolator.cpp
+        src/streaming/rendering/FlyHighNetwork.cpp)
     target_include_directories(opennow-framegenerationbenchmark-tests PRIVATE src)
     target_link_libraries(opennow-framegenerationbenchmark-tests PRIVATE
         Qt6::Test Qt6::Core Qt6::Gui Qt6::GuiPrivate)
@@ -1196,6 +1209,7 @@ if(BUILD_TESTING)
             src/streaming/rendering/NativeStreamRenderCallback.cpp
             src/streaming/rendering/HdrOutput.cpp
             src/streaming/rendering/StreamFrameInterpolator.cpp
+            src/streaming/rendering/FlyHighNetwork.cpp
             src/streaming/rendering/LinuxVulkanGraphics.cpp)
         target_include_directories(opennow-nativeframegeneration-tests PRIVATE src)
         opennow_add_fsr_shaders(opennow-nativeframegeneration-tests)
@@ -1209,10 +1223,12 @@ if(BUILD_TESTING)
             PREFIX "/opennow/shaders" BASE "shaders" FILES ${OPENNOW_STREAM_SHADERS})
         if(OPENNOW_XVFB_RUN)
             add_test(NAME opennow-nativeframegeneration-tests
-                COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-nativeframegeneration-tests>" -o -,txt)
+                COMMAND "${OPENNOW_XVFB_RUN}" -a "$<TARGET_FILE:opennow-nativeframegeneration-tests>" -o -,txt
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-frame-generation-results.xml,junitxml")
             set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb")
         else()
-            add_test(NAME opennow-nativeframegeneration-tests COMMAND opennow-nativeframegeneration-tests -o -,txt)
+            add_test(NAME opennow-nativeframegeneration-tests COMMAND opennow-nativeframegeneration-tests -o -,txt
+                -o "${CMAKE_CURRENT_BINARY_DIR}/Testing/Temporary/native-frame-generation-results.xml,junitxml")
             set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         endif()
         set_tests_properties(opennow-nativeframegeneration-tests PROPERTIES TIMEOUT 60)
@@ -1359,6 +1375,7 @@ if(BUILD_TESTING)
         tests/tst_embeddedorchestration.cpp
     )
     target_link_libraries(opennow-embedded-orchestration-tests PRIVATE Qt6::Test Qt6::Core Qt6::Qml)
+    target_include_directories(opennow-embedded-orchestration-tests PRIVATE src)
     target_compile_definitions(opennow-embedded-orchestration-tests PRIVATE
         OPENNOW_QT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME opennow-embedded-orchestration-tests
@@ -1517,6 +1534,7 @@ if(BUILD_TESTING)
         opennow-streampresentation-tests
         opennow-streampresentationfeedback-tests
         opennow-senderpacing-tests
+        opennow-flyhighpolicy-tests
         opennow-frameinterpolator-tests
         opennow-framegenerationbenchmark-tests
         opennow-fsrupscaler-tests
@@ -1536,6 +1554,9 @@ if(BUILD_TESTING)
         opennow-controllersources-tests
         opennow-controllermetadata-tests
     )
+    if(TARGET opennow-nativeframegeneration-tests)
+        list(APPEND OPENNOW_CI_UNIT_TEST_TARGETS opennow-nativeframegeneration-tests)
+    endif()
     if(WIN32)
         list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-hdrcolor-tests)
         list(REMOVE_ITEM OPENNOW_CI_UNIT_TEST_TARGETS opennow-queueselector-tests)
@@ -1567,6 +1588,7 @@ if(BUILD_TESTING)
             opennow-controllericons-tests
             opennow-streamtoasts-tests
             opennow-waylandhdroutput-tests
+            opennow-flyhighpolicy-tests
             opennow-frameinterpolator-tests
             opennow-framegenerationbenchmark-tests
             opennow-fsrupscaler-tests
@@ -1636,6 +1658,7 @@ if(BUILD_TESTING)
                 opennow-streamtoasts-tests
                 opennow-waylandhdroutput-tests
                 opennow-hdrcolor-tests
+                opennow-flyhighpolicy-tests
                 opennow-framegenerationbenchmark-tests
                 opennow-fsrupscaler-tests
                 opennow-localization-tests

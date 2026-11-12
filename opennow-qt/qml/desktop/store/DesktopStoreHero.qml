@@ -21,6 +21,7 @@ Item {
 
     readonly property var slide: slides.length ? slides[Math.max(0, Math.min(currentSlide, slides.length - 1))] : null
     readonly property var slideGame: slide && slide.game ? slide.game : null
+    readonly property int nextIndex: slides.length ? (currentSlide + 1) % slides.length : 0
 
     function nextSlide() {
         if (slides.length > 1)
@@ -68,6 +69,7 @@ Item {
         Repeater {
             model: root.slides
             Item {
+                id: slideItem
                 required property var modelData
                 required property int index
                 anchors.fill: parent
@@ -75,15 +77,23 @@ Item {
                 opacity: index === root.currentSlide ? 1 : 0
                 Behavior on opacity { NumberAnimation { duration: AppController.reducedMotion ? 0 : 450; easing.type: Easing.OutCubic } }
 
+                ArtworkSource {
+                    id: slideArtwork
+                    sourceUrl: DesktopTokens.decodeArtworkUrl(String(slideItem.modelData.image || ""))
+                    active: root.visible && (slideItem.opacity > 0 || slideItem.index === root.currentSlide
+                        || slideItem.index === root.nextIndex)
+                }
+
                 Image {
                     x: Math.round(parent.width * 0.28)
                     width: parent.width - x
                     height: parent.height
-                    source: DesktopTokens.decodeArtworkUrl(String(modelData.image || ""))
+                    source: slideArtwork.resolvedUrl
+                    onStatusChanged: slideArtwork.reportImageStatus(status, source)
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                     cache: true
-                    sourceSize: Qt.size(Math.ceil(width), Math.ceil(height))
+                    sourceSize: DesktopTokens.artworkSourceSize(width, height, Screen.devicePixelRatio)
                 }
             }
         }

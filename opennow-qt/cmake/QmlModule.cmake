@@ -298,6 +298,7 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopKeyHint.qml
         qml/desktop/components/DesktopPoster.qml
         qml/desktop/components/DesktopPosterOverlay.qml
+        qml/desktop/components/DesktopPosterSkeleton.qml
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
         qml/desktop/home/DesktopHomePoster.qml
@@ -448,6 +449,8 @@ qt_add_qml_module(opennow-qt
         res/onboarding/desktop-preview.png
         res/onboarding/console-preview.png
         res/fonts/Nunito-Variable.ttf
+        res/fonts/NotoSansKR-Variable.ttf
+        res/fonts/NotoSansKR-OFL.txt
         res/fonts/IBMPlexMono-Regular.ttf
         res/fonts/IBMPlexMono-Medium.ttf
         res/fonts/IBMPlexMono-Bold.ttf

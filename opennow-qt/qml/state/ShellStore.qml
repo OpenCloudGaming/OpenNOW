@@ -264,6 +264,7 @@ QtObject {
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState
+    readonly property bool catalogInitialLoading: catalogOwner.catalogInitialLoading
     property alias catalogComplete: catalogOwner.catalogComplete
     property alias catalogError: catalogOwner.catalogError
     property alias catalogNextCursor: catalogOwner.catalogNextCursor
@@ -296,6 +297,7 @@ QtObject {
     property alias storeForceRefresh: catalogOwner.storeForceRefresh
     property alias storeLastPageCached: catalogOwner.storeLastPageCached
     readonly property bool storeLoading: catalogOwner.storeLoading
+    readonly property bool storeInitialLoading: catalogOwner.storeInitialLoading
     property alias storePageTimer: catalogOwner.storePageTimer
     property alias storeMarquee: catalogOwner.storeMarquee
     property alias storePanels: catalogOwner.storePanels
@@ -660,17 +662,7 @@ QtObject {
                     serverIp:root.conflictSession.serverIp || ""
                 }, 35000)
             } else if (stage === "create") {
-                root.streamState = "requesting"
-                root.launchRequestedAtMs = Date.now()
-                root.pendingRequestedColorQuality = String(root.settings.colorQuality || "8bit_420")
-                root.streamCreateRequestId = CoreClient.request("session.create",
-                    Object.assign({}, root.pendingLaunchParams, {
-                        runtimeCapabilities: root.nativeRuntimeCapabilities,
-                        maxEntitledFps: settingsOwner.maxEntitledFps(String(root.settings.resolution || "")),
-                        // Active display physical DPI (auto per screen / OS).
-                        screenDpi: AppController.screenDpi(),
-                        devicePixelRatio: Screen.devicePixelRatio
-                    }), 60000)
+                root.requestNewSession()
             }
         }
         function onRequestFailed(id, code, message) {
@@ -868,6 +860,9 @@ QtObject {
     property int shortcutActionGeneration: 0
     property var runtimeStreamProfile: ({})
     property bool antiAfkEnabled: false
+    // Ctrl+Shift+F12 while frame generation is on: the source frame slot repeats the
+    // latest generated frame instead of the decoded one.
+    property bool generatedFramesOnly: false
     property var lastSessionReport: null
     property bool desiredStreamInputPaused: false
     property bool currentStreamInputPaused: false
@@ -2124,6 +2119,24 @@ QtObject {
         inspectLaunch("create")
     }
 
+    function requestNewSession() {
+        streamState = "requesting"
+        launchRequestedAtMs = Date.now()
+        pendingRequestedColorQuality = String(settings.colorQuality || "8bit_420")
+        streamCreateRequestId = CoreClient.request("session.create",
+            Object.assign({}, pendingLaunchParams, {
+                runtimeCapabilities: nativeRuntimeCapabilities,
+                maxEntitledFps: settingsOwner.maxEntitledFps(String(settings.resolution || "")),
+                // Active display physical DPI (auto per screen / OS).
+                screenDpi: AppController.screenDpi(),
+                devicePixelRatio: Screen.devicePixelRatio
+            }), 60000)
+        if (streamCreateRequestId === "") {
+            pendingRequestedColorQuality = ""
+            handleSessionCreateFailure("", CoreClient.lastError || qsTr("Session could not start"))
+        }
+    }
+
     function resolveSessionConflict(choice) {
         if (streamBusy)
             return
@@ -2973,6 +2986,7 @@ QtObject {
             "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
             "toggle-frame-generation": [String(settings.shortcutToggleFrameGeneration ?? "Ctrl+Shift+G")],
+            "toggle-generated-only": ["Ctrl+Shift+F12"],
             "toggle-microphone": microphoneToggleAvailable
                 ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
@@ -3031,6 +3045,16 @@ QtObject {
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
+            accessibilityMessage = streamControlMessage
+        } else if (action === "toggle-generated-only") {
+            if (settingsOwner.frameGenerationFactor() < 2) {
+                streamControlMessage = qsTr("Frame generation is off")
+            } else {
+                generatedFramesOnly = !generatedFramesOnly
+                streamControlMessage = generatedFramesOnly
+                    ? qsTr("Generated frames only")
+                    : qsTr("Source frames shown")
+            }
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-frame-generation") {
             if (!settingsOwner.frameGenerationUnlocked()) {
