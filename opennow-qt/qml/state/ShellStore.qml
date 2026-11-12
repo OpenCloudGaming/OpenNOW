@@ -1012,10 +1012,19 @@ QtObject {
         }
     }
 
+    // VN fork guard (vn-translation): this build must never auto-check
+    // upstream releases. Upstream's updater is hardcoded to
+    // OpenCloudGaming/OpenNOW with an Ed25519 key this fork does not have,
+    // so an upstream offer could only confuse — and a VN build has no
+    // signed update channel of its own yet. Manual update checks still
+    // work (and are fail-closed without a pinned key), but the automatic
+    // 6-hour check is off in VN builds. See docs/vn-translation/UPDATER.md.
+    readonly property bool vnTranslationBuild: true
+
     property Timer autoUpdateCheckTimer: Timer {
         interval: root.lastAutoUpdateCheckMs === 0 ? 15000 : 60000
         repeat: true
-        running: root.ready && (root.settings.autoCheckForUpdates === true || root.settings.autoDownloadUpdates === true)
+        running: !root.vnTranslationBuild && root.ready && (root.settings.autoCheckForUpdates === true || root.settings.autoDownloadUpdates === true)
         onTriggered: root.runAutomaticUpdates()
     }
 
@@ -1721,6 +1730,8 @@ QtObject {
     }
 
     function runAutomaticUpdates() {
+        if (root.vnTranslationBuild)
+            return // VN fork: no automatic upstream update checks (see above).
         if (!ready || !updaterSessionSafe || updaterBusy)
             return
         if (settings.autoDownloadUpdates === true && updaterState.canDownload === true) {

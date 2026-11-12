@@ -19,6 +19,7 @@
 #include "streaming/NativeStreamRuntime.h"
 #endif
 #include "app/SingleInstance.h"
+#include "translation/TranslationEngine.h"
 #include "streaming/StreamVideoItem.h"
 #include "media/ThumbnailGenerator.h"
 
@@ -194,6 +195,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         if (acquisition == SingleInstance::Acquisition::Failed) return EXIT_FAILURE;
     }
     AppController controller;
+    TranslationEngine translationEngine; // app lifetime; exposed to QML below
     QObject::connect(&controller, &AppController::restartRequested, &application, [&] {
         restartExecutable = QCoreApplication::applicationFilePath();
 #ifdef Q_OS_LINUX
@@ -253,6 +255,13 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     });
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::screenshotReady,
                      &controller, &AppController::saveStreamScreenshot);
+    // Second consumer of the same screenshot signal: feeds the translation
+    // pipeline (dialogue OCR). Queued so onStreamFrame always runs on the
+    // GUI thread even if the runtime emits from another thread. The
+    // saveStreamScreenshot connect above is unchanged.
+    QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::screenshotReady,
+                     &translationEngine, &TranslationEngine::onStreamFrame,
+                     Qt::QueuedConnection);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleRequested,
                      &controllerInput, &ControllerInput::playRumble);
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::controllerRumbleStopped,
@@ -359,6 +368,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     std::optional<AcceptanceSession> acceptance(std::in_place, application, engine, controller,
                                                coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
+    engine.rootContext()->setContextProperty(u"translationEngine"_s, &translationEngine);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
     engine.rootContext()->setContextProperty(u"I18n"_s, &localization);
