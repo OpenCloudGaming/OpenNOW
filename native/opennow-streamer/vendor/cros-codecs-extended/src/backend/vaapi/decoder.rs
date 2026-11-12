@@ -200,13 +200,14 @@ pub struct VaapiBackend<V: VideoFrame> {
 }
 
 /// Edge length of the placeholder VAContext created before the first SPS.
-pub const INITIAL_CONTEXT_SIZE: u32 = 64;
+/// Mesa radeonsi needs at least 64x64, V4L2-backed drivers (Qualcomm iris
+/// through the msm VA driver) at least 96x96.
+pub const INITIAL_CONTEXT_SIZE: u32 = 128;
 
 impl<V: VideoFrame> VaapiBackend<V> {
     pub(crate) fn new(display: Arc<libva::Display>, supports_context_reuse: bool) -> Self {
         // Placeholder until the first SPS arrives (`new_sequence` replaces the
-        // context). Mesa radeonsi (AMD VCN) rejects H.264 decode contexts
-        // smaller than 64x64 with VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED.
+        // context), sized by INITIAL_CONTEXT_SIZE for the drivers' minimums.
         let init_stream_info = StreamInfo {
             format: DecodedFormat::NV12,
             coded_resolution: Resolution::from((INITIAL_CONTEXT_SIZE, INITIAL_CONTEXT_SIZE)),
