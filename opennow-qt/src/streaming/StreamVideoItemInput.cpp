@@ -974,9 +974,16 @@ void StreamVideoItem::setNativeWindowMoveLoop(bool active)
 
 void StreamVideoItem::syncCaptureState()
 {
-    auto desired = m_inputEnabled && !m_nativeWindowMoveLoop && isVisible() && hasActiveFocus()
-        && window() && window()->isActive() && s_nativeRuntime && s_nativeRuntime->running()
-        && s_nativeRuntime->inputAllowed();
+    // Under gamescope nothing hands the focus back to the video after an
+    // overlay closes, because no mouse click lands on it and controller input
+    // is dropped meanwhile. Take it whenever the window is active; another
+    // window on top (a sign-in browser) still stops capture, and so does a
+    // disabled item (the launch cover).
+    const bool focused = window() && window()->isActive()
+        && (hasActiveFocus() || (m_gamescopeSession && isEnabled()));
+    auto desired = m_inputEnabled && !m_nativeWindowMoveLoop && isVisible() && focused
+        && s_nativeRuntime && s_nativeRuntime->running() && s_nativeRuntime->inputAllowed();
+    if (desired && m_gamescopeSession && !hasActiveFocus()) forceActiveFocus(Qt::OtherFocusReason);
     if (m_captureActive && (!desired || (WaylandPointerCapture::isWayland()
             && m_relativeMouse && !m_waylandPointer->locked())
             || (m_usesMacPointerCapture && m_relativeMouse && !m_macPointer->locked())))
@@ -1176,6 +1183,12 @@ void StreamVideoItem::updateLocalCursor()
     setCursor(m_remoteCursor);
 }
 
+bool StreamVideoItem::defaultRelativeMouse() const
+{
+    // gamescope starts absolute so taps and the server-drawn cursor line up.
+    return s_nativeRuntime && s_nativeRuntime->defaultRelativeMouse() && !m_gamescopeSession;
+}
+
 void StreamVideoItem::resetRemoteCursor()
 {
     m_remoteCursorKnown = false;
@@ -1183,7 +1196,7 @@ void StreamVideoItem::resetRemoteCursor()
     m_serverCursorComposited = s_nativeRuntime ? s_nativeRuntime->serverCursorComposited() : true;
     m_remoteCursor = QCursor();
     setRelativeMouse(m_usesMacPointerCapture ? m_macPointerLockEnabled
-        : m_manualRelativeMouse.value_or(s_nativeRuntime && s_nativeRuntime->defaultRelativeMouse()));
+        : m_manualRelativeMouse.value_or(defaultRelativeMouse()));
     updateLocalCursor();
 }
 
