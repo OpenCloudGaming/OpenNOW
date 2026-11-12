@@ -103,6 +103,24 @@ enum NativeStreamMouseCoordinatePolicy {
     }
 }
 
+/// Turns UIKit scroll gestures into wheel deltas for the host, where 120 is one notch and
+/// positive scrolls up. The wheel is read from scroll gestures rather than `GCMouse`, which
+/// does not deliver a wheel's clicks on iPadOS.
+enum NativeStreamScrollWheelPolicy {
+    static let notch = 120
+
+    /// A wheel click is one notch in the direction of travel, whatever distance iOS gives it.
+    static func discreteDelta(travel: CGFloat) -> Int {
+        travel > 0 ? notch : (travel < 0 ? -notch : 0)
+    }
+
+    /// A trackpad scroll is proportional: the height of the surface is twenty notches.
+    static func continuousDelta(travel: CGFloat, surfaceHeight: CGFloat) -> Int {
+        guard surfaceHeight > 0 else { return 0 }
+        return Int((travel / surfaceHeight * CGFloat(notch * 20)).rounded(.towardZero))
+    }
+}
+
 enum NativeStreamGamepadMixer {
     static func merging(
         physical: NativeStreamGamepadState,
@@ -686,6 +704,11 @@ final class NativeStreamInputBridge {
     private let encoder = NativeStreamInputEncoder()
     private var keyboard: GCKeyboard?
     private var mice: [GCMouse] = []
+    /// Whether a hardware mouse drives the game. iOS keeps delivering raw mouse events while
+    /// the in-game menu is open, so without this the game cursor follows the pointer the user
+    /// is aiming at the menu. On unless the menu says otherwise.
+    private(set) var hardwareMouseForwarding = true
+    private var hardwareHeldMouseButtons: Set<Int> = []
     private var controllersBySlot: [Int: GCController] = [:]
     private var controllerSlots: [ObjectIdentifier: Int] = [:]
     private var lastGamepadStates: [Int: NativeStreamGamepadState] = [:]
@@ -904,7 +927,6 @@ final class NativeStreamInputBridge {
             input.leftButton.pressedChangedHandler = nil
             input.rightButton?.pressedChangedHandler = nil
             input.middleButton?.pressedChangedHandler = nil
-            input.scroll.valueChangedHandler = nil
         }
         controllersBySlot.values.forEach {
             $0.extendedGamepad?.valueChangedHandler = nil
@@ -912,6 +934,7 @@ final class NativeStreamInputBridge {
         }
         keyboard = nil
         mice = []
+        hardwareHeldMouseButtons.removeAll()
         controllersBySlot.removeAll(keepingCapacity: true)
         controllerSlots.removeAll(keepingCapacity: true)
         lastGamepadStates.removeAll(keepingCapacity: true)
@@ -975,6 +998,38 @@ final class NativeStreamInputBridge {
 
     func sendMouseWheel(delta: Int) {
         sink?.sendReliableInput(encoder.encodeMouseWheel(delta: delta))
+    }
+
+    func setHardwareMouseForwarding(_ enabled: Bool) {
+        guard hardwareMouseForwarding != enabled else { return }
+        hardwareMouseForwarding = enabled
+        guard !enabled else { return }
+        // Let go of anything held, or the host keeps the button down behind the menu.
+        for button in hardwareHeldMouseButtons.sorted() {
+            sendMouseButton(button, pressed: false)
+        }
+        hardwareHeldMouseButtons.removeAll()
+    }
+
+    func forwardHardwareMouseMove(dx: CGFloat, dy: CGFloat) {
+        guard hardwareMouseForwarding else { return }
+        coalesceMouse(dx: dx, dy: dy)
+    }
+
+    func forwardHardwareMouseButton(_ button: Int, pressed: Bool) {
+        if pressed {
+            guard hardwareMouseForwarding else { return }
+            hardwareHeldMouseButtons.insert(button)
+        } else {
+            // Drop a release whose press was withheld, or that went out when the menu opened.
+            guard hardwareHeldMouseButtons.remove(button) != nil else { return }
+        }
+        sendMouseButton(button, pressed: pressed)
+    }
+
+    func sendHardwareMouseWheel(delta: Int) {
+        guard hardwareMouseForwarding else { return }
+        sendMouseWheel(delta: delta)
     }
 
     @discardableResult
@@ -1240,7 +1295,6 @@ final class NativeStreamInputBridge {
             input.leftButton.pressedChangedHandler = nil
             input.rightButton?.pressedChangedHandler = nil
             input.middleButton?.pressedChangedHandler = nil
-            input.scroll.valueChangedHandler = nil
         }
         mice = GCMouse.mice()
         for mouse in mice {
@@ -1250,25 +1304,20 @@ final class NativeStreamInputBridge {
                     deltaX: deltaX,
                     deltaY: deltaY
                 )
-                self?.coalesceMouse(dx: delta.x, dy: delta.y)
+                self?.forwardHardwareMouseMove(dx: delta.x, dy: delta.y)
             }
             input.leftButton.pressedChangedHandler = { [weak self] _, _, pressed in
-                self?.sendMouseButton(1, pressed: pressed)
+                self?.forwardHardwareMouseButton(1, pressed: pressed)
             }
             input.middleButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-                self?.sendMouseButton(2, pressed: pressed)
+                self?.forwardHardwareMouseButton(2, pressed: pressed)
             }
             input.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-                self?.sendMouseButton(3, pressed: pressed)
-            }
-            input.scroll.valueChangedHandler = { [weak self] _, _, yValue in
-                let delta = Int((CGFloat(yValue) * 120).rounded())
-                guard delta != 0 else { return }
-                self?.sendMouseWheel(delta: delta)
+                self?.forwardHardwareMouseButton(3, pressed: pressed)
             }
             input.auxiliaryButtons?.enumerated().forEach { offset, button in
                 button.pressedChangedHandler = { [weak self] _, _, pressed in
-                    self?.sendMouseButton(4 + offset, pressed: pressed)
+                    self?.forwardHardwareMouseButton(4 + offset, pressed: pressed)
                 }
             }
         }
@@ -1875,6 +1924,11 @@ final class NativeStreamInputBridge {
     func sendKey(mapping: NativeStreamKeyboardMapping, pressed: Bool, modifiers: UInt16) {}
     func clearRemoteText() {}
     func sendMouseWheel(delta: Int) {}
+    var hardwareMouseForwarding: Bool { true }
+    func setHardwareMouseForwarding(_ enabled: Bool) {}
+    func forwardHardwareMouseMove(dx: CGFloat, dy: CGFloat) {}
+    func forwardHardwareMouseButton(_ button: Int, pressed: Bool) {}
+    func sendHardwareMouseWheel(delta: Int) {}
     func sendUnicodeText(_ text: String) -> Int { 0 }
     func advertiseHaptics(force: Bool = false, now: TimeInterval = 0) {}
     func applyRumble(controllerId: Int, weakMagnitude: Int, strongMagnitude: Int) {}

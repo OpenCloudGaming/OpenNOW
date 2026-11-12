@@ -4569,6 +4569,96 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testWheelClicksAndTrackpadScrollsReachTheHostAsWheelDeltas() {
+        // A wheel click is one notch whatever distance iOS reports for it; up is positive.
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: 3), 120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: -40), -120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.discreteDelta(travel: 0), 0)
+        // A trackpad scroll is proportional, and too little travel sends nothing yet.
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 800, surfaceHeight: 800), 2400)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: -40, surfaceHeight: 800), -120)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 0.2, surfaceHeight: 800), 0)
+        XCTAssertEqual(NativeStreamScrollWheelPolicy.continuousDelta(travel: 10, surfaceHeight: 0), 0)
+
+        let bridge = NativeStreamInputBridge()
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+        bridge.sendMouseWheel(delta: -120)
+        XCTAssertEqual(sink.reliablePackets.count, 1)
+        let wheel = Array(sink.reliablePackets[0].suffix(22))
+        XCTAssertEqual(Array(wheel[0..<4]), [10, 0, 0, 0])
+        XCTAssertEqual(Array(wheel[6..<8]), [0xff, 0x88])
+    }
+
+    @MainActor
+    func testStreamSurfaceReadsScrollGesturesOnItsHostViewWhileItIsOnScreen() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = try XCTUnwrap(scene.windows.first(where: \.isKeyWindow))
+        let previous = window.rootViewController
+        defer { window.rootViewController = previous }
+        let bridge = NativeStreamInputBridge()
+        let host = NativeStreamHostingController(rootView: AnyView(NativeStreamTouchCaptureView(
+            inputBridge: bridge, inputEnabled: true, nativeTouchEnabled: false,
+            geometry: { NativeStreamTouchGeometry() }, onZoomGesture: { _, _ in })))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        // Scroll-only pans, on the host's own view so a control drawn above cannot swallow them.
+        func scrollTypes() -> [UIScrollTypeMask] {
+            (host.view.gestureRecognizers ?? []).compactMap { $0 as? UIPanGestureRecognizer }
+                .filter { $0.maximumNumberOfTouches == 0 }.map(\.allowedScrollTypesMask)
+        }
+        XCTAssertEqual(scrollTypes().count, 2)
+        XCTAssertTrue(scrollTypes().contains(.discrete))
+        XCTAssertTrue(scrollTypes().contains(.continuous))
+
+        host.rootView = AnyView(Color.black)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(scrollTypes().isEmpty)
+    }
+
+    @MainActor
+    func testHardwareMouseDrivesTheGameExceptWhileTheInGameMenuIsOpen() async throws {
+        let coordinator = makeTouchControlsCoordinator(settings: .default)
+        let bridge = coordinator.inputBridge
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+        func sendMoveButtonAndWheel() async throws {
+            bridge.forwardHardwareMouseMove(dx: 10, dy: 0)
+            bridge.forwardHardwareMouseButton(1, pressed: true)
+            bridge.sendHardwareMouseWheel(delta: 120)
+            // Movement is coalesced and goes out a few milliseconds later.
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        // On from the start: nothing has to happen first for a mouse to work.
+        XCTAssertTrue(bridge.hardwareMouseForwarding)
+        try await sendMoveButtonAndWheel()
+        XCTAssertEqual(sink.partiallyReliablePackets.count, 1)
+        XCTAssertEqual(sink.reliablePackets.count, 2)
+
+        // Opening the menu lets go of the held button, then keeps the mouse away from the game.
+        coordinator.controlsPanelVisible = true
+        XCTAssertFalse(bridge.hardwareMouseForwarding)
+        XCTAssertEqual(sink.reliablePackets.count, 3)
+        let release = Array(sink.reliablePackets[2].suffix(18))
+        XCTAssertEqual(Array(release[0..<5]), [9, 0, 0, 0, 1], "left button up")
+        sink.reliablePackets.removeAll()
+        sink.partiallyReliablePackets.removeAll()
+        try await sendMoveButtonAndWheel()
+        bridge.forwardHardwareMouseButton(1, pressed: false)
+        XCTAssertTrue(sink.partiallyReliablePackets.isEmpty)
+        XCTAssertTrue(sink.reliablePackets.isEmpty)
+
+        // Closing it hands the mouse back.
+        coordinator.controlsPanelVisible = false
+        XCTAssertTrue(bridge.hardwareMouseForwarding)
+        try await sendMoveButtonAndWheel()
+        XCTAssertEqual(sink.partiallyReliablePackets.count, 1)
+        XCTAssertEqual(sink.reliablePackets.count, 2)
+    }
+
     @MainActor
     private func makeTouchControlsCoordinator(settings: AppSettings,
         onTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
