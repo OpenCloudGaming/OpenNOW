@@ -1,0 +1,33 @@
+[
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x1000d3980",
+        "0x1000d6780",
+        "0x1000dc6b0",
+        "0x1000e4a10"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x10000fa70",
+        "0x100014020",
+        "0x10001a5d0",
+        "0x1000c3660"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x1000583d0",
+        "0x100013360"
+      ]
+    }
+  }
+]
