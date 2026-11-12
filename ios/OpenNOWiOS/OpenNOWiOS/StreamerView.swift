@@ -2659,7 +2659,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published var retryAvailable = false
     @Published var showStatsOverlay = false
     @Published var controlsPanelVisible = false {
-        didSet { inputBridge.setControllerHUDActive(controlsPanelVisible) }
+        didSet {
+            inputBridge.setControllerHUDActive(controlsPanelVisible)
+            // The mouse is aimed at the menu while it is open, not at the game. Tied to the
+            // menu's own state and nothing else, so the mouse can never be left switched off.
+            inputBridge.setHardwareMouseForwarding(!controlsPanelVisible)
+        }
     }
     @Published var controllerHUDInput: NativeStreamControllerHUDInput?
     @Published fileprivate var touchLayoutEditing = false
@@ -7792,7 +7797,7 @@ final class NativeStreamTouchView: UIView {
             : NativeStreamScrollWheelPolicy.continuousDelta(travel: pending, surfaceHeight: surface.bounds.height)
         guard delta != 0 else { return }
         recognizer.sentTravel = travel
-        inputBridge?.sendMouseWheel(delta: delta)
+        inputBridge?.sendHardwareMouseWheel(delta: delta)
     }
 
     private func updateAccessibilityPresentation() {

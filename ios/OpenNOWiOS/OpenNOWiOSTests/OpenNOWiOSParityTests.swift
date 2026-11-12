@@ -4619,6 +4619,47 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     @MainActor
+    func testHardwareMouseDrivesTheGameExceptWhileTheInGameMenuIsOpen() async throws {
+        let coordinator = makeTouchControlsCoordinator(settings: .default)
+        let bridge = coordinator.inputBridge
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+        func sendMoveButtonAndWheel() async throws {
+            bridge.forwardHardwareMouseMove(dx: 10, dy: 0)
+            bridge.forwardHardwareMouseButton(1, pressed: true)
+            bridge.sendHardwareMouseWheel(delta: 120)
+            // Movement is coalesced and goes out a few milliseconds later.
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        // On from the start: nothing has to happen first for a mouse to work.
+        XCTAssertTrue(bridge.hardwareMouseForwarding)
+        try await sendMoveButtonAndWheel()
+        XCTAssertEqual(sink.partiallyReliablePackets.count, 1)
+        XCTAssertEqual(sink.reliablePackets.count, 2)
+
+        // Opening the menu lets go of the held button, then keeps the mouse away from the game.
+        coordinator.controlsPanelVisible = true
+        XCTAssertFalse(bridge.hardwareMouseForwarding)
+        XCTAssertEqual(sink.reliablePackets.count, 3)
+        let release = Array(sink.reliablePackets[2].suffix(18))
+        XCTAssertEqual(Array(release[0..<5]), [9, 0, 0, 0, 1], "left button up")
+        sink.reliablePackets.removeAll()
+        sink.partiallyReliablePackets.removeAll()
+        try await sendMoveButtonAndWheel()
+        bridge.forwardHardwareMouseButton(1, pressed: false)
+        XCTAssertTrue(sink.partiallyReliablePackets.isEmpty)
+        XCTAssertTrue(sink.reliablePackets.isEmpty)
+
+        // Closing it hands the mouse back.
+        coordinator.controlsPanelVisible = false
+        XCTAssertTrue(bridge.hardwareMouseForwarding)
+        try await sendMoveButtonAndWheel()
+        XCTAssertEqual(sink.partiallyReliablePackets.count, 1)
+        XCTAssertEqual(sink.reliablePackets.count, 2)
+    }
+
+    @MainActor
     private func makeTouchControlsCoordinator(settings: AppSettings,
         onTermination: @escaping (NvstSeatTermination) -> Void = { _ in },
         onTransportFailure: @escaping () -> Void = {},
