@@ -1381,8 +1381,105 @@ private slots:
         QVERIFY(runtime.shutdown());
     }
 
+    void startupCallbacksReplaceTelemetryWhenTheGuiQueueIsFull_data()
+    {
+        QTest::addColumn<int>("reservedTerminalCount");
+        QTest::newRow("ordinary-limit") << 0;
+        QTest::newRow("stale-terminal-burst") << int(NativeStreamRuntime::TerminalCallbackReserve);
+    }
+
+    void startupCallbacksReplaceTelemetryWhenTheGuiQueueIsFull()
+    {
+        QFETCH(int, reservedTerminalCount);
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        // Hold the start reply until after background events fill the GUI queue.
+        api.send = [](const OpenNowStreamer *, const std::uint8_t *, std::size_t) {
+            return OPENNOW_STREAMER_OK;
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("pressure-start")}}));
+        QSignalSpy events(&runtime, &NativeStreamRuntime::eventReceived);
+        QSignalSpy responses(&runtime, &NativeStreamRuntime::responseReceived);
+        QSignalSpy dropped(&runtime, &NativeStreamRuntime::callbacksDropped);
+        QStringList delivered;
+        connect(&runtime, &NativeStreamRuntime::responseReceived, &runtime,
+                [&](const QJsonObject &) { delivered.append(QStringLiteral("reply")); });
+        connect(&runtime, &NativeStreamRuntime::eventReceived, &runtime,
+                [&](const QJsonObject &event) {
+                    if (event.value(QStringLiteral("event")) == QStringLiteral("first-frame"))
+                        delivered.append(QStringLiteral("first-frame"));
+                });
+        const auto event = [](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                     bytes.size(), callbacks.user_data);
+        };
+        for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks; ++i)
+            event(R"({"type":"log","event":"background-diagnostic"})");
+        for (int i = 0; i < reservedTerminalCount; ++i)
+            event(R"({"type":"status","startId":"previous-session","status":"stopped"})");
+        const QByteArray reply = R"({"id":"pressure-start","type":"ok","transport":"nvst"})";
+        callbacks.response_callback(reinterpret_cast<const std::uint8_t *>(reply.constData()),
+                                    reply.size(), callbacks.user_data);
+        event(R"({"type":"status","startId":"pressure-start","event":"first-frame","status":"streaming"})");
+        QTRY_COMPARE(responses.size(), 1);
+        QTRY_VERIFY(runtime.presentationAllowed());
+        QTRY_VERIFY(runtime.streaming());
+        QTRY_COMPARE(delivered, (QStringList{QStringLiteral("reply"), QStringLiteral("first-frame")}));
+        QTRY_COMPARE(events.size(), NativeStreamRuntime::MaximumPendingCallbacks - 1 - reservedTerminalCount);
+        QCOMPARE(dropped.size(), 1);
+        QCOMPARE(dropped.first().first().toInt(), 2 + reservedTerminalCount);
+        QVERIFY(runtime.shutdown());
+    }
+
+    void currentTerminationSurvivesDiagnosticsAndStaleTerminalCallbacks()
+    {
+        static OpenNowStreamerConfig callbacks;
+        auto api = fakeApi();
+        api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
+            callbacks = *config;
+            return fakeCreate(config, output);
+        };
+        NativeStreamRuntime runtime(api);
+        QVERIFY(runtime.start());
+        QVERIFY(runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
+                              {QStringLiteral("id"), QStringLiteral("current-session")}}));
+        QTRY_VERIFY(runtime.presentationAllowed());
+        const auto event = [](const QByteArray &bytes) {
+            callbacks.event_callback(reinterpret_cast<const std::uint8_t *>(bytes.constData()),
+                                     bytes.size(), callbacks.user_data);
+        };
+        QSignalSpy events(&runtime, &NativeStreamRuntime::eventReceived);
+        for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks; ++i)
+            event(R"({"type":"log","event":"background-diagnostic"})");
+        for (qsizetype i = 0; i < NativeStreamRuntime::TerminalCallbackReserve; ++i)
+            event(R"({"type":"status","startId":"previous-session","status":"stopped"})");
+        event(R"({"type":"error","startId":"current-session","code":"transport-closed"})");
+        QTRY_VERIFY(!runtime.presentationAllowed());
+        QVERIFY(!runtime.streaming());
+        QVERIFY(std::any_of(events.cbegin(), events.cend(), [](const QList<QVariant> &arguments) {
+            return arguments.first().toJsonObject().value(QStringLiteral("code"))
+                == QStringLiteral("transport-closed");
+        }));
+        QVERIFY(runtime.shutdown());
+    }
+
+    void terminalEventsSurviveAFullCallbackQueue_data()
+    {
+        QTest::addColumn<bool>("diagnostics");
+        QTest::newRow("replace-diagnostics") << true;
+        QTest::newRow("bounded-lifecycle-reserve") << false;
+    }
+
     void terminalEventsSurviveAFullCallbackQueue()
     {
+        QFETCH(bool, diagnostics);
         static OpenNowStreamerConfig callbacks;
         auto api = fakeApi();
         api.create = [](const OpenNowStreamerConfig *config, OpenNowStreamer **output) {
@@ -1398,16 +1495,17 @@ private slots:
                                      bytes.size(), callbacks.user_data);
         };
         for (qsizetype i = 0; i < NativeStreamRuntime::MaximumPendingCallbacks; ++i)
-            deliver(R"({"type":"telemetry"})");
+            deliver(diagnostics ? R"({"type":"telemetry"})" : R"({"type":"controller-rumble"})");
         deliver(R"({"type":"telemetry"})");
         deliver(R"({"type":"status","status":"streaming"})");
         deliver(R"({"type":"error","code":"transport-closed","message":"Lost"})");
         deliver(R"({"type":"status","status":"stopped","message":"Lost"})");
         for (qsizetype i = 0; i < NativeStreamRuntime::TerminalCallbackReserve; ++i)
             deliver(R"({"type":"status","status":"error"})");
-        QTRY_COMPARE(events.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        const auto expectedTerminals = NativeStreamRuntime::TerminalCallbackReserve + (diagnostics ? 2 : 0);
+        QTRY_COMPARE(events.size(), expectedTerminals);
         QCOMPARE(dropped.size(), 1);
-        QCOMPARE(dropped.first().first().toInt(), 4);
+        QCOMPARE(dropped.first().first().toInt(), 4 + (diagnostics ? int(NativeStreamRuntime::TerminalCallbackReserve) : 0));
         QList<QString> terminal;
         for (const auto &arguments : events) {
             const auto event = arguments.first().toJsonObject();
@@ -1416,7 +1514,7 @@ private slots:
                 terminal.append(type + u':' + event.value(QStringLiteral("status")).toString());
         }
         QCOMPARE(terminal.mid(0, 2), (QList<QString>{QStringLiteral("error:"), QStringLiteral("status:stopped")}));
-        QCOMPARE(terminal.size(), NativeStreamRuntime::TerminalCallbackReserve);
+        QCOMPARE(terminal.size(), expectedTerminals);
         QVERIFY(runtime.shutdown());
     }
 

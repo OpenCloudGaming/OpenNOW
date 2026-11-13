@@ -1,6 +1,7 @@
 #include "app/platform/GraphicsDeviceSelection.h"
 
 #include <QCryptographicHash>
+#include <QQuickGraphicsConfiguration>
 #include <QQuickGraphicsDevice>
 #include <QQuickWindow>
 #include <QSet>
@@ -61,30 +62,39 @@ bool decoderProfileSupports(ID3D11VideoDevice *video, const GUID &profile, DXGI_
     return false;
 }
 
-void indexAdapterDecode(IDXGIAdapter *adapter, bool *h264, bool *h265, bool *av1)
+bool supportsShellRendering(IDXGIAdapter *adapter)
+{
+    constexpr D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    return SUCCEEDED(D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, UINT(std::size(levels)), D3D11_SDK_VERSION,
+        device.GetAddressOf(), nullptr, nullptr));
+}
+
+bool indexAdapterDecode(IDXGIAdapter *adapter, bool *h264, bool *h265, bool *av1)
 {
     *h264 = *h265 = *av1 = false;
-    if (!adapter) return;
     using Microsoft::WRL::ComPtr;
     const D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL level{};
     const auto created = D3D11CreateDevice(
         adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
         levels, UINT(std::size(levels)), D3D11_SDK_VERSION,
-        device.GetAddressOf(), nullptr, context.GetAddressOf());
+        device.GetAddressOf(), &level, context.GetAddressOf());
     if (FAILED(created) || !device) {
         qInfo("Graphics adapter decode index skipped device creation: 0x%08lx",
               static_cast<unsigned long>(created));
-        return;
+        return supportsShellRendering(adapter);
     }
     ComPtr<ID3D11VideoDevice> video;
     if (FAILED(device.As(&video)) || !video) {
         qInfo("Graphics adapter decode index has no D3D11 video device");
-        return;
+        return level >= D3D_FEATURE_LEVEL_11_0;
     }
     const UINT profileCount = video->GetVideoDecoderProfileCount();
     const UINT count = profileCount < 64u ? profileCount : 64u;
@@ -102,6 +112,7 @@ void indexAdapterDecode(IDXGIAdapter *adapter, bool *h264, bool *h265, bool *av1
                 || decoderProfileSupports(video.Get(), profile, DXGI_FORMAT_P010);
         }
     }
+    return level >= D3D_FEATURE_LEVEL_11_0;
 }
 }
 #endif
@@ -150,12 +161,12 @@ QList<GraphicsDeviceSelection::Adapter> GraphicsDeviceSelection::detectAdapters(
         bool h264 = false;
         bool h265 = false;
         bool av1 = false;
-        indexAdapterDecode(adapter.Get(), &h264, &h265, &av1);
+        const bool shellRendering = indexAdapterDecode(adapter.Get(), &h264, &h265, &av1);
         const auto name = QString::fromWCharArray(description.Description);
         qInfo("Graphics adapter %s decode index: h264=%d h265=%d av1=%d",
               qUtf8Printable(name), int(h264), int(h265), int(av1));
         adapters.append({id, name, luid, quint64(description.DedicatedVideoMemory), false,
-                         h264, h265, av1});
+                         h264, h265, av1, shellRendering});
     }
 #endif
     return adapters;
@@ -211,8 +222,9 @@ const GraphicsDeviceSelection::Adapter *GraphicsDeviceSelection::automaticAdapte
 {
     const Adapter *fallback = nullptr;
     for (const auto &adapter : m_adapters) {
-        if (!fallback) fallback = &adapter;
-        if (canDecode(adapter)) return &adapter;
+        if (!fallback || (!fallback->supportsShellRendering && adapter.supportsShellRendering))
+            fallback = &adapter;
+        if (adapter.supportsShellRendering && canDecode(adapter)) return &adapter;
     }
     return fallback;
 }
@@ -262,7 +274,19 @@ bool GraphicsDeviceSelection::applyTo(QQuickWindow *window) const
 {
     if (!m_active.luid) return true;
 #ifdef Q_OS_WIN
-    if (!window || window->isVisible() || window->isSceneGraphInitialized()) return false;
+    // Qt's software scene graph reports itself initialized before it has a
+    // graphics device. Only an existing RHI makes adapter selection too late.
+    if (!window || window->isVisible() || window->rhi()) return false;
+    if (!m_active.supportsShellRendering) {
+        // Supplying a hardware adapter LUID disables Qt's built-in WARP retry.
+        // Keep the D3D11 scene graph and allow the shell to open on legacy GPUs.
+        auto configuration = window->graphicsConfiguration();
+        configuration.setPreferSoftwareDevice(true);
+        window->setGraphicsConfiguration(configuration);
+        qWarning("Selected adapter %s cannot render the shell with D3D11 feature level 11.0; using WARP",
+                 qUtf8Printable(m_active.name));
+        return true;
+    }
     window->setGraphicsDevice(QQuickGraphicsDevice::fromAdapter(
         quint32(m_active.luid), std::bit_cast<qint32>(quint32(m_active.luid >> 32))));
     qInfo("Selected graphics adapter: %s (LUID %016llx)", qUtf8Printable(m_active.name),

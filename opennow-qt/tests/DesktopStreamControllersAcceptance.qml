@@ -98,6 +98,43 @@ QtObject {
         modifiers = keyModifiers || 0
     }
 
+    function checkCombinedMenuNavigation() {
+        const generation = need("streamFrameGenerationControl")
+        const pointer = need("streamPointerLockRow")
+        const generationVisible = generation.visible
+        const pointerVisible = pointer.visible
+        let menu = generation
+        while (menu && typeof menu.moveMain !== "function") menu = menu.parent
+        check(menu !== null, "the production menu navigation owner exists")
+        generation.visible = true
+        pointer.visible = true
+        need("streamFullscreenControl").forceActiveFocus()
+        menu.moveMain(1)
+        check(generation.activeFocus, "Down reaches frame generation after the fullscreen tile")
+        menu.moveMain(1)
+        check(need("streamControllersRow").activeFocus, "Down leaves frame generation for Controllers")
+        need("streamConsoleModeRow").forceActiveFocus()
+        menu.moveMain(1)
+        check(pointer.activeFocus, "Down reaches pointer lock after console mode")
+        menu.moveMain(1)
+        check(need("streamEndSessionRow").activeFocus, "Down leaves pointer lock for End session")
+        menu.moveMain(0)
+        check(pointer.activeFocus, "Up returns from End session to pointer lock")
+        generation.visible = false
+        pointer.visible = false
+        need("streamFullscreenControl").forceActiveFocus()
+        menu.moveMain(1)
+        check(need("streamControllersRow").activeFocus, "Down skips hidden frame generation")
+        need("streamConsoleModeRow").forceActiveFocus()
+        menu.moveMain(1)
+        check(need("streamEndSessionRow").activeFocus, "Down skips hidden pointer lock")
+        generation.visible = generationVisible
+        pointer.visible = pointerVisible
+        need("streamMenuBackToGame").forceActiveFocus()
+        need("streamMenuMainScroll").contentY = 0
+        check(streamAlive(), "combined menu navigation preserves the stream and presenter")
+    }
+
     function run(root) {
         parent = root
         ShellStore.streamerStartRequestId = sessionId
@@ -166,6 +203,7 @@ QtObject {
                     "a measuring value overlaps the transport line")
             }
             ShellStore.streamer = saved
+            checkCombinedMenuNavigation()
         },
         function() {
             const window = parent.Window.window
@@ -355,6 +393,11 @@ QtObject {
         if (name === "") return true
         if (sceneReady) {
             applySceneInput(name)
+            if (name === "main-generation-pointer" && sceneTicks === 0) {
+                check(parent.Window.window.visibility === (Qt.application.arguments.indexOf("--fullscreen") >= 0
+                    ? Window.FullScreen : Window.Windowed), "the combined menu uses the requested window mode")
+                checkCombinedMenuNavigation()
+            }
             return ++sceneTicks >= 12
         }
         const padCount = Number(argument("--controller-pads", "2"))
@@ -372,6 +415,10 @@ QtObject {
         }})
         parent.Window.window.requestActivate()
         AppController.showOverlay("desktop-stream-menu")
+        if (name === "main-generation-pointer") {
+            need("streamFrameGenerationControl").visible = true
+            need("streamPointerLockRow").visible = true
+        }
         const page = need("streamControllersPage")
         if (name.indexOf("controllers") === 0 || name === "disconnect" || name === "four") {
             need("streamControllersRow").clicked()

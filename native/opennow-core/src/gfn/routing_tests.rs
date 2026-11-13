@@ -766,7 +766,7 @@ fn fresh_create_provenance_failure_keeps_public_owner_and_durable_cleanup() {
                 .err()
                 .expect("restart must retain the allocation obligation")
                 .code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         let record: Value = serde_json::from_slice(&std::fs::read(&recovery).unwrap()).unwrap();
         assert_eq!(record["sessionId"], "fresh-seat");
@@ -831,7 +831,7 @@ fn fresh_create_write_ahead_record_survives_handoff_and_acceptance_until_stop() 
                 .err()
                 .expect("restart before or after acceptance must retain ownership")
                 .code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         assert_eq!(
             restarted
@@ -922,7 +922,7 @@ fn failed_fresh_seat_identification_keeps_original_write_ahead_and_exact_cleanup
     );
     assert_eq!(
         restarted.admit_create().err().unwrap().code,
-        "session_allocation_unresolved"
+        "session_allocation_recovery_required"
     );
     service.finish_session_create("fresh-seat", false).unwrap();
     assert!(!path.join("unresolved-allocation.json").exists());
@@ -976,7 +976,7 @@ fn unrelated_terminal_poll_preserves_the_durable_allocation_obligation() {
     );
     assert_eq!(
         restarted.admit_create().err().unwrap().code,
-        "session_allocation_unresolved"
+        "session_allocation_recovery_required"
     );
     service
         .stop_session(&json!({"sessionId":"fresh-seat"}), &json!({}))
@@ -1200,6 +1200,194 @@ fn native_session_end_clears_the_same_seat_after_control_generation_changes() {
             .active_owner
             .is_none()
     );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+fn created_native_session() -> (GfnService, PathBuf, Value) {
+    let mut responses = launch_metadata();
+    responses.push((
+        200,
+        json!({"requestStatus":{"statusCode":1},"session":{
+            "sessionId":"ended-seat","status":3
+        }}),
+    ));
+    let (url, worker) = mock_requests(responses, |index, request| {
+        if index == 6 {
+            assert!(request.starts_with("POST /v2/session?"));
+        }
+        assert!(!request.starts_with("DELETE "));
+    });
+    let (mut service, path) = service(&url);
+    service
+        .cloudmatch
+        .set_test_control_base(url::Url::parse(&url).unwrap());
+    let created = service
+        .create_session(&launch_params("123"), &json!({}), |settings| {
+            Ok(settings.clone())
+        })
+        .unwrap();
+    worker.join().unwrap();
+    let notification = json!({"sessionId":created["session"]["sessionId"],
+        "ownerScope":created["session"]["ownerScope"]});
+    (service, path, notification)
+}
+
+#[test]
+fn native_session_end_releases_created_obligation_across_restart() {
+    let (service, path, notification) = created_native_session();
+    assert_eq!(
+        service.finish_session_create("ended-seat", true).unwrap(),
+        SessionCreateOutcome::HandedOff
+    );
+    assert!(path.join("unresolved-allocation.json").is_file());
+    let retained = CloudMatchService::with_cleanup_path(
+        service.client.clone(),
+        path.join("pending-session-cleanup.json"),
+    );
+    assert_eq!(
+        retained.admit_create().err().unwrap().code,
+        "session_allocation_recovery_required"
+    );
+    assert_eq!(
+        service.acknowledge_session_end(&notification).unwrap()["cleared"],
+        true
+    );
+    assert!(service.cloudmatch.active()["session"].is_null());
+    assert!(
+        service
+            .session_routing
+            .lock()
+            .unwrap()
+            .active_owner
+            .is_none()
+    );
+    assert!(service.cloudmatch.admit_create().is_ok());
+    assert!(!path.join("unresolved-allocation.json").exists());
+    let restarted = CloudMatchService::with_cleanup_path(
+        service.client.clone(),
+        path.join("pending-session-cleanup.json"),
+    );
+    assert!(restarted.admit_create().is_ok());
+    assert_eq!(
+        service.acknowledge_session_end(&notification).unwrap()["cleared"],
+        false
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn native_session_end_preserves_created_obligation_for_foreign_notifications() {
+    let (service, path, notification) = created_native_session();
+    service.finish_session_create("ended-seat", true).unwrap();
+    let record = std::fs::read(path.join("unresolved-allocation.json")).unwrap();
+    for key in ["sessionId", "userId", "providerIdpId"] {
+        let mut stale = notification.clone();
+        if key == "sessionId" {
+            stale[key] = json!("other-seat");
+        } else {
+            stale["ownerScope"][key] = json!("other-owner");
+        }
+        assert_eq!(
+            service.acknowledge_session_end(&stale).unwrap()["cleared"],
+            false
+        );
+        assert_eq!(
+            service.cloudmatch.active()["session"]["sessionId"],
+            "ended-seat"
+        );
+        assert!(
+            service
+                .session_routing
+                .lock()
+                .unwrap()
+                .active_owner
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(path.join("unresolved-allocation.json")).unwrap(),
+            record
+        );
+        assert!(service.cloudmatch.admit_create().is_err());
+    }
+    service.acknowledge_session_end(&notification).unwrap();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn native_session_end_preserves_created_obligation_during_handoff() {
+    let (service, path, notification) = created_native_session();
+    assert_eq!(
+        service
+            .acknowledge_session_end(&notification)
+            .unwrap_err()
+            .code,
+        "session_update_busy"
+    );
+    assert_eq!(
+        service.cloudmatch.active()["session"]["sessionId"],
+        "ended-seat"
+    );
+    assert!(path.join("unresolved-allocation.json").is_file());
+    assert!(service.cloudmatch.admit_create().is_err());
+    assert_eq!(
+        service.finish_session_create("ended-seat", true).unwrap(),
+        SessionCreateOutcome::HandedOff
+    );
+    assert_eq!(
+        service.acknowledge_session_end(&notification).unwrap()["cleared"],
+        true
+    );
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn native_session_end_preserves_owner_until_durable_cleanup_succeeds() {
+    let (service, path, notification) = created_native_session();
+    service.finish_session_create("ended-seat", true).unwrap();
+    let recovery = path.join("unresolved-allocation.json");
+    let retained = path.join("unresolved-allocation.saved");
+    std::fs::rename(&recovery, &retained).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    assert_eq!(
+        service
+            .acknowledge_session_end(&notification)
+            .unwrap_err()
+            .code,
+        "session_allocation_unresolved"
+    );
+    assert!(recovery.is_dir());
+    assert_eq!(
+        service.cloudmatch.active()["session"]["sessionId"],
+        "ended-seat"
+    );
+    assert!(
+        service
+            .session_routing
+            .lock()
+            .unwrap()
+            .active_owner
+            .as_ref()
+            .unwrap()
+            .matches(&auth_fixture("account-a"), "ended-seat")
+    );
+    assert!(service.cloudmatch.admit_create().is_err());
+    std::fs::remove_dir(&recovery).unwrap();
+    std::fs::rename(&retained, &recovery).unwrap();
+    assert_eq!(
+        service.acknowledge_session_end(&notification).unwrap()["cleared"],
+        true
+    );
+    assert!(service.cloudmatch.active()["session"].is_null());
+    assert!(
+        service
+            .session_routing
+            .lock()
+            .unwrap()
+            .active_owner
+            .is_none()
+    );
+    assert!(!recovery.exists());
+    assert!(service.cloudmatch.admit_create().is_ok());
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -1463,7 +1651,7 @@ fn reject_concurrent_create_during(discovery: bool) {
     } else {
         assert_eq!(
             service.cloudmatch.admit_create().err().unwrap().code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
     }
     worker.join().unwrap();

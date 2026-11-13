@@ -22,8 +22,8 @@ fi
 capture() {
     local name=$1
     shift
-    if ! "${runner[@]}" env "${platform[@]}" QSG_RHI_BACKEND=opengl "$app" \
-        --smoke-test --allow-multiple-instances --desktop --route settings \
+    if ! "${runner[@]}" env "${platform[@]}" "$app" \
+        --smoke-test --smoke-sdr-capture --allow-multiple-instances --desktop --route settings \
         --smoke-paper-design --reduced-motion --smoke-settings-layout \
         --screenshot "$output/$name.png" "$@" >"$output/$name.log" 2>&1; then
         printf 'Capture failed; see %s\n' "$output/$name.log" >&2

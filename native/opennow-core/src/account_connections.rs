@@ -550,7 +550,15 @@ fn wait_for_callback(
     while Instant::now() < deadline && !cancelled.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .map_err(|error| error.to_string())?;
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .map_err(|error| error.to_string())?;
                 let mut buffer = [0_u8; 8192];
                 let count = stream
                     .read(&mut buffer)
@@ -638,13 +646,17 @@ fn bind_callback() -> Result<(TcpListener, u16), ServiceError> {
 fn connection_from_store(definition: &Value, store: Option<&Value>, fetched_at: i64) -> Value {
     let linking = store.map(|value| &value["accountLinkingData"]);
     let sync = linking.map(|value| &value["accountSyncingData"]);
-    let connected = linking.is_some_and(|value| value.is_object());
+    // The matching LCARS store entry is the connection marker; its optional
+    // accountLinkingData can be null, as in the vendor's account connections.
+    let connected = store.is_some();
     let expires_in = linking
         .and_then(|value| value["expiresIn"].as_str())
         .and_then(|value| value.parse::<i64>().ok());
+    // The vendor excludes exactly zero and -1 (its no-expiry sentinel). Other
+    // negative remaining lifetimes represent a link that has already expired.
     let expires_at = expires_in
-        .filter(|value| *value >= 0)
-        .map(|value| fetched_at + value * 1000);
+        .filter(|value| !matches!(*value, 0 | -1))
+        .map(|value| fetched_at.saturating_add(value.saturating_mul(1000)));
     let sync_state = sync.and_then(|value| value["syncState"].as_str());
     let expired = connected
         && definition["supportsLinking"].as_bool() == Some(true)
@@ -716,9 +728,17 @@ fn normalize_provider(value: &str) -> String {
 
 fn observed_sync_phase(baseline: &Value, current: Option<&Value>) -> &'static str {
     let Some(current) = current else {
-        return "failed";
+        return if baseline["isConnected"] == true {
+            "failed"
+        } else {
+            "waiting_remote"
+        };
     };
-    if current["isConnected"] != true || current["status"] == "expired" {
+    // A first accepted sync can create the connection asynchronously. Only a
+    // connection lost since the baseline is evidence of disconnection.
+    if (baseline["isConnected"] == true && current["isConnected"] != true)
+        || current["status"] == "expired"
+    {
         return "failed";
     }
     let state = current["syncState"].as_str().unwrap_or("");
@@ -894,6 +914,48 @@ mod tests {
     }
 
     #[test]
+    fn callback_accepts_headers_sent_after_the_connection_is_established() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = std::net::TcpStream::connect_timeout(
+            &listener.local_addr().unwrap(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        client.set_nonblocking(false).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let result = (|| -> std::io::Result<String> {
+                client.write_all(
+                    b"GET /?platform=GOG&display_name=Fixture&expires_in=3600 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )?;
+                let mut response = String::new();
+                client.read_to_string(&mut response)?;
+                Ok(response)
+            })();
+            worker_cancelled.store(true, Ordering::Release);
+            result
+        });
+        let callback = wait_for_callback(listener, "GOG", &cancelled);
+        let response = worker.join().unwrap().unwrap();
+        assert_eq!(
+            callback.unwrap(),
+            json!({"platform":"GOG","displayName":"Fixture","expiresIn":"3600"})
+        );
+        assert!(response.starts_with("HTTP/1.1 302 Found\r\n"));
+        assert!(response.contains(
+            "\r\nLocation: https://static-als.nvidia.com/result?platform=GOG&ui_locales=en_US\r\n"
+        ));
+    }
+
+    #[test]
     fn gog_link_uses_als_and_confirms_connection_through_account_discovery() {
         let (callback_sender, callback_receiver) = mpsc::channel();
         let (url, worker) = crate::gfn::tests::mock_requests(
@@ -1052,6 +1114,66 @@ mod tests {
     }
 
     #[test]
+    fn store_membership_confirms_connection_without_optional_linking_metadata() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "STEAM")
+            .unwrap();
+        for store in [
+            json!({"store":"STEAM"}),
+            json!({"store":"STEAM","accountLinkingData":null}),
+            json!({"store":"STEAM","accountLinkingData":{}}),
+        ] {
+            let account = connection_from_store(&definition, Some(&store), 1_000);
+            assert_eq!(account["isConnected"], true);
+            assert_eq!(account["status"], "connected");
+            assert!(account["syncState"].is_null());
+        }
+        let missing = connection_from_store(&definition, None, 1_000);
+        assert_eq!(missing["isConnected"], false);
+        assert_eq!(missing["status"], "not_connected");
+    }
+
+    #[test]
+    fn zero_and_sentinel_link_expiry_do_not_expire_connected_stores() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "GOG")
+            .unwrap();
+        for expiry in ["0", "-1", "invalid"] {
+            let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":expiry}});
+            let account = connection_from_store(&definition, Some(&store), 1_000);
+            assert_eq!(account["status"], "connected");
+            assert!(account["expiresAt"].is_null());
+        }
+        let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":"60"}});
+        let account = connection_from_store(&definition, Some(&store), 1_000);
+        assert_eq!(account["expiresAt"], 61_000);
+        let store = json!({"store":"GOG","accountLinkingData":{"expiresIn":i64::MAX.to_string()}});
+        let account = connection_from_store(&definition, Some(&store), 1_000);
+        assert_eq!(account["expiresAt"], i64::MAX);
+    }
+
+    #[test]
+    fn negative_remaining_link_lifetime_except_sentinel_is_expired() {
+        let definition = provider_definitions()
+            .into_iter()
+            .find(|definition| definition["provider"] == "GOG")
+            .unwrap();
+        for remaining in [-2, -60, i64::MIN] {
+            let store =
+                json!({"store":"GOG","accountLinkingData":{"expiresIn":remaining.to_string()}});
+            let account = connection_from_store(&definition, Some(&store), 100_000);
+            assert_eq!(account["isConnected"], true);
+            assert_eq!(account["status"], "expired", "{remaining}");
+            assert_eq!(
+                account["expiresAt"],
+                100_000_i64.saturating_add(remaining.saturating_mul(1000))
+            );
+        }
+    }
+
+    #[test]
     fn sync_acceptance_requires_new_remote_success_then_library_acknowledgement() {
         let old = "2026-09-14T00:00:00Z";
         let fresh = "2026-09-14T01:00:00Z";
@@ -1152,6 +1274,30 @@ mod tests {
             "waiting_remote"
         );
         assert_eq!(observed_sync_phase(&baseline, None), "failed");
+    }
+
+    #[test]
+    fn accepted_first_sync_waits_for_connection_instead_of_failing_unchanged_absence() {
+        let baseline =
+            json!({"isConnected":false,"status":"not_connected","syncState":null,"syncDate":null});
+        assert_eq!(observed_sync_phase(&baseline, None), "waiting_remote");
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&baseline)),
+            "waiting_remote"
+        );
+        let connected =
+            json!({"isConnected":true,"status":"connected","syncState":null,"syncDate":null});
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&connected)),
+            "waiting_remote"
+        );
+        let success = json!({"isConnected":true,"status":"connected","syncState":"SYNC_SUCCESS","syncDate":"2026-11-08T12:00:00Z"});
+        assert_eq!(
+            observed_sync_phase(&baseline, Some(&success)),
+            "refreshing_library"
+        );
+        let denied = json!({"isConnected":true,"status":"sync_error","syncState":"SYNC_DENIED","syncDate":null});
+        assert_eq!(observed_sync_phase(&baseline, Some(&denied)), "failed");
     }
 
     #[test]

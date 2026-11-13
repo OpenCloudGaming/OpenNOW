@@ -168,6 +168,35 @@ impl UnresolvedAllocation {
             && self.provider_code.len() <= 1024
             && self.session_id.as_deref().is_none_or(valid_session_id)
     }
+
+    fn matches(&self, auth: &AuthSession, device_id: &str) -> bool {
+        self.owner.0 == auth.provider.idp_id
+            && self.owner.1 == auth.user.user_id
+            && self.provider_code == auth.provider.code
+            && self.device_id == device_id
+            && self.provider_base == crate::gfn::effective_provider_url(&auth.provider)
+    }
+
+    fn verified_base(&self, auth: &AuthSession) -> Option<Url> {
+        let base = trusted_cloudmatch_base(&self.allocation_base).ok()?;
+        if trusted_cloudmatch_base(&self.provider_base).ok().as_ref() == Some(&base) {
+            return Some(base);
+        }
+        // The free-tier queue selector can allocate in a zone omitted from
+        // serverInfo. Use the same canonical NVIDIA origin check as creation.
+        if auth.provider.idp_id == crate::gfn::DEFAULT_IDP_ID
+            && auth.provider.code.eq_ignore_ascii_case("NVIDIA")
+            && base
+                .host_str()
+                .and_then(|host| host.strip_suffix(".cloudmatchbeta.nvidiagrid.net"))
+                .and_then(|zone| crate::queue_servers::zone_url(&zone.to_ascii_uppercase()))
+                .as_deref()
+                == Some(base.as_str())
+        {
+            return Some(base);
+        }
+        None
+    }
 }
 
 struct VerifiedCleanup {
@@ -387,7 +416,10 @@ impl CloudMatchService {
             {
                 return Err(allocation_in_progress());
             }
-            return Err(unresolved_allocation());
+            return Err(ServiceError {
+                code: "session_allocation_recovery_required",
+                ..unresolved_allocation()
+            });
         }
         Ok(CreateAdmission {
             service: self,
@@ -1054,6 +1086,13 @@ impl CloudMatchService {
         self.complete_stop(session_id)
     }
 
+    pub(crate) fn acknowledge_native_session_end(
+        &self,
+        session_id: &str,
+    ) -> Result<(), ServiceError> {
+        self.complete_stop(session_id).map(|_| ())
+    }
+
     fn complete_stop(&self, session_id: &str) -> Result<Value, ServiceError> {
         self.clear_cleanup(session_id)?;
         self.clear_allocation_record(Some(session_id))?;
@@ -1218,6 +1257,21 @@ impl CloudMatchService {
         let requested =
             recovery_region.map_or_else(|| requested_streaming_base(params, settings, auth), Ok)?;
         let headers = cloudmatch_headers(session_token(auth), device_id)?;
+        let unresolved = self
+            .unresolved
+            .lock()
+            .expect("CloudMatch unresolved state poisoned")
+            .clone()
+            .filter(|record| record.matches(auth, device_id));
+        // The region of an unresolved allocation is checked even when serverInfo omits it.
+        let mut regions = vec![("selected".to_owned(), requested.clone())];
+        if let Some(base) = unresolved
+            .as_ref()
+            .and_then(|record| record.verified_base(auth))
+            .filter(|base| *base != requested)
+        {
+            regions.push(("unresolved".to_owned(), base));
+        }
         let server_info_url = requested
             .join("v2/serverInfo")
             .map_err(|_| invalid("Invalid server-info URL"))?;
@@ -1227,7 +1281,7 @@ impl CloudMatchService {
         let sweep = self.discover_remote_sessions(
             &client,
             &headers,
-            requested,
+            regions,
             server_info_url,
             deadline,
             &mut log,
@@ -1239,16 +1293,7 @@ impl CloudMatchService {
             bases,
         } = sweep?;
         let owner = (auth.provider.idp_id.clone(), auth.user.user_id.clone());
-        let unresolved = self
-            .unresolved
-            .lock()
-            .expect("CloudMatch unresolved state poisoned")
-            .clone();
         if let Some(record) = unresolved
-            && record.owner == owner
-            && record.provider_code == auth.provider.code
-            && record.provider_base == crate::gfn::effective_provider_url(&auth.provider)
-            && record.device_id == device_id
             && complete
             && record.session_id.as_ref().map_or_else(
                 || sessions.is_empty(),
@@ -1344,7 +1389,7 @@ impl CloudMatchService {
         &self,
         client: &Client,
         headers: &HeaderMap,
-        requested: Url,
+        mut regions: Vec<(String, Url)>,
         server_info_url: Url,
         deadline: Instant,
         log: &mut DiscoveryLog,
@@ -1373,7 +1418,6 @@ impl CloudMatchService {
         {
             return Err(error.clone());
         }
-        let mut regions = vec![("selected".to_owned(), requested)];
         if let Ok(payload) = &server_info {
             for (name, base) in regional_bases(payload) {
                 match regions.iter_mut().find(|(_, known)| known == &base) {
@@ -2021,9 +2065,39 @@ fn monitor_display_data(hdr: bool, settings: &Value) -> Value {
     data
 }
 
+/// DPI for `clientRequestMonitorSettings` (remote Windows UI scale).
+/// Prefer the client-reported physical screen DPI; fall back to 96×DPR.
+fn monitor_request_dpi(params: &Value, settings: &Value) -> i64 {
+    for key in ["screenDpi", "displayDpi"] {
+        for source in [params, settings] {
+            if let Some(dpi) = source
+                .get(key)
+                .and_then(Value::as_i64)
+                .or_else(|| {
+                    source
+                        .get(key)
+                        .and_then(Value::as_f64)
+                        .map(|v| v.round() as i64)
+                })
+                .filter(|dpi| (72..=480).contains(dpi))
+            {
+                return dpi;
+            }
+        }
+    }
+    let dpr = params
+        .get("devicePixelRatio")
+        .or_else(|| settings.get("devicePixelRatio"))
+        .and_then(Value::as_f64)
+        .filter(|ratio| *ratio >= 1.0)
+        .unwrap_or(1.0);
+    ((96.0 * dpr).round() as i64).clamp(96, 288)
+}
+
 fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: &str) -> Value {
     let (width, height) = parse_resolution(&setting_string(settings, "resolution", "1920x1080"));
     let fps = crate::frame_rate::request_frame_rate(settings, params, width, height);
+    let dpi = monitor_request_dpi(params, settings);
     // The codec stays client-selected: the official Bifrost client resolves it from local
     // preferences ("Selected %s codec from client preferences") and announces the choice
     // at RTSP time (x-nv-vqos bitStreamFormat). It is only read here to constrain the
@@ -2105,7 +2179,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
             "sdrHdrMode":if hdr { 1 } else { 0 },
             "displayData":monitor_display_data(hdr, settings),
             "hdr10PlusGamingData":null,
-            "dpi":if cfg!(target_os = "macos") { 144 } else { 96 }
+            "dpi":dpi
         }],
         "useOps":true,
         "audioMode":2,
@@ -3966,13 +4040,13 @@ mod tests {
         );
         assert_eq!(
             service.admit_create().err().unwrap().code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         drop(service);
         let restarted = CloudMatchService::with_cleanup_path(Client::new(), path);
         assert_eq!(
             restarted.admit_create().err().unwrap().code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         assert_eq!(
             restarted.finish_create("unrelated", true).unwrap_err().code,
@@ -4073,12 +4147,12 @@ mod tests {
             assert!(service.active()["session"].is_null());
             assert_eq!(
                 service.admit_create().err().unwrap().code,
-                "session_allocation_unresolved"
+                "session_allocation_recovery_required"
             );
             let restarted = CloudMatchService::with_cleanup_path(Client::new(), path);
             assert_eq!(
                 restarted.admit_create().err().unwrap().code,
-                "session_allocation_unresolved"
+                "session_allocation_recovery_required"
             );
         }
     }
@@ -4095,20 +4169,29 @@ mod tests {
             "wrong-device",
             "wrong-provider",
             "forged-route",
+            "queue-absent",
+            "queue-present",
+            "queue-unreachable",
+            "queue-non-nvidia",
             "partial",
             "malformed",
         ] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("pending-session-cleanup.json");
-            let auth = conflict_auth();
+            let mut auth = conflict_auth();
+            if scenario.starts_with("queue-") && scenario != "queue-non-nvidia" {
+                auth.provider.idp_id = crate::gfn::DEFAULT_IDP_ID.into();
+            }
             let record = UnresolvedAllocation {
                 owner: (auth.provider.idp_id.clone(), auth.user.user_id.clone()),
                 provider_code: auth.provider.code.clone(),
                 provider_base: crate::gfn::effective_provider_url(&auth.provider),
-                allocation_base: if scenario == "forged-route" {
-                    "https://attacker.example".into()
-                } else {
-                    DEFAULT_STREAMING_BASE.trim_end_matches('/').into()
+                allocation_base: match scenario {
+                    "forged-route" => "https://attacker.example".into(),
+                    scenario if scenario.starts_with("queue-") => {
+                        "https://np-usw-01.cloudmatchbeta.nvidiagrid.net".into()
+                    }
+                    _ => DEFAULT_STREAMING_BASE.trim_end_matches('/').into(),
                 },
                 device_id: "device".into(),
                 session_id: scenario.starts_with("known-").then(|| "seat".into()),
@@ -4118,23 +4201,36 @@ mod tests {
                 "other-seat" | "known-absent-among-other-seats" => {
                     json!([{"sessionId":"unrelated-seat","status":3}])
                 }
-                "known-present" => json!([{"sessionId":"seat","status":3}]),
+                "known-present" | "queue-present" => json!([{"sessionId":"seat","status":3}]),
                 "malformed" => json!([{"sessionId":"missing-status"}]),
                 _ => json!([]),
             };
-            let (base, server) = session_server(
-                vec![
-                    (
-                        if scenario == "partial" { 503 } else { 200 },
-                        json!({"metaData":[]}),
-                    ),
-                    (
-                        200,
-                        json!({"requestStatus":{"statusCode":1},"sessions":sessions}),
-                    ),
-                ],
-                |_| {},
-            );
+            let mut replies = vec![
+                (
+                    if scenario == "partial" { 503 } else { 200 },
+                    json!({"metaData":[]}),
+                ),
+                (
+                    200,
+                    json!({"requestStatus":{"statusCode":1},"sessions":sessions}),
+                ),
+            ];
+            if scenario.starts_with("queue-") && scenario != "queue-non-nvidia" {
+                replies.push((
+                    if scenario == "queue-unreachable" {
+                        503
+                    } else {
+                        200
+                    },
+                    json!({"requestStatus":{"statusCode":1},"sessions":[]}),
+                ));
+            }
+            let expected_requests = replies.len();
+            let request_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let server_count = request_count.clone();
+            let (base, server) = session_server(replies, move |_| {
+                server_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
             let mut service = CloudMatchService::with_cleanup_path(Client::new(), path.clone());
             service.set_test_control_base(base);
             let mut current = auth.clone();
@@ -4154,14 +4250,22 @@ mod tests {
                     "device"
                 },
             );
-            if matches!(scenario, "partial" | "malformed") {
+            if matches!(scenario, "partial" | "malformed" | "queue-unreachable") {
                 assert_eq!(result.unwrap_err().code, "session_discovery_failed");
             } else {
                 result.unwrap();
             }
+            assert_eq!(
+                request_count.load(std::sync::atomic::Ordering::Relaxed),
+                expected_requests,
+                "{scenario}"
+            );
             let received = server.join().unwrap();
             assert!(received.iter().all(|request| request.starts_with("GET ")));
-            let resolved = matches!(scenario, "absent" | "known-absent-among-other-seats");
+            let resolved = matches!(
+                scenario,
+                "absent" | "known-absent-among-other-seats" | "queue-absent"
+            );
             assert_eq!(service.admit_create().is_ok(), resolved, "{scenario}");
             assert_eq!(
                 !path.with_file_name("unresolved-allocation.json").exists(),
@@ -4677,7 +4781,7 @@ mod tests {
         assert!(service.fresh.lock().unwrap().is_none());
         assert_eq!(
             service.admit_create().err().unwrap().code,
-            "session_allocation_unresolved"
+            "session_allocation_recovery_required"
         );
         let mut service = CloudMatchService::new(client.clone());
         assert!(
@@ -4719,7 +4823,10 @@ mod tests {
             assert!(service.allocation_admission.try_lock().is_ok());
             assert!(service.fresh.lock().unwrap().is_none());
             if code == "session_allocation_unresolved" {
-                assert_eq!(service.admit_create().err().unwrap().code, code);
+                assert_eq!(
+                    service.admit_create().err().unwrap().code,
+                    "session_allocation_recovery_required"
+                );
                 assert_eq!(service.finish_create("", false).unwrap_err().code, code);
                 service = CloudMatchService::new(client.clone());
             } else {
@@ -7685,6 +7792,30 @@ mod tests {
         let headers = cloudmatch_headers("token", "device-id").unwrap();
         assert_eq!(headers["nv-client-type"], "NATIVE");
         assert_eq!(headers["nv-client-streamer"], "NVIDIA-CLASSIC");
+    }
+
+    #[test]
+    fn session_dpi_uses_reported_screen_dpi() {
+        let body = build_create_body(
+            "1",
+            &json!({"screenDpi":254,"devicePixelRatio":2.0}),
+            &json!({"resolution":"3456x2160","fps":120}),
+            "device",
+        );
+        assert_eq!(
+            body["sessionRequestData"]["clientRequestMonitorSettings"][0]["dpi"],
+            254
+        );
+        let body = build_create_body(
+            "1",
+            &json!({"devicePixelRatio":2.0}),
+            &json!({"resolution":"2560x1600","fps":120}),
+            "device",
+        );
+        assert_eq!(
+            body["sessionRequestData"]["clientRequestMonitorSettings"][0]["dpi"],
+            192
+        );
     }
 
     #[test]

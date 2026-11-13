@@ -161,6 +161,26 @@ QtObject {
         check(!tipAnchor.shown && !tipLoader.active, "the label tip stayed open after its tile was disabled")
         tile.enabled = true
 
+        // A Popup is reparented into the window overlay. Exercise its route
+        // guard with a retained, visible anchor, independently of catalog hide
+        // propagation and hover state left behind by a held mouse button.
+        const retainedTip = Qt.createQmlObject('import QtQuick; import OpenNOW; DesktopGameLabelTip { width: 132; height: 198 }',
+            host, "retainedGameLabelTip")
+        retainedTip.game = crowded
+        retainedTip.requested = true
+        retainedTip.shown = true
+        const retainedLoader = child(retainedTip, "desktopGameLabelTipLoader")
+        check(retainedLoader.active, "the retained tip did not open on a catalog route")
+        AppController.navigate("inserting")
+        check(!retainedTip.anchorUsable && !retainedTip.shown && !retainedLoader.active,
+            "the retained tip stayed open while requesting a session")
+        AppController.navigate("stream")
+        retainedTip.shown = true
+        check(!retainedLoader.active, "a stale hover reopened the tip above the stream")
+        retainedTip.shown = false
+        retainedTip.destroy()
+        AppController.navigate("library")
+
         const upscaledLabels = labelsFor(host, "labels-dlss")
         check(upscaledLabels, "the DLSS tile labels were not rendered")
         const dlssMark = child(upscaledLabels, "desktopGameFeature-dlss")

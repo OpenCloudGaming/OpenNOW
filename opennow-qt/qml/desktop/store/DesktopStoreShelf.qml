@@ -14,13 +14,17 @@ Item {
     property bool materialized: true
     property string categoryId: ""
     property int totalCount: 0
+    property int placeholderCount: 0
     property var localGames: []
     property string requestId: ""
     property string loadError: ""
     property int loadedLimit: 0
     property int requestedLimit: 0
     readonly property var displayGames: categoryId ? localGames : games
-    readonly property bool empty: root.displayGames.length === 0 && root.loadError === ""
+    readonly property bool reserved: root.placeholderCount > 0 || (root.categoryId !== "" && root.totalCount > 0)
+    readonly property bool empty: !root.reserved && root.displayGames.length === 0 && root.loadError === ""
+    readonly property bool awaitingGames: root.reserved && root.displayGames.length === 0
+        && root.loadedLimit === 0 && root.loadError === ""
     visible: !root.empty
     function cancelRequest() {
         loadDelay.stop()
@@ -80,7 +84,8 @@ Item {
 
     readonly property int railGap: DesktopTokens.px(14)
     readonly property int columnCount: Math.max(1, Math.floor((width + railGap) / (DesktopTokens.libraryArtWidth + railGap)))
-    readonly property int tileCount: Math.max(1, Math.min(60, (root.categoryId ? root.totalCount : root.games.length) || 1, columnCount))
+    readonly property int tileCount: Math.max(1, Math.min(60, (root.placeholderCount
+        || (root.categoryId ? root.totalCount : root.games.length)) || 1, columnCount))
     // A short final page keeps the same poster size as a full row.
     readonly property int tileWidth: Math.max(DesktopTokens.libraryArtWidth, Math.floor((width - railGap * (columnCount - 1)) / columnCount))
     readonly property int tileHeight: Math.round(tileWidth * 198 / 132) + DesktopTokens.storeCardInfoHeight
@@ -150,6 +155,16 @@ Item {
         y: DesktopTokens.px(31)
         width: parent.width
         spacing: root.railGap
+
+        Repeater {
+            model: root.materialized && root.awaitingGames ? root.tileCount : 0
+            DesktopPosterSkeleton {
+                width: root.tileWidth
+                height: root.tileHeight
+                captionHeight: DesktopTokens.storeCardInfoHeight
+                cornerRadius: DesktopTokens.px(12)
+            }
+        }
 
         Repeater {
             model: root.materialized ? Math.min(root.displayGames.length, root.tileCount) : 0

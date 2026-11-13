@@ -264,6 +264,7 @@ QtObject {
     property alias selectedGame: catalogOwner.selectedGame
     property alias catalogTotalCount: catalogOwner.catalogTotalCount
     property alias catalogState: catalogOwner.catalogState
+    readonly property bool catalogInitialLoading: catalogOwner.catalogInitialLoading
     property alias catalogComplete: catalogOwner.catalogComplete
     property alias catalogError: catalogOwner.catalogError
     property alias catalogNextCursor: catalogOwner.catalogNextCursor
@@ -296,6 +297,7 @@ QtObject {
     property alias storeForceRefresh: catalogOwner.storeForceRefresh
     property alias storeLastPageCached: catalogOwner.storeLastPageCached
     readonly property bool storeLoading: catalogOwner.storeLoading
+    readonly property bool storeInitialLoading: catalogOwner.storeInitialLoading
     property alias storePageTimer: catalogOwner.storePageTimer
     property alias storeMarquee: catalogOwner.storeMarquee
     property alias storePanels: catalogOwner.storePanels
@@ -660,14 +662,7 @@ QtObject {
                     serverIp:root.conflictSession.serverIp || ""
                 }, 35000)
             } else if (stage === "create") {
-                root.streamState = "requesting"
-                root.launchRequestedAtMs = Date.now()
-                root.pendingRequestedColorQuality = String(root.settings.colorQuality || "8bit_420")
-                root.streamCreateRequestId = CoreClient.request("session.create",
-                    Object.assign({}, root.pendingLaunchParams, {
-                        runtimeCapabilities: root.nativeRuntimeCapabilities,
-                        maxEntitledFps: settingsOwner.maxEntitledFps(String(root.settings.resolution || ""))
-                    }), 60000)
+                root.requestNewSession()
             }
         }
         function onRequestFailed(id, code, message) {
@@ -865,6 +860,9 @@ QtObject {
     property int shortcutActionGeneration: 0
     property var runtimeStreamProfile: ({})
     property bool antiAfkEnabled: false
+    // Ctrl+Shift+F12 while frame generation is on: the source frame slot repeats the
+    // latest generated frame instead of the decoded one.
+    property bool generatedFramesOnly: false
     property var lastSessionReport: null
     property bool desiredStreamInputPaused: false
     property bool currentStreamInputPaused: false
@@ -1232,6 +1230,39 @@ QtObject {
     function gameLockedByMembership(game) {
         return Boolean(game && game.requiresPaidMembership === true) && settingsOwner.membershipTierName() === "FREE"
     }
+
+    // Frame generation facade: levels, target FPS, display refresh and the capability test
+    // are owned by SettingsState.
+    function frameGenerationFactor() { return settingsOwner.frameGenerationFactor() }
+    function frameGenerationRequestedFactor() { return settingsOwner.frameGenerationRequestedFactor() }
+    function frameGenerationMode() { return settingsOwner.frameGenerationMode() }
+    function frameGenerationMatrix() { return settingsOwner.frameGenerationMatrix() }
+    function toggleFrameGeneration() { settingsOwner.toggleFrameGeneration() }
+    function frameGenerationQuickText() { return settingsOwner.frameGenerationQuickText() }
+    function frameGenerationQuickVisible() { return settingsOwner.frameGenerationQuickVisible() }
+    function frameGenerationEngineNotice() { return settingsOwner.frameGenerationEngineNotice() }
+    function frameGenerationVerdictFor(fps) { return settingsOwner.frameGenerationVerdictFor(fps) }
+    function frameGenerationModes() { return settingsOwner.frameGenerationModes }
+    function selectFrameGenerationMode(mode) { settingsOwner.selectFrameGenerationMode(mode) }
+    function frameGenerationMultiplierDescription() { return settingsOwner.frameGenerationMultiplierDescription() }
+    function frameGenerationTargetDescription() { return settingsOwner.frameGenerationTargetDescription() }
+    function frameGenerationUnlocked() { return settingsOwner.frameGenerationUnlocked() }
+    function frameGenerationProfileKey() { return settingsOwner.frameGenerationProfileKey() }
+    function frameGenerationTestDescription() { return settingsOwner.frameGenerationTestDescription() }
+    function frameGenerationSourceFps() { return settingsOwner.frameGenerationSourceFps() }
+    function frameGenerationDisplayHz() { return settingsOwner.frameGenerationDisplayHz() }
+    function frameGenerationDescription() { return settingsOwner.frameGenerationDescription() }
+    function frameGenerationOutputDescription() { return settingsOwner.frameGenerationOutputDescription() }
+    function frameGenerationDisplayDescription() { return settingsOwner.frameGenerationDisplayDescription() }
+    function frameGenerationLockedValues() { return settingsOwner.frameGenerationLockedValues() }
+    function frameGenerationLockedHint() { return settingsOwner.frameGenerationLockedHint() }
+    function frameGenerationTargetOptions() { return settingsOwner.frameGenerationTargetOptions() }
+    function frameGenerationDisplayChoices() { return settingsOwner.frameGenerationDisplayChoices }
+    function selectFrameGenerationLevel(value) { settingsOwner.selectFrameGenerationLevel(value) }
+    function selectFrameGenerationTarget(value) { settingsOwner.selectFrameGenerationTarget(value) }
+    function selectFrameGenerationDisplayHz(value) { settingsOwner.selectFrameGenerationDisplayHz(value) }
+    function runFrameGenerationTest() { settingsOwner.runFrameGenerationTest() }
+    function ensureFrameGenerationGpu() { settingsOwner.ensureFrameGenerationGpu() }
 
     function canonicalFpsValues() {
         return settingsOwner.canonicalFpsValues()
@@ -2088,6 +2119,24 @@ QtObject {
         inspectLaunch("create")
     }
 
+    function requestNewSession() {
+        streamState = "requesting"
+        launchRequestedAtMs = Date.now()
+        pendingRequestedColorQuality = String(settings.colorQuality || "8bit_420")
+        streamCreateRequestId = CoreClient.request("session.create",
+            Object.assign({}, pendingLaunchParams, {
+                runtimeCapabilities: nativeRuntimeCapabilities,
+                maxEntitledFps: settingsOwner.maxEntitledFps(String(settings.resolution || "")),
+                // Active display physical DPI (auto per screen / OS).
+                screenDpi: AppController.screenDpi(),
+                devicePixelRatio: Screen.devicePixelRatio
+            }), 60000)
+        if (streamCreateRequestId === "") {
+            pendingRequestedColorQuality = ""
+            handleSessionCreateFailure("", CoreClient.lastError || qsTr("Session could not start"))
+        }
+    }
+
     function resolveSessionConflict(choice) {
         if (streamBusy)
             return
@@ -2936,6 +2985,8 @@ QtObject {
             "toggle-fullscreen": [String(settings.shortcutToggleFullscreen ?? "F11")],
             "stop-stream": [String(settings.shortcutStopStream ?? "Ctrl+Shift+Q")],
             "toggle-anti-afk": [String(settings.shortcutToggleAntiAfk ?? "Ctrl+Shift+K")],
+            "toggle-frame-generation": [String(settings.shortcutToggleFrameGeneration ?? "Ctrl+Shift+G")],
+            "toggle-generated-only": ["Ctrl+Shift+F12"],
             "toggle-microphone": microphoneToggleAvailable
                 ? [String(settings.shortcutToggleMicrophone ?? "Ctrl+Shift+M")] : [],
             "screenshot": [String(settings.shortcutScreenshot ?? "Ctrl+F11")],
@@ -2994,6 +3045,26 @@ QtObject {
         } else if (action === "toggle-anti-afk") {
             antiAfkEnabled = !antiAfkEnabled
             streamControlMessage = antiAfkEnabled ? qsTr("Anti-AFK on") : qsTr("Anti-AFK off")
+            accessibilityMessage = streamControlMessage
+        } else if (action === "toggle-generated-only") {
+            if (settingsOwner.frameGenerationFactor() < 2) {
+                streamControlMessage = qsTr("Frame generation is off")
+            } else {
+                generatedFramesOnly = !generatedFramesOnly
+                streamControlMessage = generatedFramesOnly
+                    ? qsTr("Generated frames only")
+                    : qsTr("Source frames shown")
+            }
+            accessibilityMessage = streamControlMessage
+        } else if (action === "toggle-frame-generation") {
+            if (!settingsOwner.frameGenerationUnlocked()) {
+                streamControlMessage = qsTr("Frame generation needs the capability test in Settings first")
+            } else {
+                settingsOwner.toggleFrameGeneration()
+                streamControlMessage = settingsOwner.frameGenerationMode() !== "off"
+                    ? qsTr("Frame generation %1").arg(settingsOwner.frameGenerationQuickText())
+                    : qsTr("Frame generation off")
+            }
             accessibilityMessage = streamControlMessage
         } else if (action === "toggle-stats") {
             const compact = desktopUiActive ? "desktop-stream-stats" : "stream-stats"

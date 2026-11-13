@@ -16,8 +16,11 @@
 #include <rhi/qrhi.h>
 #include <rhi/qrhi_platform.h>
 #include <QDebug>
+#include <QImage>
 
 #include <utility>
+#include <vector>
+#include <memory>
 #include <atomic>
 #include <chrono>
 
@@ -222,7 +225,7 @@ public:
         auto senderNow = StreamSenderPacer::clockNs();
         if (m_pendingFrame) {
             if (senderNow < m_pendingDeadline) {
-                prepareOriginal();
+                prepareNext(commandBuffer);
                 return;
             }
             frame = std::exchange(m_pendingFrame, nullptr);
@@ -251,9 +254,9 @@ public:
                 if (timing.paced) m_senderFramesPaced.fetch_add(1);
                 const int senderMode = !recognized ? 0 : timing.paced ? 2 : 1;
                 const int previousSenderMode = m_senderMode.exchange(senderMode);
-                if (timing.paced && previousSenderMode != 2 && m_frameGeneration) {
+                if (timing.paced && previousSenderMode != 2 && m_frameGenerationFactor >= 2) {
                     resetFrameGeneration();
-                    m_frameGenerationStatus.store(m_frameGeneration
+                    m_frameGenerationStatus.store(m_frameGenerationFactor >= 2
                         ? FrameGenerationState::Unavailable : FrameGenerationState::Off);
                 }
                 if (previousSenderMode != senderMode)
@@ -271,7 +274,7 @@ public:
                     m_pendingDeadline = deadline;
                     m_nextFrameDeadline.store(deadline);
                     m_senderFramesDeferred.fetch_add(1);
-                    prepareOriginal();
+                    prepareNext(commandBuffer);
                     return;
                 }
             }
@@ -283,7 +286,7 @@ public:
                     || current.scene_epoch != presentation.scene_epoch)) {
                 m_runtime->releaseFrame(frame);
                 m_senderPacer.reset();
-                prepareOriginal();
+                prepareNext(commandBuffer);
                 return;
             }
             ExternalCommandScope externalCommands(commandBuffer);
@@ -334,7 +337,7 @@ public:
         }
         if (status == OPENNOW_STREAMER_NO_FRAME || status == OPENNOW_STREAMER_STALE_FRAME) {
             if (frame) m_runtime->releaseFrame(frame);
-            prepareOriginal();
+            prepareNext(commandBuffer);
             return;
         }
         if (status == OPENNOW_STREAMER_GRAPHICS_UNSUPPORTED) {
@@ -377,6 +380,10 @@ public:
                 : recorded.texture_format == OPENNOW_STREAMER_TEXTURE_FORMAT_RGBA16F
                     ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
             QSize(int(recorded.width), int(recorded.height)))) {
+            if (m_runtime)
+                m_runtime->logRenderDiagnostic(QStringLiteral("video texture import failed slot=%1 format=%2 %3x%4 step=%5")
+                    .arg(command.frame_slot).arg(int(recorded.texture_format))
+                    .arg(recorded.width).arg(recorded.height).arg(m_textures.importFailure()));
             reportFailure(QStringLiteral("Could not import the decoded video texture into Qt. The decoder and graphics backend must use compatible GPU resources."));
             return;
         }
@@ -398,7 +405,7 @@ public:
             && bool(info.sender_timing_flags & OPENNOW_STREAMER_FRAME_TIMING_PACED)
             && info.sender_paced != 0;
         auto *source = m_textures.importedTexture();
-        if (m_frameGeneration && !senderPaced && (m_historySize != source->pixelSize()
+        if ((m_frameGenerationFactor >= 2) && !senderPaced && (m_historySize != source->pixelSize()
                                   || m_historyFormat != source->format())) {
             resetFrameGeneration();
             m_historySize = source->pixelSize();
@@ -407,26 +414,36 @@ public:
         m_outputDirty = true;
         m_outputKind = 1;
         if (senderPaced) {
-            m_frameGenerationStatus.store(m_frameGeneration
+            m_frameGenerationStatus.store(m_frameGenerationFactor >= 2
                 ? FrameGenerationState::Unavailable : FrameGenerationState::Off);
             return;
         }
         if (m_sourceColorSpace != OPENNOW_STREAMER_COLOR_SPACE_SDR709) {
-            m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::HdrUnsupported : FrameGenerationState::Off);
+            m_frameGenerationStatus.store(m_frameGenerationFactor >= 2 ? FrameGenerationState::HdrUnsupported : FrameGenerationState::Off);
             return;
         }
-        if (!m_frameGeneration || m_frameGenerationFailed) return;
+        if (m_frameGenerationFactor < 2 || m_frameGenerationFailed) return;
 
         const auto now = clockNs();
-        const auto decision = m_pacer.source(info.sequence, info.presentation_time_ns, now, m_refreshRate);
+        // The presenter is stalled when nothing new has reached the display for a while;
+        // a source frame arriving early on its own is a burst, not overload. Generated frames
+        // count: an engine that never reaches the original slot is late, not stalled.
+        const auto lastPresent = m_lastPresentNs.load();
+        const bool presenterStalled = lastPresent && now - lastPresent
+            > std::max<std::int64_t>(100'000'000, 4 * std::int64_t(m_pacer.interval()));
+        const bool late = m_pacer.pending();
+        const auto decision = m_pacer.source(info.sequence, info.presentation_time_ns, now, m_refreshRate,
+                                             (std::min)(m_frameGenerationFactor, m_factorCap), presenterStalled);
         updateTimingStats();
+        if (decision == StreamFramePacer::Result::Interpolate) adaptFactorCap(late);
         if (decision == StreamFramePacer::Result::Duplicate) {
             m_outputDirty = false;
             if (m_pacer.pending())
-                m_textures.selectTexture(m_interpolator.midpointTexture());
-            else if (m_interpolator.hasPair())
-                m_textures.selectTexture(m_interpolator.currentTexture());
-            prepareOriginal();
+                m_textures.selectTexture(m_interpolator.generatedTexture(m_pacer.pendingIndex()));
+            else if (m_generatedOnly && selectLatestGenerated(commandBuffer)) {
+            } else if (m_interpolator.hasPair())
+                m_textures.selectTexture(m_interpolator.anchorTexture());
+            prepareNext(commandBuffer);
             return;
         }
         m_needsFrame.store(false);
@@ -440,24 +457,82 @@ public:
             default: m_frameGenerationStatus.store(FrameGenerationState::WarmingUp); break;
             }
         }
-        if (!m_interpolator.initialize(m_rhi) || !m_interpolator.ingest(commandBuffer, source)) {
-            disableFrameGeneration();
+        if (!m_interpolator.initialize(m_rhi)) {
+            stopFrameGeneration(QStringLiteral("initialize"));
             return;
+        }
+        // Copy the frame that just arrived, then interpolate up to it. Computing first
+        // shows the previous pair and holds this look for a whole source interval.
+        if (!m_interpolator.ingest(commandBuffer, source, m_pacer.factor())) {
+            stopFrameGeneration(QStringLiteral("ingest"));
+            return;
+        }
+        if (!m_interpolator.computePending(commandBuffer)) {
+            stopFrameGeneration(QStringLiteral("flyhigh compute failed"));
+            return;
+        }
+        const double engineMs = m_interpolator.lastGpuMs();
+        if (engineMs > 0.0)
+            m_engineUs.store(qint64(engineMs * 1000.0));
+        if (m_runtime && m_loggedEngine != m_interpolator.engine()) {
+            m_loggedEngine = m_interpolator.engine();
+            m_runtime->logRenderDiagnostic(QStringLiteral("frame-generation engine=%1").arg(m_loggedEngine));
         }
         if (!m_interpolator.hasPair()) {
             if (decision != StreamFramePacer::Result::Discontinuity)
                 m_frameGenerationStatus.store(FrameGenerationState::WarmingUp);
             return;
         }
-        if (!m_textures.selectTexture(m_interpolator.midpointTexture())) {
-            disableFrameGeneration();
+        // The engine may synthesise fewer frames than requested (the block-matching
+        // engine knows only the midpoint); the schedule follows what exists.
+        const int generated = (std::min)(m_interpolator.generatedCount(), m_pacer.factor() - 1);
+        m_effectiveFactor.store(generated + 1);
+        if (generated < 1 || !m_textures.selectTexture(m_interpolator.generatedTexture(1))) {
+            stopFrameGeneration(QStringLiteral("no generated frame"));
             return;
         }
         m_midpointSwapped.store(false);
-        m_pacer.midpoint(clockNs());
+        m_pacer.generated(clockNs(), generated);
         m_needsFrame.store(true);
         m_outputKind = 2;
         m_frameGenerationStatus.store(FrameGenerationState::Active);
+        captureFrameGeneration(commandBuffer, generated);
+    }
+
+    // Diagnostics: with OPENNOW_FG_CAPTURE_DIR set, saves the pair and every generated frame
+    // as PNG 3 s after generation starts and then every 5 s, six times per session.
+    void captureFrameGeneration(QRhiCommandBuffer *commandBuffer, int generated)
+    {
+        static const QString directory = qEnvironmentVariable("OPENNOW_FG_CAPTURE_DIR");
+        if (directory.isEmpty() || m_captureCount >= 6 || !m_rhi) return;
+        const auto now = clockNs();
+        if (!m_captureDueNs) m_captureDueNs = now + 3'000'000'000;
+        if (now < m_captureDueNs) return;
+        m_captureDueNs = now + 5'000'000'000;
+        const int capture = ++m_captureCount;
+        m_captureResults.clear();
+        std::vector<std::pair<QString, QRhiTexture *>> frames{
+            {QStringLiteral("previous"), m_interpolator.previousTexture()},
+            {QStringLiteral("current"), m_interpolator.currentTexture()}};
+        for (int k = 1; k <= generated; ++k)
+            frames.emplace_back(QStringLiteral("generated-%1").arg(k), m_interpolator.generatedTexture(k));
+        auto *updates = m_rhi->nextResourceUpdateBatch();
+        for (const auto &[name, texture] : frames) {
+            if (!texture || texture->format() != QRhiTexture::RGBA8) continue;
+            auto result = std::make_unique<QRhiReadbackResult>();
+            const QString path = QStringLiteral("%1/capture-%2-%3.png").arg(directory).arg(capture).arg(name);
+            auto *raw = result.get();
+            raw->completed = [raw, path] {
+                QImage(reinterpret_cast<const uchar *>(raw->data.constData()), raw->pixelSize.width(),
+                       raw->pixelSize.height(), QImage::Format_RGBA8888).copy().save(path);
+            };
+            updates->readBackTexture(QRhiReadbackDescription(texture), raw);
+            m_captureResults.push_back(std::move(result));
+        }
+        commandBuffer->resourceUpdate(updates);
+        if (m_runtime)
+            m_runtime->logRenderDiagnostic(QStringLiteral("frame-generation capture=%1 frames=%2 factor=%3")
+                .arg(capture).arg(frames.size()).arg(m_pacer.factor()));
     }
 
     void setUpscalingTarget(const QSize &size) override
@@ -485,11 +560,22 @@ public:
             m_resetFrameGeneration = true;
     }
 
-    void setFrameGeneration(bool enabled, double refreshRate) override
+    void setGeneratedFramesOnly(bool enabled) override
     {
-        if (m_frameGeneration != enabled || m_refreshRate != refreshRate)
+        if (m_generatedOnly == enabled) return;
+        m_generatedOnly = enabled;
+        if (m_runtime)
+            m_runtime->logRenderDiagnostic(QStringLiteral("generated-only=%1").arg(enabled ? 1 : 0));
+    }
+
+    void setFrameGeneration(int factor, double refreshRate) override
+    {
+        factor = factor >= StreamFramePacer::MinimumFactor
+            ? (std::min)(factor, StreamFramePacer::MaximumFactor) : 0;
+        if (m_frameGenerationFactor != factor || m_refreshRate != refreshRate)
             m_resetFrameGeneration = true;
-        m_frameGeneration = enabled;
+        m_frameGenerationFactor = factor;
+        m_reportedFactor.store(factor);
         m_refreshRate = refreshRate;
         m_reportedRefreshRate.store(refreshRate);
     }
@@ -576,6 +662,7 @@ public:
         if (kind) {
             ++m_outputCount;
             m_swapTimings.markSwap(clockNs());
+            m_lastPresentNs.store(clockNs());
         }
         if (kind == 2) m_midpointSwapped.store(true);
         const auto now = clockNs();
@@ -608,8 +695,11 @@ public:
                 {QStringLiteral("arrivalDeltaMs"), double(m_arrivalDelta.load()) / 1.0e6},
                 {QStringLiteral("sequenceDelta"), qulonglong(m_sequenceDelta.load())},
                 {QStringLiteral("refreshRateHz"), m_reportedRefreshRate.load()},
+                {QStringLiteral("factor"), m_reportedFactor.load()},
+                {QStringLiteral("effectiveFactor"), m_effectiveFactor.load()},
                 {QStringLiteral("outputFps"), clockNs() - m_sampleStart.load() < 2'000'000'000
-                    ? m_outputFps.load() : 0.0}};
+                    ? m_outputFps.load() : 0.0},
+                {QStringLiteral("engineMs"), double(m_engineUs.load()) / 1000.0}};
     }
 
     void setComposition(const QMatrix4x4 &matrix, const QRectF &bounds,
@@ -628,6 +718,7 @@ public:
     {
         if (!m_runtime || !m_runtime->presentationAllowed()
                 || m_presentationGeneration != m_runtime->presentationGeneration()) return;
+        logFrameGenerationStatus();
         m_textures.render(commandBuffer, m_stencil, m_stencilReference);
         if (m_outputDirty) {
             m_submittedKind.store(m_outputKind);
@@ -765,7 +856,18 @@ private:
     QSize m_historySize;
     QRhiTexture::Format m_historyFormat = QRhiTexture::UnknownFormat;
     double m_refreshRate = 0;
-    bool m_frameGeneration = false;
+    int m_frameGenerationFactor = 0;
+    bool m_generatedOnly = false;
+    QString m_loggedEngine;
+    std::atomic_int m_reportedFactor = 0;
+    std::atomic_int m_effectiveFactor = 0;
+    std::atomic<qint64> m_engineUs = 0;
+    std::vector<std::unique_ptr<QRhiReadbackResult>> m_captureResults;
+    std::int64_t m_captureDueNs = 0;
+    int m_captureCount = 0;
+    FrameGenerationState m_loggedStatus = FrameGenerationState::Off;
+    std::int64_t m_lastStatusLogNs = 0;
+    int m_suppressedStatusChanges = 0;
     QSize m_upscalingTarget;
     bool m_fsrUpscaling = false;
     int m_upscalingSharpness = 10;
@@ -777,6 +879,10 @@ private:
     std::atomic_bool m_needsFrame = false;
     std::atomic_bool m_midpointSwapped = false;
     std::atomic_int m_submittedKind = 0;
+    std::atomic<std::int64_t> m_lastPresentNs = 0;
+    int m_factorCap = StreamFramePacer::MaximumFactor;
+    int m_lateStreak = 0;
+    int m_onTimeStreak = 0;
     std::atomic<FrameGenerationState> m_frameGenerationStatus = FrameGenerationState::Off;
     std::atomic_uint64_t m_outputCount = 0;
     std::atomic_int64_t m_sampleStart = 0;
@@ -797,6 +903,39 @@ private:
     static std::int64_t clockNs()
     {
         return streamMonotonicClockNs();
+    }
+
+    // Every frame-generation status change goes to qt-native.log with the pacer's numbers,
+    // at most five lines a second; flickers in between are counted, not written.
+    void logFrameGenerationStatus()
+    {
+        const auto status = m_frameGenerationStatus.load();
+        if (status == m_loggedStatus) return;
+        const auto now = clockNs();
+        m_loggedStatus = status;
+        if (m_lastStatusLogNs && now - m_lastStatusLogNs < 200'000'000) {
+            ++m_suppressedStatusChanges;
+            return;
+        }
+        if (!m_runtime) return;
+        const auto stats = frameGenerationStats();
+        m_runtime->logRenderDiagnostic(QStringLiteral(
+            "frame-generation status=%1 reason=%2 timing=%3 factor=%4/%5 interval=%6ms stamp=%7ms arrival=%8ms "
+            "seq-delta=%9 refresh=%10 output=%11fps suppressed=%12")
+            .arg(stats.value(QStringLiteral("status")).toString(),
+                 stats.value(QStringLiteral("rejectionReason")).toString(),
+                 stats.value(QStringLiteral("timingSource")).toString())
+            .arg(stats.value(QStringLiteral("effectiveFactor")).toInt())
+            .arg(stats.value(QStringLiteral("factor")).toInt())
+            .arg(stats.value(QStringLiteral("sourceIntervalMs")).toDouble(), 0, 'f', 2)
+            .arg(stats.value(QStringLiteral("timestampDeltaMs")).toDouble(), 0, 'f', 2)
+            .arg(stats.value(QStringLiteral("arrivalDeltaMs")).toDouble(), 0, 'f', 2)
+            .arg(stats.value(QStringLiteral("sequenceDelta")).toULongLong())
+            .arg(stats.value(QStringLiteral("refreshRateHz")).toDouble(), 0, 'f', 1)
+            .arg(stats.value(QStringLiteral("outputFps")).toDouble(), 0, 'f', 0)
+            .arg(m_suppressedStatusChanges));
+        m_lastStatusLogNs = now;
+        m_suppressedStatusChanges = 0;
     }
 
     void updateTimingStats()
@@ -820,7 +959,47 @@ private:
         m_midpointSwapped.store(false);
         m_outputDirty = false;
         m_frameGenerationFailed = false;
-        m_frameGenerationStatus.store(m_frameGeneration ? FrameGenerationState::WarmingUp : FrameGenerationState::Off);
+        m_effectiveFactor.store(0);
+        m_engineUs.store(0);
+        m_factorCap = StreamFramePacer::MaximumFactor;
+        m_lateStreak = 0;
+        m_onTimeStreak = 0;
+        m_frameGenerationStatus.store(m_frameGenerationFactor >= 2 ? FrameGenerationState::WarmingUp : FrameGenerationState::Off);
+    }
+
+    // A pair whose original frame has not been shown when the next source frame arrives
+    // means the engine needs more than one source interval at this factor. Three in a row
+    // lower the factor; a long on-time run tries the next one up again.
+    void adaptFactorCap(bool late)
+    {
+        const int previous = m_factorCap;
+        if (late) {
+            m_onTimeStreak = 0;
+            if (++m_lateStreak >= 3 && m_factorCap > StreamFramePacer::MinimumFactor) {
+                --m_factorCap;
+                m_lateStreak = 0;
+            }
+        } else {
+            m_lateStreak = 0;
+            if (++m_onTimeStreak >= 1200 && m_factorCap < StreamFramePacer::MaximumFactor) {
+                ++m_factorCap;
+                m_onTimeStreak = 0;
+            }
+        }
+        if (m_factorCap != previous && m_runtime)
+            m_runtime->logRenderDiagnostic(QStringLiteral("frame-generation factor cap %1 -> %2 (%3)")
+                .arg(previous).arg(m_factorCap).arg(m_interpolator.engine()));
+    }
+
+    void stopFrameGeneration(const QString &reason)
+    {
+        logFrameGenerationEvent(QStringLiteral("stopped: %1").arg(reason));
+        disableFrameGeneration();
+    }
+
+    void logFrameGenerationEvent(const QString &text)
+    {
+        if (m_runtime) m_runtime->logRenderDiagnostic(QStringLiteral("frame-generation %1").arg(text));
     }
 
     void disableFrameGeneration()
@@ -834,17 +1013,51 @@ private:
         m_frameGenerationStatus.store(FrameGenerationState::Unavailable);
     }
 
-    void prepareOriginal()
+    // Advances the pair's presentation schedule: the next generated frame when its slot
+    // arrives, then the original. Only moves on once the previously selected generated
+    // frame has actually reached the display.
+    void prepareNext(QRhiCommandBuffer *commandBuffer)
     {
-        if (!m_frameGeneration || !m_midpointSwapped.load()
-            || !m_pacer.takeOriginal(clockNs(), m_refreshRate)) return;
-        m_needsFrame.store(false);
-        if (!m_textures.selectTexture(m_interpolator.currentTexture())) {
-            disableFrameGeneration();
+        if (m_frameGenerationFactor < 2 || !m_midpointSwapped.load()) return;
+        // No early lead here. At 240 Hz the pacer's 1.5-refresh lead makes the real frame
+        // replace the generated one after a single tick, so the mix flickers and the
+        // generated-only hold looks smoother. Each step keeps its full slot.
+        const auto next = m_pacer.takeNext(clockNs(), 0);
+        if (next.kind == StreamFramePacer::Next::Kind::None) {
+            m_needsFrame.store(m_pacer.pending());
             return;
         }
-        m_outputDirty = true;
-        m_outputKind = 1;
+        if (next.kind == StreamFramePacer::Next::Kind::Generated) {
+            if (m_interpolator.prepare(commandBuffer, next.index)
+                && m_textures.selectTexture(m_interpolator.generatedTexture(next.index))) {
+                m_midpointSwapped.store(false);
+                m_needsFrame.store(true);
+                m_outputDirty = true;
+                m_outputKind = 2;
+                return;
+            }
+            logFrameGenerationEvent(QStringLiteral("skipped generated frame %1").arg(next.index));
+        }
+        m_needsFrame.store(false);
+        // Ctrl+Shift+F12 holds the last generated frame where the source frame would show.
+        if (m_generatedOnly && selectLatestGenerated(commandBuffer)) {
+            m_outputDirty = true;
+            m_outputKind = 2;
+            return;
+        }
+        if (m_textures.selectTexture(m_interpolator.anchorTexture())) {
+            m_outputDirty = true;
+            m_outputKind = 1;
+            return;
+        }
+        logFrameGenerationEvent(QStringLiteral("anchor frame not shown"));
+    }
+
+    bool selectLatestGenerated(QRhiCommandBuffer *commandBuffer)
+    {
+        const int count = m_interpolator.generatedCount();
+        return count > 0 && m_interpolator.prepare(commandBuffer, count)
+            && m_textures.selectTexture(m_interpolator.generatedTexture(count));
     }
     void reportFailure(const QString &message,
                        NativeStreamRuntime::PresentationFailure failure

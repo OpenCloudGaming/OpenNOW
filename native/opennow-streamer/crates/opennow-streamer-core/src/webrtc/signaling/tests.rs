@@ -12,7 +12,7 @@ fn sign_in_normalizes_path_query_and_reconnect() {
     let mut session = session("wss://example.test/nvst/?old=ignored");
     assert_eq!(
         sign_in_url(&session, "peer one").unwrap(),
-        "wss://example.test/nvst/sign_in?peer_id=peer%20one&version=2&peer_role=1&pairing_id=seat%2Fone"
+        "wss://example.test/nvst/sign_in?peer_id=peer%20one&version=3.0&peer_role=1&pairing_id=seat%2Fone"
     );
     session.extra.insert(
         "signalingUrl".to_owned(),
@@ -21,10 +21,10 @@ fn sign_in_normalizes_path_query_and_reconnect() {
     session
         .extra
         .insert("signalingReconnect".to_owned(), json!(true));
-    let url = sign_in_url(&session, "peer").unwrap();
-    assert!(url.contains("version=3.0"));
-    assert!(url.ends_with("&reconnect=1"));
-    assert!(!url.contains("sign_in/sign_in"));
+    assert_eq!(
+        sign_in_url(&session, "peer").unwrap(),
+        "wss://example.test/nvst/sign_in?peer_id=peer&version=3.0&peer_role=1&pairing_id=seat%2Fone&reconnect=1"
+    );
 }
 
 #[test]
@@ -43,8 +43,14 @@ fn signaling_rejects_insecure_and_credential_urls() {
 fn peer_info_ack_heartbeat_and_nested_answer_match_wire_contract() {
     let mut protocol = Protocol::new("peer-local".to_owned());
     let info = protocol.peer_info(1920, 1080);
-    assert_eq!(info["peer_info"]["resolution"], "1920x1080");
-    assert_eq!(info["peer_info"]["peerRole"], 0);
+    assert_eq!(
+        info,
+        json!({"ackid":1,"peer_info":{
+            "browser":"Chrome","browserVersion":"131.0.0.0","connected":true,
+            "id":0,"name":"peer-local","peer_role":1,"resolution":"1920x1080",
+            "signalingVersion":"3.0","version":3
+        }})
+    );
     let (replies, _) = protocol
         .receive(r#"{"ackid":1,"peer_info":{"id":7,"name":"peer-local"}}"#)
         .unwrap();
@@ -61,6 +67,142 @@ fn peer_info_ack_heartbeat_and_nested_answer_match_wire_contract() {
     assert_eq!(answer["peer_msg"]["to"], 9);
     let nested: Value = serde_json::from_str(answer["peer_msg"]["msg"].as_str().unwrap()).unwrap();
     assert_eq!(nested["nvstSdp"], "attributes");
+}
+
+#[test]
+fn local_exchange_registers_v3_for_fresh_and_reconnected_provider_sessions() {
+    use std::net::TcpListener;
+    use std::thread;
+
+    for reconnect in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut session = session(&format!(
+            "ws://{}/provider/nvst/?stale=discarded",
+            listener.local_addr().unwrap()
+        ));
+        session.session_id = "provider-seat".to_owned();
+        session
+            .extra
+            .insert("signalingReconnect".to_owned(), json!(reconnect));
+        session.extra.insert(
+            "ownerScope".to_owned(),
+            json!({"providerIdpId":"fixture-partner"}),
+        );
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let stream = loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "mock signaling was not contacted"
+                );
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("mock accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut peer_name = String::new();
+            #[allow(clippy::result_large_err)]
+            let mut socket = tungstenite::accept_hdr(
+                stream,
+                |request: &tungstenite::handshake::server::Request,
+                 mut response: tungstenite::handshake::server::Response| {
+                    assert_eq!(request.uri().path(), "/provider/nvst/sign_in");
+                    let query = request.uri().query().unwrap();
+                    let (peer, parameters) = query.split_once('&').unwrap();
+                    assert!(peer.starts_with("peer_id=peer-"));
+                    peer_name = peer.strip_prefix("peer_id=").unwrap().to_owned();
+                    assert_eq!(
+                        parameters,
+                        format!(
+                            "version=3.0&peer_role=1&pairing_id=provider-seat{}",
+                            if reconnect { "&reconnect=1" } else { "" }
+                        )
+                    );
+                    assert_eq!(request.headers()["Origin"], "https://play.geforcenow.com");
+                    assert_eq!(
+                        request.headers()["Sec-WebSocket-Protocol"],
+                        "x-nv-sessionid.provider-seat"
+                    );
+                    assert!(
+                        request.headers()["User-Agent"]
+                            .to_str()
+                            .unwrap()
+                            .contains("Chrome/131.0.0.0")
+                    );
+                    response.headers_mut().insert(
+                        "Sec-WebSocket-Protocol",
+                        request.headers()["Sec-WebSocket-Protocol"].clone(),
+                    );
+                    Ok(response)
+                },
+            )
+            .unwrap();
+            let info: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(
+                info,
+                json!({"ackid":1,"peer_info":{
+                    "browser":"Chrome","browserVersion":"131.0.0.0","connected":true,
+                    "id":0,"name":peer_name,"peer_role":1,
+                    "resolution":"1920x1080","signalingVersion":"3.0","version":3
+                }})
+            );
+            for packet in [
+                json!({"peer_info":{"name":info["peer_info"]["name"],"id":7},"ackid":1}),
+                json!({"hb":1,"ackid":20}),
+                json!({"peer_msg":{"from":9,"to":7,"msg":json!({"type":"offer","sdp":"v=0\r\n"}).to_string()},"ackid":21}),
+            ] {
+                socket
+                    .send(Message::Text(packet.to_string().into()))
+                    .unwrap();
+            }
+            for expected in [json!({"ack":20}), json!({"hb":1}), json!({"ack":21})] {
+                let received: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert_eq!(received, expected);
+            }
+            let answer: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(
+                answer,
+                json!({"ackid":2,"peer_msg":{
+                    "from":7,"to":9,"msg":json!({"type":"answer","sdp":"local","nvstSdp":"attributes"}).to_string()
+                }})
+            );
+        });
+        let mut signaling = Signaling::connect(&session, &AtomicBool::new(false)).unwrap();
+        let info = signaling.protocol.peer_info(1920, 1080);
+        signaling.send(info).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(Instant::now() < deadline, "mock offer did not arrive");
+            if let Some(incoming) = signaling.poll().unwrap() {
+                assert!(matches!(incoming, Incoming::Offer(sdp) if sdp == "v=0\r\n"));
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        signaling
+            .send_peer(json!({"type":"answer","sdp":"local","nvstSdp":"attributes"}))
+            .unwrap();
+        while signaling.write_pending_since.is_some() {
+            assert!(Instant::now() < deadline, "mock answer was not flushed");
+            signaling.flush().unwrap();
+            thread::sleep(Duration::from_millis(1));
+        }
+        server.join().unwrap();
+    }
 }
 
 #[test]

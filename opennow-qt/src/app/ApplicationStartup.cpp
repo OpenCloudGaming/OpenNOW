@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "app/ApplicationIcon.h"
 #include "app/platform/GraphicsDeviceSelection.h"
 #include "app/platform/WindowTheme.h"
 #include "acceptance/AcceptanceSession.h"
@@ -12,6 +13,7 @@
 #include "streaming/rendering/LinuxVulkanGraphics.h"
 #include "streaming/rendering/HdrOutput.h"
 #include "streaming/rendering/HdrChromeEffect.h"
+#include "streaming/rendering/FrameGenerationBenchmark.h"
 #include "streaming/rendering/StreamPresentation.h"
 #ifdef OPENNOW_EMBEDDED_STREAMER
 #include "streaming/NativeStreamRuntime.h"
@@ -40,6 +42,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <thread>
 
 #ifdef Q_OS_WIN
@@ -142,11 +145,14 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     return EXIT_FAILURE;
 #endif
 #endif
+    const int flyHighSelfTest = application.arguments().indexOf(u"--flyhigh-selftest"_s);
+    if (flyHighSelfTest >= 0 && flyHighSelfTest + 1 < application.arguments().size())
+        return FrameGenerationBenchmark::flyHighSelfTest(application.arguments().at(flyHighSelfTest + 1));
     QGuiApplication::setDesktopFileName(u"io.github.opencloudgaming.OpenNOW"_s);
-    QIcon applicationIcon;
-    for (const int size : {16, 24, 32, 48, 64, 128, 256, 512, 1024})
-        applicationIcon.addFile(u":/icons/opennow-%1.png"_s.arg(size), QSize(size, size));
-    QGuiApplication::setWindowIcon(applicationIcon);
+#ifndef Q_OS_MACOS
+    // On macOS, Cocoa must resolve the bundle's appearance-aware icon.
+    QGuiApplication::setWindowIcon(applicationWindowIcon());
+#endif
 #if defined(Q_OS_LINUX) && QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
     LinuxVulkanGraphics::requestDeviceExtensions();
 #endif
@@ -162,6 +168,20 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         if (QFontDatabase::addApplicationFont(fontPath) == -1)
             qWarning("Could not load bundled font %s", qUtf8Printable(fontPath));
     }
+#ifdef Q_OS_WIN
+    // Nunito has no Hangul glyphs. Prefer the bundled Korean face over the
+    // Windows system fallback, including when the shell language is not Korean.
+    const int koreanFontId = QFontDatabase::addApplicationFont(
+        u":/qt/qml/OpenNOW/res/fonts/NotoSansKR-Variable.ttf"_s);
+    if (koreanFontId == -1) {
+        qWarning("Could not load bundled Noto Sans KR font");
+    } else {
+        // The variable font also exposes named weight families (Thin, Black,
+        // etc.). Use the main family so Qt can match each requested weight.
+        QFontDatabase::addApplicationFallbackFontFamily(QChar::Script_Hangul,
+                                                       QStringLiteral("Noto Sans KR"));
+    }
+#endif
     QFont applicationFont(QStringLiteral("Nunito"));
     applicationFont.setHintingPreference(QFont::PreferNoHinting);
     applicationFont.setStyleStrategy(QFont::PreferAntialias);
@@ -327,14 +347,17 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     qmlRegisterUncreatableType<MacAwdlController>("OpenNOW", 1, 0, "MacAwdlController",
                                                 u"Use the application-owned MacAwdl instance"_s);
     MacAwdlController macAwdl;
+    FrameGenerationBenchmark frameGenerationBenchmark(nullptr, graphicsDevices.adapterLuid());
 #ifdef OPENNOW_EMBEDDED_STREAMER
     QObject::connect(&nativeStreamRuntime, &NativeStreamRuntime::streamingChanged,
                      &macAwdl, [&] { macAwdl.setStreaming(nativeStreamRuntime.streaming()); });
     macAwdl.setStreaming(nativeStreamRuntime.streaming());
 #endif
-    QQmlApplicationEngine engine;
+    std::optional<QQmlApplicationEngine> qmlEngine(std::in_place);
+    auto &engine = *qmlEngine;
     engine.setInitialProperties({{u"visible"_s, false}, {u"visibility"_s, QWindow::Hidden}});
-    AcceptanceSession acceptance(application, engine, controller, coreClient, arguments);
+    std::optional<AcceptanceSession> acceptance(std::in_place, application, engine, controller,
+                                               coreClient, arguments);
     engine.rootContext()->setContextProperty(u"AppController"_s, &controller);
     engine.rootContext()->setContextProperty(u"ControllerInput"_s, &controllerInput);
     engine.rootContext()->setContextProperty(u"ThumbnailGenerator"_s, &thumbnailGenerator);
@@ -343,6 +366,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     engine.rootContext()->setContextProperty(u"GraphicsDevices"_s, &graphicsDevices);
     engine.rootContext()->setContextProperty(u"HdrOutput"_s, &hdrOutput);
     engine.rootContext()->setContextProperty(u"MacAwdl"_s, &macAwdl);
+    engine.rootContext()->setContextProperty(u"FrameGenerationBenchmark"_s, &frameGenerationBenchmark);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     engine.rootContext()->setContextProperty(u"NativeStreamRuntime"_s,
                                              &nativeStreamRuntime);
@@ -353,7 +377,7 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
             : arguments.contains(u"--console"_s) ? u"console"_s : QString{});
     engine.rootContext()->setContextProperty(
         u"QuitAfterSession"_s, arguments.contains(u"--quit-after-session"_s));
-    acceptance.configureContext();
+    acceptance->configureContext();
     QObject::connect(&localization, &Localization::localeChanged,
                      &engine, &QQmlApplicationEngine::retranslate);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
@@ -370,7 +394,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         qCritical("Could not select the graphics adapter before scene-graph initialization");
         return EXIT_FAILURE;
     }
-    hdrOutput.attach(rootWindow);
+    // Qt's grabWindow path interprets HDR swapchain readback as 8-bit pixels.
+    // Only explicit SDR smoke captures bypass HDR negotiation; production and
+    // ordinary HDR acceptance workloads retain the native output path.
+    if (!AcceptanceSession::sdrCaptureRequested(arguments))
+        hdrOutput.attach(rootWindow);
 #ifdef OPENNOW_EMBEDDED_STREAMER
     streamPresentation.attach(rootWindow);
 #endif
@@ -407,13 +435,13 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         return EXIT_FAILURE;
     }
 #endif
-    if (acceptance.prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
+    if (acceptance->prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
     if (rootWindow && arguments.contains(u"--fullscreen"_s)) rootWindow->showFullScreen();
     else if (rootWindow && !rootWindow->isVisible()) rootWindow->show();
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,
-                     &application, [&engine] {
+                     &engine, [&engine] {
                          if (engine.rootObjects().isEmpty()) return;
                          auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
                          if (!window) return;
@@ -442,12 +470,12 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         QObject::connect(rootWindow, SIGNAL(sessionQuitCancelled()),
                          &singleInstance, SLOT(cancelQuitRequest()));
 
-    if (acceptance.measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
+    if (acceptance->measureStartup(startupTimer, qmlReadyMs) != EXIT_SUCCESS)
         return EXIT_FAILURE;
 
     if (!coreProgram.isEmpty()) coreClient.start(coreProgram);
 
-    if (acceptance.startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
+    if (acceptance->startWorkload() != EXIT_SUCCESS) return EXIT_FAILURE;
 
     const auto exitCode = application.exec();
     auto *qmlCoreClient = engine.rootContext()->contextProperty(u"CoreClient"_s).value<QObject *>();
@@ -457,9 +485,11 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
         && engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s)->property("sessionWorkIdle").toBool();
     armTeardownDeadline(exitCode);
     coreClient.stop();
+    // Let the engine tear down its roots, queued QML work and singletons while
+    // the GUI platform, fonts, controllers and native presentation are alive.
+    acceptance.reset();
+    qmlEngine.reset();
 #ifdef OPENNOW_EMBEDDED_STREAMER
-    const auto roots = engine.rootObjects();
-    for (auto *root : roots) delete root;
     StreamVideoItem::setNativeStreamRuntime(nullptr);
     if (!nativeStreamRuntime.shutdown()) {
         qWarning("Could not complete embedded streamer shutdown: %s",

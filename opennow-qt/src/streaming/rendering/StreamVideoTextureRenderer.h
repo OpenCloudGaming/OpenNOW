@@ -92,14 +92,26 @@ public:
     bool importFrame(size_t slot, QRhiTexture::NativeTexture native,
                      QRhiTexture::Format format, const QSize &size)
     {
-        if (slot >= m_imports.size() || !m_uniforms || !m_sampler) return false;
+        m_importFailure.clear();
+        if (slot >= m_imports.size()) {
+            m_importFailure = QStringLiteral("slot %1").arg(slot);
+            return false;
+        }
+        if (!m_uniforms || !m_sampler) {
+            m_importFailure = QStringLiteral("renderer not prepared");
+            return false;
+        }
         auto &entry = m_imports[slot];
         if (!entry.texture || entry.resource != native.object || entry.format != format
             || entry.texture->pixelSize() != size) {
             m_fsr.forgetSource(entry.texture.get());
             entry.bindings.reset();
             entry.texture.reset(m_rhi->newTexture(format, size, 1));
-            if (!entry.texture->createFrom(native)) { entry.texture.reset(); return false; }
+            if (!entry.texture->createFrom(native)) {
+                entry.texture.reset();
+                m_importFailure = QStringLiteral("createFrom");
+                return false;
+            }
             entry.resource = native.object;
             entry.format = format;
         }
@@ -112,13 +124,23 @@ public:
                 QRhiShaderResourceBinding::sampledTexture(
                     1, QRhiShaderResourceBinding::FragmentStage, entry.texture.get(), m_sampler.get())
             });
-            if (!entry.bindings->create()) { entry.bindings.reset(); return false; }
+            if (!entry.bindings->create()) {
+                entry.bindings.reset();
+                m_importFailure = QStringLiteral("bindings");
+                return false;
+            }
         }
         m_currentSlot = slot;
         m_externalSlot = -1;
         ensurePipelines();
-        return m_pipelines[0] && m_pipelines[1];
+        if (!m_pipelines[0] || !m_pipelines[1]) {
+            if (m_importFailure.isEmpty()) m_importFailure = QStringLiteral("pipeline");
+            return false;
+        }
+        return true;
     }
+
+    QString importFailure() const { return m_importFailure; }
 
     QRhiTexture *importedTexture() const { return m_imports[m_currentSlot].texture.get(); }
 
@@ -263,7 +285,10 @@ private:
         if (!m_imports[m_currentSlot].bindings) return;
         static const QShader vertex = loadShader(":/opennow/shaders/streamvideo.vert.qsb");
         static const QShader fragment = loadShader(":/opennow/shaders/streamvideo.frag.qsb");
-        if (!vertex.isValid() || !fragment.isValid()) return;
+        if (!vertex.isValid() || !fragment.isValid()) {
+            m_importFailure = QStringLiteral("shader");
+            return;
+        }
         for (size_t index = 0; index < m_pipelines.size(); ++index) {
             auto &pipeline = m_pipelines[index];
             if (pipeline) continue;
@@ -287,7 +312,10 @@ private:
                                        {QRhiShaderStage::Fragment, fragment}});
             pipeline->setShaderResourceBindings(m_imports[m_currentSlot].bindings.get());
             pipeline->setRenderPassDescriptor(m_target->renderPassDescriptor());
-            if (!pipeline->create()) pipeline.reset();
+            if (!pipeline->create()) {
+                pipeline.reset();
+                m_importFailure = QStringLiteral("pipeline");
+            }
         }
     }
 
@@ -304,7 +332,8 @@ private:
     QRhi *m_rhi = nullptr;
     QRhiRenderTarget *m_target = nullptr;
     std::array<ImportedFrame, 8> m_imports;
-    std::array<ExternalFrame, 3> m_external;
+    // Two history frames, three generated frames, and the FlyHigh pair-end frame.
+    std::array<ExternalFrame, 8> m_external;
     StreamFsrUpscaler m_fsr;
     std::unique_ptr<QRhiShaderResourceBindings> m_fsrBinding;
     quint64 m_fsrOutputId = 0;
@@ -315,6 +344,7 @@ private:
     QVector<quint32> m_passFormat;
     size_t m_currentSlot = 0;
     int m_externalSlot = -1;
+    QString m_importFailure;
     int m_sampleCount = 1;
     int m_outputBits = 0;
 };

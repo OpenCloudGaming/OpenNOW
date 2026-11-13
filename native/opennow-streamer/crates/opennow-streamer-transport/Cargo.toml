@@ -36,6 +36,7 @@ str0m = { workspace = true, features = ["rust-crypto"] }
 str0m = { workspace = true, features = ["rust-crypto"] }
 
 [dev-dependencies]
+fastrand = "2"
 serde_json.workspace = true
 
 [features]

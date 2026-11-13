@@ -1103,6 +1103,32 @@ fn extra_incoming_tracks_are_rejected_by_role_not_section_count() {
 }
 
 #[test]
+fn pending_media_mid_collision_does_not_alias_data_channel() {
+    install_crypto();
+    let now = Instant::now();
+    let mut offerer = Rtc::new(now);
+    let mut answerer = Rtc::new(now);
+    let mut changes = offerer.sdp_api();
+
+    fastrand::seed(7);
+    let audio = changes.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
+    fastrand::seed(7);
+    changes.add_channel("data".to_owned());
+    let (offer, pending) = changes.apply().unwrap();
+    let offered_mids: Vec<_> = offer.media_lines.iter().map(|line| line.mid()).collect();
+    assert_eq!(offered_mids.len(), 2);
+
+    let answer = answerer.sdp_api().accept_offer(offer).unwrap();
+    let answered_mids: Vec<_> = answer.media_lines.iter().map(|line| line.mid()).collect();
+    offerer.sdp_api().accept_answer(pending, answer).unwrap();
+
+    assert_eq!(answered_mids, offered_mids);
+    assert_eq!(offered_mids[0], audio);
+    assert_ne!(offered_mids[0], offered_mids[1]);
+    assert_eq!(offerer.media(audio).unwrap().kind(), MediaKind::Audio);
+}
+
+#[test]
 fn bidirectional_playback_offer_is_answered_receive_only() {
     install_crypto();
     for (offered_role, answer_role) in [

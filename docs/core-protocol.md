@@ -320,7 +320,12 @@ responses are suppressed:
 complete, `cleaned` after an allocation-free error or successful compensating
 cleanup, or `failed` when cleanup remains unresolved. `session_allocation_unresolved`
 also requires `failed`: a lost or malformed POST response does not prove that no
-seat was allocated. Sending a response,
+seat was allocated. `session_allocation_recovery_required` means an earlier
+allocation record blocked admission before POST. It settles that new request as
+`cleaned`, while the original record still blocks allocation until the core can
+verify its outcome. Discovery includes a recorded origin omitted by the regional
+list when it is the original account's provider endpoint or a canonical NVIDIA
+queue zone. Sending a response,
 clearing a local request ID, or requesting cancellation is not settlement.
 An admission `busy` response means no worker was admitted and is not followed
 by settlement; Qt tracks retries until they are cancelled or admitted.
@@ -358,7 +363,10 @@ requires no valid authentication token. It releases only the exact accepted seat
 whose account and provider match. An extra `ownerScope.generation` is ignored:
 control reconciliation can change the core generation before the shell consumes
 its response, but it does not change the remote seat's identity.
-Pending allocation handoffs and cleanup records are not released.
+For the accepted seat, acknowledgement removes its durable allocation-recovery
+obligation before releasing its active owner. If durable cleanup fails, ownership
+is retained so the shell can retry. Pending allocation handoffs and unrelated
+cleanup records are not released.
 A matching pending handoff returns
 `session_update_busy` so the shell retries after handoff. The response is
 `{sessionId, cleared}`; duplicate or stale notifications return `cleared: false`
@@ -865,6 +873,43 @@ once to that provider's base without deleting the saved preference. Provider and
 region bases must be HTTPS NVIDIA-grid names without userinfo or nonstandard ports.
 Arbitrary partner domains require a separate evidenced trust policy.
 
+### Region latency
+
+`network.regions.ping({regions:[{url}]})` accepts at most 32 regions and returns
+`{results:[{url,pingMs,error?}]}` in input order. Each region uses an HTTP HEAD
+warm-up followed by up to three samples on a reused connection. Connection
+identity must match both local and remote transport endpoints. A reconnect is
+another warm-up, not a latency sample. HTTP error and redirect responses count
+as responses, but redirects are never followed. `pingMs` is the rounded-up mean
+of successful response times, or null when no reused-connection sample succeeds.
+Each HEAD request has a three-second total timeout, including connection setup. Direct and
+proxy DNS use the bounded resolver pool described below, with a 750 ms deadline.
+HTTP proxies resolve the origin themselves, without a required local origin lookup.
+
+The core snapshots settings before starting network work. An enabled
+`sessionProxyUrl` takes precedence over environment and OS proxy settings,
+including `NO_PROXY`. Invalid enabled configuration fails the RPC with
+`region_ping_failed`, without including proxy credentials in the error.
+An unreachable configured proxy produces a failed region result, without retrying
+through another proxy or directly. A disabled or absent explicit proxy leaves
+reqwest discovery enabled, rather than forcing a direct connection.
+
+With the locked hyper-util implementation, discovery reads scheme-specific
+environment variables first. Windows and macOS native settings fill missing
+scheme-specific values. `ALL_PROXY` supplies a route only when the resulting
+scheme-specific value does not parse. `NO_PROXY` controls bypasses. On Windows,
+an empty environment bypass value allows native `ProxyOverride` to supply it.
+Native discovery covers static proxy settings, not PAC or WPAD. Nonempty
+environment values are not replaced after a connection failure, and discovery
+does not provide proxy failover. The locked Windows implementation expects a
+single `ProxyServer` address, not a per-scheme map. An inherited `REQUEST_METHOD`
+disables automatic proxy routing in this dependency version. These rules do not
+change the direct TCP probes used by `queue.servers.list`.
+
+Enabling reqwest's native discovery feature also affects other core HTTP clients
+that use its default automatic discovery, including the base GFN client. Clients
+with an explicit proxy keep that route, and `.no_proxy()` clients stay direct.
+
 ### Free-tier queue locations
 
 `queue.servers.list({})` returns `{locations, recommendedZoneId}`. Each location
@@ -1128,8 +1173,12 @@ frame rate and bitrate follow the stream; the retained legacy `recordingResoluti
 apply to the next native session. Disabling it sends `replay-stop` immediately,
 clears buffered media and cancels an in-progress clip export.
 
+`shortcutToggleFrameGeneration` (default `Ctrl+Shift+G`) switches local frame generation
+on or off during a stream. The Qt shell handles it like `shortcutToggleMicrophone`; it is
+not part of the `shortcuts` map in `streamer.prepare`.
+
 These commands use the embedded streamer's JSON protocol 8. The core RPC protocol
-remains 5 and the native C ABI remains 15. Both the shell and capability probes
+remains 5 and the native C ABI is 18. Both the shell and capability probes
 require protocol 8 so recovery cannot silently use the old stop contract.
 
 - Manual `recording-start` uses its command `id` as the recording identity. A

@@ -168,6 +168,8 @@ impl MicrophonePump {
     fn run(self) {
         let mut last_drops = (0, 0, 0);
         let mut last_report = Instant::now();
+        let mut last_signal_report = Instant::now();
+        let mut queued_transport = 0_u64;
         while self.active() {
             let mut failure = None;
             for _ in 0..5 {
@@ -180,6 +182,7 @@ impl MicrophonePump {
                             failure = Some(error.to_string());
                             break;
                         }
+                        queued_transport = queued_transport.saturating_add(1);
                     }
                     Ok(None) => break,
                     Err(error) => {
@@ -216,7 +219,7 @@ impl MicrophonePump {
                     self.transport.microphone_dropped_frames(),
                 );
                 if drops != last_drops {
-                    opennow_streamer_protocol::log::log_line(
+                    opennow_streamer_protocol::log::log_async(
                         "WARN",
                         "microphone",
                         &format!(
@@ -228,12 +231,33 @@ impl MicrophonePump {
                 }
                 last_report = Instant::now();
             }
+            if last_signal_report.elapsed() >= Duration::from_secs(5) {
+                report_signal(&self.receiver, queued_transport);
+                last_signal_report = Instant::now();
+            }
             thread::sleep(Duration::from_millis(5));
         }
+        report_signal(&self.receiver, queued_transport);
         self.enabled.store(false, Ordering::Release);
         self.receiver.stop();
         let _ = self.transport.set_microphone_enabled(false);
     }
+}
+
+fn report_signal(receiver: &MicrophoneReceiver, queued_transport: u64) {
+    let diagnostics = receiver.take_diagnostics();
+    opennow_streamer_protocol::log::log_async(
+        "INFO",
+        "microphone",
+        &format!(
+            "captured_pcm={} encoded={} queued_transport={} signal_pcm={} peak_pcm={}",
+            diagnostics.captured_pcm_frames,
+            diagnostics.encoded_frames,
+            queued_transport,
+            diagnostics.signal_pcm_frames,
+            diagnostics.peak_pcm,
+        ),
+    );
 }
 
 #[cfg(test)]

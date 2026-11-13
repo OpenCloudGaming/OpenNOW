@@ -1344,8 +1344,9 @@ fn auto_av1_eligible(settings: &Value, capabilities: &Value, hdr: bool) -> bool 
         })
 }
 
-const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
+const EMBEDDED_RESOLUTIONS: [(u64, u64); 29] = [
     (1280, 720),
+    (1366, 768),
     (1600, 900),
     (1920, 1080),
     (2560, 1440),
@@ -1358,7 +1359,9 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (1680, 1050),
     (1920, 1200),
     (2560, 1600),
+    (3456, 2160),
     (3840, 2400),
+    (1680, 720),
     (2560, 1080),
     (3440, 1440),
     (3840, 1600),
@@ -1366,6 +1369,11 @@ const EMBEDDED_RESOLUTIONS: [(u64, u64); 21] = [
     (5120, 2160),
     (3840, 1080),
     (5120, 1440),
+    (3640, 1080),
+    (1024, 768),
+    (1112, 834),
+    (1600, 1200),
+    (1280, 1024),
 ];
 
 fn normalize_embedded_mode(
@@ -1445,13 +1453,15 @@ fn normalize_embedded_mode(
     if width.checked_mul(height).is_none() {
         return Ok(());
     }
+    // H.264 stays near the historical pixel cap, with an exception for GFN's
+    // Mac 3.5K mode (3456x2160) which the official client streams as H.264.
     let max_pixels = if codec == "h264" { 4_953_599 } else { u64::MAX };
     let fits = |width: u64, height: u64| {
         width <= max_width
             && height <= max_height
-            && width
-                .checked_mul(height)
-                .is_some_and(|pixels| pixels <= max_pixels)
+            && width.checked_mul(height).is_some_and(|pixels| {
+                pixels <= max_pixels || (codec == "h264" && width == 3456 && height == 2160)
+            })
     };
     if fits(width, height) {
         return Ok(());
@@ -3645,14 +3655,16 @@ mod tests {
             ("h264", "1920x1080", 240, "1920x1080", 120),
             ("h264", "3840x2160", 360, "2560x1440", 120),
             ("h264", "5120x1440", 165, "3840x1080", 120),
+            ("h264", "3640x1080", 165, "3640x1080", 120),
             ("h264", "2560x1600", 90, "2560x1600", 90),
             ("av1", "1920x1080", 240, "1920x1080", 120),
             ("av1", "1920x1080", 360, "1920x1080", 120),
             ("h265", "5120x2880", 165, "3840x2160", 165),
             ("h265", "5120x2160", 165, "2560x1080", 165),
             ("h265", "5120x1440", 165, "3840x1080", 165),
-            ("h265", "3840x2400", 165, "2560x1600", 165),
+            ("h265", "3840x2400", 165, "3456x2160", 165),
             ("h265", "4096x2304", 165, "4096x2304", 165),
+            ("h265", "3640x1080", 165, "3640x1080", 165),
         ] {
             let settings = json!({"codec":codec,"resolution":resolution,"fps":fps});
             let saved = settings.clone();
@@ -3680,6 +3692,69 @@ mod tests {
     }
 
     #[test]
+    fn embedded_added_resolution_presets_respect_decoder_limits() {
+        for (preset, requested, max_width, max_height) in [
+            ("1024x768", "1600x1200", 1024, 768),
+            ("1112x834", "1600x1200", 1112, 834),
+            ("1366x768", "2732x1536", 1366, 768),
+            ("1280x1024", "2560x2048", 1280, 1024),
+            ("1680x720", "3360x1440", 1680, 720),
+            ("1600x1200", "2048x1536", 1600, 1200),
+            ("3456x2160", "3840x2400", 4096, 2304),
+            ("3640x1080", "7280x2160", 3640, 1080),
+        ] {
+            let mut caps = json!({"protocolVersion":8,"videoBackends":[{
+                "backend":"hardware","available":true,"codecs":[
+                    {"codec":"h265","available":true,"colorQualities":["8bit_420"]}
+                ]
+            }]});
+            let settings = json!({"codec":"h265","resolution":preset,"fps":120});
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset);
+            assert!(fallbacks.is_empty());
+            caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+                json!({"width":max_width,"height":max_height});
+            let settings = json!({"codec":"h265","resolution":requested,"fps":120});
+            let saved = settings.clone();
+            let (resolved, fallbacks) =
+                StreamerService::resolve_embedded_session(&settings, &caps).unwrap();
+            assert_eq!(resolved["resolution"], preset, "{requested}");
+            assert_eq!(resolved["fps"], 120);
+            assert_eq!(settings, saved);
+            assert_eq!(fallbacks.len(), 1);
+            let (width, height) = resolved["resolution"]
+                .as_str()
+                .unwrap()
+                .split_once('x')
+                .unwrap();
+            assert!(width.parse::<u64>().unwrap() <= max_width);
+            assert!(height.parse::<u64>().unwrap() <= max_height);
+        }
+        let mut caps = json!({"protocolVersion":8,"videoBackends":[{
+            "backend":"hardware","available":true,"codecs":[
+                {"codec":"h264","available":true,"colorQualities":["8bit_420"]}
+            ]
+        }]});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "3456x2160");
+        assert!(fallbacks.is_empty());
+        caps["videoBackends"][0]["codecs"][0]["maxDecodeDimensions"] =
+            json!({"width":2560,"height":1600});
+        let (resolved, fallbacks) = StreamerService::resolve_embedded_session(
+            &json!({"codec":"h264","resolution":"3456x2160","fps":120}),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(resolved["resolution"], "2560x1600");
+        assert_eq!(fallbacks.len(), 1);
+    }
+
+    #[test]
     fn embedded_v4l2_request_h264_steps_down_to_the_hantro_limit() {
         let caps = json!({"protocolVersion":8,"videoBackends":[{
             "backend":"v4l2","platform":"linux","available":true,"codecs":[
@@ -3690,7 +3765,7 @@ mod tests {
         }]});
         for (codec, resolution, expected) in [
             ("h264", "2560x1440", "1920x1080"),
-            ("h264", "3440x1440", "1920x1080"),
+            ("h264", "3440x1440", "1680x720"),
             ("h264", "1920x1080", "1920x1080"),
             ("av1", "2560x1440", "2560x1440"),
         ] {

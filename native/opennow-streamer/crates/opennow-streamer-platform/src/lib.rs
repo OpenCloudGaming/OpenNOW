@@ -38,8 +38,8 @@ pub use media::{
     MouseSettings, PushOutcome, ShortcutChord, StreamShortcutAction, StreamShortcutBindings,
 };
 pub use microphone::{
-    EncodedMicrophoneFrame, MICROPHONE_FRAME_SAMPLES, MICROPHONE_SAMPLE_RATE, MicrophoneReceiver,
-    MicrophoneSession, MicrophoneStatus,
+    EncodedMicrophoneFrame, MICROPHONE_FRAME_SAMPLES, MICROPHONE_SAMPLE_RATE,
+    MicrophoneDiagnostics, MicrophoneReceiver, MicrophoneSession, MicrophoneStatus,
 };
 #[cfg(target_os = "linux")]
 pub use opennow_streamer_platform_linux::{

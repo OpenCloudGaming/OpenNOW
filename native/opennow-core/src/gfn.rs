@@ -38,7 +38,7 @@ mod routing_tests;
 #[cfg(test)]
 mod store_launch_tests;
 
-const DEFAULT_IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
+pub(crate) const DEFAULT_IDP_ID: &str = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg";
 const DEFAULT_STREAMING_URL: &str = "https://prod.cloudmatchbeta.nvidiagrid.net/";
 // Alliance `prod.*` discovery endpoints are geo-steered: they resolve to the
 // nearest regional PoP from inside the partner footprint (via VPN or local
@@ -2027,7 +2027,8 @@ impl GfnService {
                     .into(),
             });
         }
-        self.cloudmatch.clear_active(&notification.session_id);
+        self.cloudmatch
+            .acknowledge_native_session_end(&notification.session_id)?;
         routing.active_owner = None;
         Ok(json!({"sessionId":notification.session_id,"cleared":true}))
     }
@@ -3299,7 +3300,7 @@ fn public_game_to_info(item: &Value) -> Option<Value> {
         })
         .unwrap_or_else(|| "Unknown".to_owned());
     let image_url = steam_id.as_ref().map(|value| {
-        format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{value}/header.jpg")
+        format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{value}/library_600x900_2x.jpg")
     });
     let hero_image_url = steam_id.as_ref().map(|value| {
         format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{value}/library_hero.jpg")
@@ -3346,13 +3347,38 @@ fn image_values(value: &Value, width: u32) -> Vec<String> {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 None
-            } else if trimmed.contains("img.nvidiagrid.net") {
-                Some(format!("{trimmed};f=jpg;w={width}"))
             } else {
-                Some(trimmed.to_owned())
+                Some(sized_artwork_url(trimmed, width))
             }
         })
         .collect()
+}
+
+fn sized_artwork_url(source: &str, width: u32) -> String {
+    let Ok(mut url) = url::Url::parse(source) else {
+        return source.to_owned();
+    };
+    if url.host_str() != Some("img.nvidiagrid.net") {
+        return source.to_owned();
+    }
+    let path = url.path();
+    let Some((directory, file)) = path.rsplit_once('/') else {
+        return source.to_owned();
+    };
+    let mut parts = file.split(';');
+    let mut sized = format!("{directory}/{}", parts.next().unwrap_or_default());
+    for part in parts {
+        let key = part.split('=').next().unwrap_or_default();
+        if !matches!(key, "f" | "w" | "h" | "dpr") {
+            sized.push(';');
+            sized.push_str(part);
+        }
+    }
+    // JPEG is available in every supported Qt package. Keep the CDN's
+    // output dimensions independent of any older modifiers on the source.
+    sized.push_str(&format!(";f=jpg;w={width}"));
+    url.set_path(&sized);
+    url.into()
 }
 
 fn first_image(images: &Value, keys: &[&str], width: u32) -> Option<String> {
@@ -5324,7 +5350,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_catalog_mapping_matches_electron_contract() {
+    fn public_catalog_mapping_preserves_launch_identity_and_uses_portrait_art() {
         let game = public_game_to_info(&json!({
             "id":"ignored", "title":"Portal 2", "status":"AVAILABLE",
             "steamUrl":"https://store.steampowered.com/app/620/Portal_2/", "store":"Steam"
@@ -5337,9 +5363,22 @@ pub(crate) mod tests {
             game["imageUrl"]
                 .as_str()
                 .unwrap()
-                .contains("/620/header.jpg")
+                .contains("/620/library_600x900_2x.jpg")
         );
         assert!(public_game_to_info(&json!({"title":"Gone", "status":"MAINTENANCE"})).is_none());
+    }
+
+    #[test]
+    fn nvidia_artwork_replaces_old_resize_options_and_keeps_query_parameters() {
+        let source = "https://img.nvidiagrid.net/apps/game%20art/GAME_BOX_ART_A.jpg;w=90;h=120;dpr=1;f=webp?locale=en";
+        let resized = sized_artwork_url(source, 900);
+        assert_eq!(
+            resized,
+            "https://img.nvidiagrid.net/apps/game%20art/GAME_BOX_ART_A.jpg;f=jpg;w=900?locale=en"
+        );
+        assert_eq!(sized_artwork_url(&resized, 900), resized);
+        let external = "https://example.com/img.nvidiagrid.net/GAME_BOX_ART.jpg;w=90";
+        assert_eq!(sized_artwork_url(external, 900), external);
     }
 
     #[test]

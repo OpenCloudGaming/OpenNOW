@@ -18,6 +18,7 @@ pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 use crate::signaling_io::{self, CONNECT_TIMEOUT};
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_SIGNALING_BYTES: usize = 512 * 1024;
+const SIGNALING_VERSION: &str = "3.0";
 
 pub(super) fn resolve(
     host: String,
@@ -93,9 +94,10 @@ impl Protocol {
     pub(super) fn peer_info(&mut self, width: u32, height: u32) -> Value {
         self.ack += 1;
         json!({"ackid":self.ack,"peer_info":{
-            "browser":"Chrome","browserVersion":"131","connected":true,
-            "id":self.peer_id,"name":self.peer_name,"peerRole":0,
-            "resolution":format!("{width}x{height}"),"version":2
+            "browser":"Chrome","browserVersion":"131.0.0.0","connected":true,
+            "id":self.peer_id,"name":self.peer_name,"peer_role":1,
+            "resolution":format!("{width}x{height}"),"version":3,
+            "signalingVersion":SIGNALING_VERSION
         }})
     }
 
@@ -220,9 +222,8 @@ pub(super) fn sign_in_url(session: &Session, peer: &str) -> Result<String, Failu
         .unwrap_or(false);
     let scheme = if test_plaintext { "ws" } else { "wss" };
     Ok(format!(
-        "{scheme}://{authority}{path}?peer_id={}&version={}&peer_role=1&pairing_id={}{}",
+        "{scheme}://{authority}{path}?peer_id={}&version={SIGNALING_VERSION}&peer_role=1&pairing_id={}{}",
         query_component(peer),
-        if reconnect { "3.0" } else { "2" },
         query_component(&session.session_id),
         if reconnect { "&reconnect=1" } else { "" }
     ))

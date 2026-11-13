@@ -11,6 +11,8 @@ Item {
     property bool expandable: false
     signal expansionRequested()
     property string title: ""
+    // Short status pill next to the title, e.g. "Experimental".
+    property string badge: ""
     property string description: ""
     property string value: ""
     property int rowHeight: DesktopTokens.rowHeight
@@ -25,15 +27,23 @@ Item {
 
     readonly property real labelInset: paperStyle ? DesktopTokens.settingsLabelInset : (hasLeading ? DesktopTokens.px(50) : 0)
     readonly property real rightInset: paperStyle ? DesktopTokens.settingsInset : 0
-    readonly property real controlWidth: Math.max(0, Math.min(DesktopTokens.settingsControlWidth, width - labelInset - rightInset))
-    readonly property bool stacked: width < DesktopTokens.settingsCompactWidth && trailingSlot.implicitWidth > DesktopTokens.px(120)
-    implicitHeight: Math.max(rowHeight, (stacked ? trailingSlot.y + trailingSlot.height : Math.max(labels.y + labels.height, trailingSlot.y + trailingSlot.height)) + DesktopTokens.px(10))
+    readonly property real verticalInset: DesktopTokens.px(16)
+    readonly property real controlGap: DesktopTokens.px(24)
+    readonly property real controlsInset: rightInset + (expandable ? DesktopTokens.px(40) : 0)
+    readonly property real controlWidth: Math.max(0, Math.min(DesktopTokens.settingsControlWidth, width - labelInset - controlsInset))
+    readonly property bool stacked: trailingSlot.implicitWidth > DesktopTokens.px(120)
+        && width - labelInset - controlsInset - trailingSlot.implicitWidth - controlGap < DesktopTokens.px(240)
+    readonly property real labelBlockHeight: Math.max(hasLeading ? DesktopTokens.px(40) : 0, labels.implicitHeight)
+    readonly property real bodyHeight: stacked ? labelBlockHeight
+        : Math.max(labelBlockHeight, trailingSlot.height)
+    implicitHeight: Math.max(rowHeight, verticalInset * 2 + bodyHeight
+        + (stacked ? DesktopTokens.px(12) + trailingSlot.height : 0))
 
     Rectangle {
         id: leadingTile
         visible: root.hasLeading
         x: root.paperStyle ? DesktopTokens.settingsInset : 0
-        y: DesktopTokens.px(10)
+        y: root.verticalInset + Math.max(0, (root.bodyHeight - height) / 2)
         width: DesktopTokens.px(root.paperStyle ? 40 : 36)
         height: width
         radius: DesktopTokens.px(root.paperStyle ? 12 : 10)
@@ -70,19 +80,47 @@ Item {
         objectName: "settingsRowLabels"
         anchors.left: parent.left
         anchors.leftMargin: root.labelInset
-        anchors.right: root.stacked ? parent.right : trailingSlot.left
-        anchors.rightMargin: root.stacked ? root.rightInset : DesktopTokens.px(20)
-        y: DesktopTokens.px(10) + Math.max(0, (DesktopTokens.px(40) - height) / 2)
-        spacing: DesktopTokens.px(2)
-        Text {
-            id: titleLabel
+        width: Math.max(0, Math.min(DesktopTokens.px(560), root.stacked
+            ? root.width - root.labelInset - root.rightInset
+            : trailingSlot.x - root.labelInset - root.controlGap))
+        y: root.verticalInset + Math.max(0, (root.bodyHeight - height) / 2)
+        spacing: DesktopTokens.px(4)
+        Row {
             width: parent.width
-            text: root.title
-            color: Theme.label
-            font.family: Theme.bodyFont
-            font.pixelSize: DesktopTokens.bodySize
-            font.weight: root.paperStyle ? Font.ExtraBold : Font.Bold
-            wrapMode: Text.WordWrap
+            spacing: DesktopTokens.px(8)
+            Text {
+                id: titleLabel
+                width: Math.min(implicitWidth, parent.width - (badgePill.visible ? badgePill.width + parent.spacing : 0))
+                text: root.title
+                color: Theme.label
+                font.family: Theme.bodyFont
+                font.pixelSize: DesktopTokens.bodySize
+                font.weight: root.paperStyle ? Font.ExtraBold : Font.Bold
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                id: badgePill
+                objectName: "settingsRowBadge"
+                visible: root.badge !== ""
+                anchors.verticalCenter: titleLabel.verticalCenter
+                height: DesktopTokens.px(18)
+                width: badgeLabel.implicitWidth + DesktopTokens.px(14)
+                radius: height / 2
+                color: Qt.rgba(0.96, 0.65, 0.14, 0.16)
+                border.width: 1
+                border.color: Qt.rgba(0.96, 0.65, 0.14, 0.55)
+                Text {
+                    id: badgeLabel
+                    anchors.centerIn: parent
+                    text: root.badge
+                    color: "#F5A623"
+                    font.family: Theme.bodyFont
+                    font.pixelSize: DesktopTokens.px(10)
+                    font.weight: Font.ExtraBold
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: 0.6
+                }
+            }
         }
         Text {
             width: parent.width
@@ -100,9 +138,12 @@ Item {
         id: trailingSlot
         objectName: "settingsRowControls"
         readonly property real availableWidth: root.controlWidth
-        anchors.right: parent.right
-        anchors.rightMargin: root.rightInset + (root.expandable ? DesktopTokens.px(40) : 0)
-        y: root.stacked ? labels.y + labels.height + DesktopTokens.px(8) : DesktopTokens.px(10)
+        // Explicit positioning keeps the slot at its natural width while the
+        // row switches between side-by-side and stacked arrangements.
+        x: root.stacked ? root.labelInset : root.width - root.controlsInset - width
+        width: implicitWidth
+        y: root.stacked ? root.verticalInset + root.labelBlockHeight + DesktopTokens.px(12)
+            : root.verticalInset + Math.max(0, (root.bodyHeight - height) / 2)
         spacing: DesktopTokens.px(10)
         height: Math.max(DesktopTokens.px(40), implicitHeight)
 
@@ -124,7 +165,8 @@ Item {
     AbstractButton {
         visible: root.paperStyle && root.expandable
         anchors.right: parent.right; anchors.rightMargin: root.rightInset
-        y: DesktopTokens.px(14); width: DesktopTokens.px(32); height: width
+        y: root.verticalInset + Math.max(0, (root.bodyHeight - height) / 2)
+        width: DesktopTokens.px(32); height: width
         Accessible.name: root.title
         onClicked: root.expansionRequested()
         background: Rectangle { radius: DesktopTokens.px(10); color: parent.activeFocus || parent.hovered ? DesktopTokens.raised : "transparent" }

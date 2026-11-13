@@ -48,7 +48,11 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/StreamVideoTextureRenderer.h
     src/streaming/rendering/StreamFrameInterpolator.cpp
     src/streaming/rendering/StreamFrameInterpolator.h
+    src/streaming/rendering/FlyHighNetwork.cpp
+    src/streaming/rendering/FlyHighNetwork.h
     src/streaming/rendering/StreamFramePacer.h
+    src/streaming/rendering/FrameGenerationBenchmark.cpp
+    src/streaming/rendering/FrameGenerationBenchmark.h
     src/streaming/rendering/StreamSenderPacer.h
 )
 
@@ -58,6 +62,7 @@ qt_add_executable(opennow-qt
     src/acceptance/AcceptanceProfiler.h
     src/acceptance/AcceptanceSession.cpp
     src/acceptance/AcceptanceSession.h
+    src/acceptance/AcceptanceCoreClient.h
     src/acceptance/MotionAcceptance.cpp
     src/acceptance/MotionAcceptance.h
     src/acceptance/SmokeAcceptance.cpp

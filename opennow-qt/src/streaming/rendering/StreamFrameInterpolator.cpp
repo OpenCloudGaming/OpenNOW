@@ -1,5 +1,7 @@
 #include "streaming/rendering/StreamFrameInterpolator.h"
+#include "streaming/rendering/FlyHighNetwork.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QSize>
 #include <rhi/qrhi.h>
@@ -109,16 +111,23 @@ struct StreamFrameInterpolator::State {
     std::array<std::array<Surface, 3>, 2> pyramid;
     std::array<std::array<Surface, 3>, 2> flow;
     Surface cut;
-    Surface midpoint;
+    // Generated frames of the current pair: index k - 1 holds t = k / factor.
+    std::array<Surface, MaximumFactor - 1> generated;
     std::array<Pass, 2> copy;
     std::array<std::array<Pass, 3>, 2> reduce;
     std::array<std::array<std::array<Pass, 3>, 2>, 2> motion;
     std::array<Pass, 2> detectCut;
-    std::array<Pass, 2> synthesize;
+    // One synthesis pass per slot and generated frame. Each keeps its own uniform buffer
+    // with its t, so the passes of one pair never overwrite each other's parameters while
+    // the command buffer is still being recorded.
+    std::array<std::array<Pass, MaximumFactor - 1>, 2> synthesize;
     QSize size;
     QRhiTexture::Format format = QRhiTexture::UnknownFormat;
     int current = 0;
     int frames = 0;
+    int generatedCount = 0;
+    bool computePending = false;
+    bool generatedValid = false;
 
     bool allocate(QRhiTexture *source)
     {
@@ -153,9 +162,9 @@ struct StreamFrameInterpolator::State {
                     return false;
             }
         }
-        if (!midpoint.create(rhi, format, size, QRhiTexture::UsedAsTransferSource)
-            || !cut.create(rhi, QRhiTexture::RGBA8, {1, 1}))
-            return false;
+        for (auto &surface : generated)
+            if (!surface.create(rhi, format, size, QRhiTexture::UsedAsTransferSource)) return false;
+        if (!cut.create(rhi, QRhiTexture::RGBA8, {1, 1})) return false;
         for (int slot = 0; slot < 2; ++slot) {
             if (!copy[slot].create(rhi, history[slot], sampler.get(), vertex, copyShader,
                                    size, 0.0f, {source}))
@@ -184,11 +193,13 @@ struct StreamFrameInterpolator::State {
                                        {pyramid[1 - slot][0].texture.get(), pyramid[slot][0].texture.get(),
                                         flow[0][0].texture.get(), flow[1][0].texture.get()}))
                 return false;
-            if (!synthesize[slot].create(rhi, midpoint, sampler.get(), vertex, synthesizeShader,
-                                        levels[0], 0.0f,
-                                        {history[1 - slot].texture.get(), history[slot].texture.get(),
-                                         flow[0][0].texture.get(), flow[1][0].texture.get(), cut.texture.get()}))
-                return false;
+            for (size_t index = 0; index < generated.size(); ++index) {
+                if (!synthesize[slot][index].create(rhi, generated[index], sampler.get(), vertex,
+                                                   synthesizeShader, levels[0], 0.0f,
+                                                   {history[1 - slot].texture.get(), history[slot].texture.get(),
+                                                    flow[0][0].texture.get(), flow[1][0].texture.get(), cut.texture.get()}))
+                    return false;
+            }
         }
         return true;
     }
@@ -211,11 +222,21 @@ bool StreamFrameInterpolator::initialize(QRhi *rhi)
         return false;
     m_state = std::make_unique<State>();
     m_state->rhi = rhi;
+    if (FlyHighNetwork::enabled()) {
+        m_flyHigh = std::make_unique<FlyHighNetwork>();
+        if (!m_flyHigh->initialize(rhi)) {
+            qWarning("FlyHigh frame generation is unavailable: %s",
+                     qUtf8Printable(m_flyHigh->error()));
+            release();
+            return false;
+        }
+    }
     return true;
 }
 
-bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source)
+bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source, int factor)
 {
+    factor = std::clamp(factor, 2, MaximumFactor);
     if (!m_state || !cb || !source) {
         reset();
         return false;
@@ -250,6 +271,15 @@ bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source)
         return false;
     }
     s.copy[next].draw(rhi, cb, s.history[next]);
+    if (m_flyHigh) {
+        s.current = next;
+        s.frames = std::min(2, s.frames + 1);
+        if (s.frames == 2) {
+            s.generatedCount = factor - 1;
+            s.computePending = true;
+        }
+        return true;
+    }
     for (int level = 0; level < 3; ++level)
         s.reduce[next][level].draw(rhi, cb, s.pyramid[next][level]);
     if (s.frames > 0) {
@@ -257,10 +287,36 @@ bool StreamFrameInterpolator::ingest(QRhiCommandBuffer *cb, QRhiTexture *source)
             for (int direction = 0; direction < 2; ++direction)
                 s.motion[next][direction][level].draw(rhi, cb, s.flow[direction][level]);
         s.detectCut[next].draw(rhi, cb, s.cut);
-        s.synthesize[next].draw(rhi, cb, s.midpoint);
+        // The flow is shared by the pair; every generated frame is one synthesis pass at
+        // its own t = k / factor.
+        s.generatedCount = factor - 1;
+        for (int k = 1; k <= s.generatedCount; ++k) {
+            auto &pass = s.synthesize[next][k - 1];
+            pass.parameters[3] = float(k) / float(factor);
+            pass.draw(rhi, cb, s.generated[k - 1]);
+        }
     }
     s.current = next;
     s.frames = std::min(2, s.frames + 1);
+    s.generatedValid = s.frames == 2;
+    return true;
+}
+
+bool StreamFrameInterpolator::computePending(QRhiCommandBuffer *cb)
+{
+    if (!m_flyHigh || !m_state || !m_state->computePending) return true;
+    auto &s = *m_state;
+    s.computePending = false;
+    auto *previous = s.history[1 - s.current].texture.get();
+    auto *current = s.history[s.current].texture.get();
+    if (!m_flyHigh->pair(cb, previous, current, s.generatedCount)) {
+        qWarning("FlyHigh frame generation stopped: %s",
+                 qUtf8Printable(m_flyHigh->error()));
+        m_flyHigh.reset();
+        s.generatedValid = false;
+        return false;
+    }
+    s.generatedValid = true;
     return true;
 }
 
@@ -269,22 +325,67 @@ QRhiTexture *StreamFrameInterpolator::currentTexture() const
     return m_state && m_state->frames > 0 ? m_state->history[m_state->current].texture.get() : nullptr;
 }
 
+QRhiTexture *StreamFrameInterpolator::anchorTexture() const
+{
+    return currentTexture();
+}
+
+// The generated frame nearest t = 0.5: the midpoint itself for even factors, the frame at
+// t = 1/3 for 3x. Callers that know the factor use generatedTexture().
 QRhiTexture *StreamFrameInterpolator::midpointTexture() const
 {
-    return hasPair() ? m_state->midpoint.texture.get() : nullptr;
+    const int count = generatedCount();
+    return count > 0 ? generatedTexture((count + 1) / 2) : nullptr;
+}
+
+int StreamFrameInterpolator::generatedCount() const
+{
+    return hasPair() ? m_state->generatedCount : 0;
+}
+
+QRhiTexture *StreamFrameInterpolator::generatedTexture(int index) const
+{
+    if (index < 1 || index > generatedCount()) return nullptr;
+    return m_flyHigh ? m_flyHigh->output(index) : m_state->generated[index - 1].texture.get();
+}
+
+bool StreamFrameInterpolator::prepare(QRhiCommandBuffer *cb, int index)
+{
+    return !m_flyHigh || !hasPair() || m_flyHigh->frame(cb, index);
+}
+
+QString StreamFrameInterpolator::engine() const
+{
+    if (!m_flyHigh) return QStringLiteral("motion");
+    const QSize grid = m_flyHigh->networkSize();
+    return QStringLiteral("flyhigh %1x%2").arg(grid.width()).arg(grid.height());
+}
+
+double StreamFrameInterpolator::lastGpuMs() const
+{
+    return m_flyHigh ? m_flyHigh->lastGpuMs() : 0.0;
 }
 
 bool StreamFrameInterpolator::hasPair() const
 {
-    return m_state && m_state->frames == 2;
+    return m_state && m_state->frames == 2 && m_state->generatedValid;
 }
 
 void StreamFrameInterpolator::reset()
 {
-    if (m_state) m_state->frames = 0;
+    if (!m_state) return;
+    m_state->frames = 0;
+    m_state->computePending = false;
+    m_state->generatedValid = false;
 }
 
 void StreamFrameInterpolator::release()
 {
+    m_flyHigh.reset();
     m_state.reset();
+}
+
+QRhiTexture *StreamFrameInterpolator::previousTexture() const
+{
+    return hasPair() ? m_state->history[1 - m_state->current].texture.get() : nullptr;
 }

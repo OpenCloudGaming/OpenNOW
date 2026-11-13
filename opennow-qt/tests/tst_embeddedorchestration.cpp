@@ -1,3 +1,5 @@
+#include "acceptance/AcceptanceSession.h"
+
 #include <QFile>
 #include <QJSEngine>
 #include <QRegularExpression>
@@ -48,6 +50,18 @@ bool loadShellFunction(QJSEngine &engine, const QString &name, int indentation =
     const auto match = QRegularExpression(prefix + QStringLiteral("function %1\\([^\\n]*\\) \\{\\n.*?\\n").arg(name)
         + prefix + u'}', QRegularExpression::DotMatchesEverythingOption)
         .match(indentation == 8 ? shell.section(QStringLiteral("property Connections coreConnections:"), 1) : shell);
+    if (!match.hasMatch()) return false;
+    const auto result = engine.evaluate(match.captured());
+    if (result.isError()) qWarning().noquote() << result.toString();
+    return !result.isError();
+}
+
+bool loadSettingsFunction(QJSEngine &engine, const QString &name)
+{
+    const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+    const auto match = QRegularExpression(QStringLiteral(
+        "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(name),
+        QRegularExpression::DotMatchesEverythingOption).match(settings);
     if (!match.hasMatch()) return false;
     const auto result = engine.evaluate(match.captured());
     if (result.isError()) qWarning().noquote() << result.toString();
@@ -130,6 +144,108 @@ class EmbeddedOrchestrationTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void sdrCaptureRequiresAnExplicitScreenshotFixture()
+    {
+        const QStringList production{QStringLiteral("--smoke-sdr-capture"),
+            QStringLiteral("--screenshot"), QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(production));
+        const QStringList regularSmoke{QStringLiteral("--smoke-test"), QStringLiteral("--screenshot"),
+            QStringLiteral("/tmp/capture.png")};
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(regularSmoke));
+        QVERIFY(!AcceptanceSession::sdrCaptureRequested(
+            {QStringLiteral("--smoke-test"), QStringLiteral("--smoke-sdr-capture")}));
+        auto capture = regularSmoke;
+        capture.append(QStringLiteral("--smoke-sdr-capture"));
+        QVERIFY(AcceptanceSession::sdrCaptureRequested(capture));
+    }
+
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration_data()
+    {
+        QTest::addColumn<bool>("gpuAvailable");
+        QTest::newRow("selected-gpu-available") << true;
+        QTest::newRow("selected-gpu-unavailable") << false;
+    }
+
+    void savedFrameGenerationProfilesResolveIdentityDuringHydration()
+    {
+        QFETCH(bool, gpuAvailable);
+        QJSEngine engine;
+        engine.globalObject().setProperty(QStringLiteral("gpuAvailable"), gpuAvailable);
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {}, confirmedSettings = {}, settingWrites = {};
+            var consoleSurfaceRequestId = '', frameGenerationGpu = '', gpuNameCalls = 0;
+            var appController = {}, i18n = {setLocale:function() {}};
+            var FrameGenerationBenchmark = {gpuName:function() {gpuNameCalls++;return gpuAvailable ? 'test-gpu' : '';}};
+            var saved = {resolution:'1920x1080',frameGenerationProfiles:{
+                ['motion|' + (gpuAvailable ? 'test-gpu' : 'unknown-gpu') + '|1920x1080']:
+                    {gpu:'test-gpu',width:1920,height:1080,frames:30,p95Ms:1}
+            }};
+        )JS")).isError());
+        for (const auto &name : {"acceptSettings", "ensureFrameGenerationGpu", "frameGenerationResolution",
+                                 "frameGenerationProfileKey", "frameGenerationProfile"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:{}})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 0);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        if (gpuAvailable)
+            QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfile().gpu")).toString(), QStringLiteral("test-gpu"));
+        else
+            QVERIFY(engine.evaluate(QStringLiteral("frameGenerationProfile() === null")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), 1);
+        QVERIFY(!engine.evaluate(QStringLiteral("acceptSettings({settings:saved})")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("gpuNameCalls")).toInt(), gpuAvailable ? 1 : 2);
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution_data()
+    {
+        QTest::addColumn<bool>("currentProfile");
+        QTest::newRow("untested-current-resolution") << false;
+        QTest::newRow("valid-current-four-times-profile") << true;
+    }
+
+    void completedFrameGenerationTestKeepsMeasuredResolution()
+    {
+        QFETCH(bool, currentProfile);
+        QJSEngine engine;
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            var root = this, settings = {resolution:'3840x2160',frameGenerationProfiles:{}}, frameGenerationGpu = '';
+            var FrameGenerationBenchmark = {evaluate:function() {return {allowed:[2]}}};
+            function frameGenerationSourceFps() {return 60;}
+            function frameGenerationDisplayHz() {return 240;}
+            function frameGenerationFactor() {return settings.frameGeneration === '4x' ? 4 : 0;}
+            function writeFrameGenerationSetting(key, value) {settings[key] = value;}
+        )JS")).isError());
+        if (currentProfile) {
+            QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+                settings.frameGeneration = '4x'; settings.frameGenerationTargetFps = 240;
+                settings.frameGenerationProfiles['motion|test-gpu|3840x2160'] = {
+                    width:3840,height:2160,frames:30,p95Ms:1,allowed:[2,3,4]
+                };
+            )JS")).isError());
+        }
+        const auto settings = source(QStringLiteral("qml/state/settings/SettingsState.qml"));
+        for (const auto &name : {"frameGenerationResolution", "frameGenerationProfileKey"})
+            QVERIFY(loadSettingsFunction(engine, QString::fromLatin1(name)));
+        const auto handler = QRegularExpression(QStringLiteral(
+            "        function onFinished\\(result\\) \\{.*?\\n        \\}"),
+            QRegularExpression::DotMatchesEverythingOption).match(settings);
+        QVERIFY(handler.hasMatch());
+        QVERIFY(!engine.evaluate(handler.captured()).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral(R"JS(
+            onFinished({ok:true, engine:'motion',gpu:'test-gpu',width:640,height:360,
+                        p50Ms:1,p95Ms:2,p95Ms3:3,p95Ms4:4,maxMs:5,frames:30});
+        )JS")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("Object.keys(settings.frameGenerationProfiles).length")).toInt(),
+                 currentProfile ? 2 : 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationProfiles['motion|test-gpu|640x360'].width")).toInt(), 640);
+        QCOMPARE(engine.evaluate(QStringLiteral("frameGenerationProfileKey()")).toString(),
+                 QStringLiteral("motion|test-gpu|3840x2160"));
+        if (currentProfile) {
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGeneration")).toString(), QStringLiteral("4x"));
+            QCOMPARE(engine.evaluate(QStringLiteral("settings.frameGenerationTargetFps")).toInt(), 240);
+        }
+    }
+
     void rejectedTextInputNotifiesWithoutChangingStreamOwnership()
     {
         QJSEngine engine;
@@ -934,6 +1050,33 @@ private slots:
             QVERIFY(!engine.evaluate(QStringLiteral("inspectRemoteSessions({sessions:[]})")).isError());
             QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
         }
+    }
+
+    void refusedCreateLeavesRequestingState()
+    {
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        QVERIFY(loadShellFunction(engine, QStringLiteral("requestNewSession")));
+        QVERIFY(loadShellFunction(engine, QStringLiteral("handleSessionCreateFailure")));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var pendingLaunchParams = {appId:'123'}, settings = {}, nativeRuntimeCapabilities = {};
+            var streamState = 'checking', streamMessage = '', streamCreateRequestId = '';
+            var pendingRequestedColorQuality = '', launchRequestedAtMs = 0;
+            var settingsOwner = {maxEntitledFps:function(){return 60;}};
+            var AppController = {screenDpi:function(){return 96;}};
+            var Screen = {devicePixelRatio:1};
+            var streamPollTimer = {stop:function(){}};
+            var CoreClient = {
+                lastError:'Cloud allocation cleanup is unresolved',
+                request:function(){return '';}
+            };
+            requestNewSession();
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("error"));
+        QCOMPARE(engine.evaluate(QStringLiteral("streamMessage")).toString(),
+                 QStringLiteral("Cloud allocation cleanup is unresolved"));
+        QVERIFY(engine.evaluate(QStringLiteral("pendingRequestedColorQuality === ''")).toBool());
     }
 
     void launchDiscoveryFailure_data()
@@ -2300,7 +2443,7 @@ private slots:
 
         QTest::newRow("mac-retina") << 1512 << 982 << 2.0 << true
             << QStringList{QStringLiteral("2560x1600"), QStringLiteral("2560x1440"), QStringLiteral("1920x1200")}
-            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
+            << QStringList{QStringLiteral("3200x1800"), QStringLiteral("3456x2160"), QStringLiteral("3840x2160"), QStringLiteral("3840x2400")};
         QTest::newRow("normal-16-9") << 1920 << 1080 << 1.0 << true
             << QStringList{QStringLiteral("1280x720"), QStringLiteral("1600x900"), QStringLiteral("1920x1080")}
             << QStringList{QStringLiteral("1920x1200"), QStringLiteral("2560x1440"), QStringLiteral("2560x1080")};
@@ -2922,14 +3065,16 @@ private slots:
         const auto exec = main.indexOf(QStringLiteral("const auto exitCode = application.exec();"));
         const auto deadline = main.indexOf(QStringLiteral("armTeardownDeadline(exitCode);"));
         const auto core = main.indexOf(QStringLiteral("coreClient.stop();"));
-        const auto roots = main.indexOf(QStringLiteral("for (auto *root : roots) delete root;"));
+        const auto acceptance = main.indexOf(QStringLiteral("acceptance.reset();"), exec);
+        const auto qmlEngine = main.indexOf(QStringLiteral("qmlEngine.reset();"), exec);
         const auto streamer = main.indexOf(QStringLiteral("nativeStreamRuntime.shutdown()"), exec);
         const auto completed = main.indexOf(QStringLiteral("singleInstance.finishQuitRequest();"), exec);
         QVERIFY(exec >= 0);
         QVERIFY(deadline > exec);
         QVERIFY(core > deadline);
-        QVERIFY(roots > core);
-        QVERIFY(streamer > roots);
+        QVERIFY(acceptance > core);
+        QVERIFY(qmlEngine > acceptance);
+        QVERIFY(streamer > qmlEngine);
         QVERIFY(completed > streamer);
         QVERIFY(main.contains(QStringLiteral("if (exitCode == EXIT_SUCCESS && requestedQuitCompleted)")));
         QVERIFY(main.contains(QStringLiteral("->property(\"sessionWorkIdle\").toBool()")));
@@ -2991,13 +3136,13 @@ private slots:
         const auto owner = main.indexOf(QStringLiteral("LinuxVulkanGraphics::Device vulkanDevice"));
         const auto diagnostics = main.indexOf(QStringLiteral("NativeStreamRuntime::initializeDiagnostics()"));
         const auto runtime = main.indexOf(QStringLiteral("NativeStreamRuntime nativeStreamRuntime"));
-        const auto engine = main.indexOf(QStringLiteral("QQmlApplicationEngine engine"));
+        const auto engine = main.indexOf(QStringLiteral("std::optional<QQmlApplicationEngine> qmlEngine"));
         const auto hidden = main.indexOf(QStringLiteral("engine.setInitialProperties"));
         const auto load = main.indexOf(QStringLiteral("engine.loadFromModule"));
         const auto decorations = main.indexOf(QStringLiteral("WindowTheme::prepareWindow(rootWindow)"));
         const auto graphicsSetup = main.indexOf(QStringLiteral("graphicsDevices.applyTo(rootWindow)"));
         const auto adopt = main.indexOf(QStringLiteral("vulkanDevice.adopt(rootWindow)"));
-        const auto prepare = main.indexOf(QStringLiteral("acceptance.prepareWindow()"));
+        const auto prepare = main.indexOf(QStringLiteral("acceptance->prepareWindow()"));
         const auto show = main.indexOf(QStringLiteral("rootWindow->show()"));
         QVERIFY(owner >= 0);
         QVERIFY(diagnostics >= 0);

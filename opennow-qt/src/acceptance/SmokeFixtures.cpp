@@ -102,10 +102,22 @@ int AcceptanceSession::prepareWindow()
             const QVariantMap alliance{{u"idpId"_s, u"alliance-fixture"_s}, {u"displayName"_s, u"Alliance fixture"_s}, {u"code"_s, u"ALLIANCE"_s}};
             store->setProperty("providers", QVariantList{nvidia, alliance});
             store->setProperty("selectedProviderIdpId", u"alliance-fixture"_s);
-            const auto selected = store->property("selectedProvider").value<QJSValue>();
-            if (selected.property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            // A provider selected from the QVariantList remains a QVariantMap on
+            // newer Qt. Convert through the engine instead of extracting only
+            // an already-wrapped QJSValue (which silently yields undefined).
+            const auto selectedId = [this, store] {
+                return m_engine.toScriptValue(store->property("selectedProvider"))
+                    .property(u"idpId"_s).toString();
+            };
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: selecting the alliance provider did not retain its ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providers", QVariantList{alliance, nvidia});
-            if (store->property("selectedProvider").value<QJSValue>().property(u"idpId"_s).toString() != u"alliance-fixture"_s) return EXIT_FAILURE;
+            if (selectedId() != u"alliance-fixture"_s) {
+                qCritical("Alliance routing: reordering providers changed the selected provider ID");
+                return EXIT_FAILURE;
+            }
             store->setProperty("providerDiscoveryDegraded", true);
             store->setProperty("authRestorePending", false);
             store->setProperty("authSession", QVariant());
@@ -415,6 +427,34 @@ int AcceptanceSession::prepareWindow()
                     stats->setProperty("metricsOpen", true);
             });
         }
+        if (m_arguments.contains(u"--smoke-frame-generation-dialog"_s)) {
+            // Seed a measurement under the key the shell computes, so the capability dialog
+            // shows a decided table (2 ms per generated frame on a 240 Hz display), then open it.
+            auto *store = m_engine.singletonInstance<QObject *>(u"OpenNOW"_s, u"ShellStore"_s);
+            if (!store) return EXIT_FAILURE;
+            QMetaObject::invokeMethod(store, "ensureFrameGenerationGpu");
+            QVariant key, resolution;
+            QMetaObject::invokeMethod(store, "frameGenerationProfileKey", Q_RETURN_ARG(QVariant, key));
+            auto *state = store->property("settingsOwnerState").value<QObject *>();
+            if (state) QMetaObject::invokeMethod(state, "frameGenerationResolution", Q_RETURN_ARG(QVariant, resolution));
+            const auto size = resolution.toMap();
+            const QVariantMap profile{{u"engine"_s, u"motion"_s},
+                {u"gpu"_s, state ? state->property("frameGenerationGpu").toString() : QString()},
+                {u"width"_s, size.value(u"width"_s, 1920)}, {u"height"_s, size.value(u"height"_s, 1080)},
+                {u"fps"_s, 60}, {u"refreshHz"_s, 240.0}, {u"p50Ms"_s, 1.6}, {u"p95Ms"_s, 2.0},
+                {u"p95Ms3"_s, 2.6}, {u"p95Ms4"_s, 3.2}, {u"maxMs"_s, 3.1},
+                {u"frames"_s, 180}, {u"gpuTimed"_s, false}, {u"engineMaxFactor"_s, 4},
+                {u"allowed"_s, QVariantList{2}}, {u"testedAt"_s, u"smoke"_s}, {u"version"_s, 1}};
+            const QVariantMap values{{u"frameGenerationProfiles"_s, QVariantMap{{key.toString(), profile}}},
+                {u"frameGenerationDisplayHz"_s, 240}};
+            for (auto it = values.cbegin(); it != values.cend(); ++it)
+                if (!QMetaObject::invokeMethod(store, "applySetting", Q_ARG(QVariant, QVariant(it.key())),
+                        Q_ARG(QVariant, it.value()))) return EXIT_FAILURE;
+            QTimer::singleShot(200, this, [window] {
+                auto *stream = window ? window->findChild<QObject *>(u"desktopStreamSettings"_s) : nullptr;
+                if (stream) QMetaObject::invokeMethod(stream, "openFrameGenerationDialog");
+            });
+        }
         const auto settingsScrollIndex = m_arguments.indexOf(u"--smoke-settings-scroll"_s);
         if (settingsScrollIndex >= 0) {
             if (settingsScrollIndex + 1 >= m_arguments.size()) return EXIT_FAILURE;
@@ -455,6 +495,18 @@ int AcceptanceSession::prepareWindow()
                             return false;
                         }
                     }
+                    if (item->objectName() == u"renewResolutionPicker"_s && !item->property("expanded").toBool()) {
+                        auto *selector = item->findChild<QQuickItem *>(u"settingsResolutionStepper"_s);
+                        if (!selector || !selector->isVisible() || selector->width() <= 0 || selector->height() <= 0
+                                || !QRectF(QPointF(-1, -1), item->size() + QSizeF(2, 2))
+                                    .contains(selector->mapRectToItem(item, selector->boundingRect()))) {
+                            const auto rect = selector ? selector->mapRectToItem(item, selector->boundingRect()) : QRectF{};
+                            qCritical("Collapsed resolution selector must remain visible inside its picker: found=%d visible=%d rect=%g,%g %gx%g picker=%gx%g",
+                                selector != nullptr, selector && selector->isVisible(),
+                                rect.x(), rect.y(), rect.width(), rect.height(), item->width(), item->height());
+                            return false;
+                        }
+                    }
                     if (item->objectName() == u"settingsButtonLabel"_s) {
                         auto *button = item->parentItem()->parentItem()->parentItem();
                         if (!button->property("menu").toBool() && button->width() >= button->implicitWidth()
@@ -466,17 +518,37 @@ int AcceptanceSession::prepareWindow()
                     if (item->objectName() == u"settingsRowLabels"_s) {
                         auto *row = item->parentItem();
                         auto *controls = row->findChild<QQuickItem *>(u"settingsRowControls"_s);
+                        const auto inset = row->property("verticalInset").toDouble();
                         if (!controls || item->width() <= 0 || item->x() < 0
                                 || item->x() + item->width() > row->width() + 1
-                                || item->y() + item->height() > row->height() + 1
+                                || item->y() < inset - 1
+                                || item->y() + item->height() > row->height() - inset + 1
                                 || controls->x() < 0 || controls->x() + controls->width() > row->width() + 1
-                                || controls->y() + controls->height() > row->height() + 1
+                                || controls->y() < inset - 1
+                                || controls->y() + controls->height() > row->height() - inset + 1
                                 || (!row->property("stacked").toBool()
                                     && item->x() + item->width() > controls->x() + 1)) {
                             qCritical("Settings row layout overflow: %s", qPrintable(row->property("title").toString()));
                             return false;
                         }
                         ++rows;
+                    }
+                    if (item->objectName() == u"settingsSegmentedOptions"_s) {
+                        auto *control = item->parentItem();
+                        const auto bounds = QRectF(QPointF(-1, -1), control->size() + QSizeF(2, 2));
+                        for (auto *option : item->childItems()) {
+                            if (!option->isVisible() || !option->property("index").isValid()) continue;
+                            if (!bounds.contains(option->mapRectToItem(control, option->boundingRect()))) {
+                                qCritical("Settings segmented option overflows its control");
+                                return false;
+                            }
+                        }
+                    }
+                    if (item->objectName() == u"settingsNavigationScroll"_s
+                            && item->property("horizontalNavigation").toBool()
+                            && item->property("contentHeight").toDouble() > item->height() + 1) {
+                        qCritical("Compact settings navigation must stay in one scrollable row");
+                        return false;
                     }
                     for (auto *child : item->childItems())
                         if (!self(self, child)) return false;
