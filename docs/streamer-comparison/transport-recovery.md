@@ -43,6 +43,26 @@ buffered successors to proceed through the existing discontinuity/RFI path.
 TR13 cites **D** macOS timed source-queue operations and **L** Windows
 `NACK waiting queue limit time: 52 ms`.
 
+FEC blocks wait for retransmission side by side. A block's 52 ms wait starts
+when a packet from a later block arrives, and a hole's when the block behind it
+arrives, not when the gap reaches the head of the queue. Each gap is requested
+as soon as it is evident, with up to eight NACK reports per 4 ms tick, and a
+stalled block asks for every missing data run it needs to reconstruct, because
+its wait is not extended for a second round. Giving up on one gap forgets only
+that gap's requests. The queue reports one discontinuity at a time, so a
+complete frame between two abandoned gaps is still delivered.
+
+Before this, a damaged block started a fresh 52 ms wait, and its first NACK,
+only after the block ahead of it had been resolved. A loss that damaged N
+blocks held the queue for N × 52 ms, together with the invalidation request
+(queued when the next frame assembles) and the recovery frame the server sends
+in reply. In five 2-minute 3840×2160 @ 120 AV1 sessions over a link that drops
+packets every 15 s, 21 of 48 loss episodes gave up on two or more gaps in
+series before the first invalidation left, and the six longest episodes
+(0.65–1.5 s from the first gap to a usable frame) gave up on 15 to 66 gaps
+each. The plain reorder queue, used only when a stream carries no FEC layout,
+still waits per gap in sequence.
+
 Unified-socket Mjolnir calls the same produced-frame watchdog and publishes the
 same typed stall and recovery events as the dedicated receiver. Authenticated
 partial video can no longer keep that route frozen indefinitely while resetting
