@@ -103,8 +103,9 @@ impl SessionConfig {
             // retires a large frame or reallocates surfaces. Four frames is
             // too small for a 120 Hz stream and turns a harmless burst into a
             // decoder reset. Keep this bounded, but absorb roughly two frame
-            // batches before initiating keyframe recovery.
-            encoded_queue_depth: 16,
+            // batches before initiating keyframe recovery. A repaired network gap
+            // releases every frame held behind it at once (13 at 240 fps).
+            encoded_queue_depth: 32,
             decoded_queue_depth: 3,
             audio: Some(AudioConfig::default()),
         }
