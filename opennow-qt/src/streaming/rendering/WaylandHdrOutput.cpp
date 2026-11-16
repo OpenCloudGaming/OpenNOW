@@ -37,6 +37,7 @@ struct WaylandHdrOutput::Private
         {
             QMutexLocker lock(&mutex);
             if (snapshot.supported == value.supported && snapshot.whiteNits == value.whiteNits
+                && snapshot.targetLuminanceProvided == value.targetLuminanceProvided
                 && snapshot.minimumNits == value.minimumNits
                 && snapshot.maximumNits == value.maximumNits
                 && snapshot.targetMinimumNits == value.targetMinimumNits
@@ -378,25 +379,31 @@ WaylandHdrOutput::State WaylandHdrOutput::state() const
 
 WaylandHdrOutput::State WaylandHdrOutput::stateForDescription(const Description &value)
 {
+    // Mutter 48 can omit target_luminance from otherwise complete PQ descriptions.
+    // Use the primary encoding volume for compatibility, keeping the absent
+    // target information distinguishable from compositor-provided metadata.
+    const double targetMinimum = value.targetLuminance ? value.targetMinimum : value.minimum;
+    const double targetMaximum = value.targetLuminance ? value.targetMaximum : value.maximum;
     if (!value.ready || !value.complete || !value.primaries || !value.pq || value.power || value.icc
-        || !value.luminances || !value.targetLuminance || !std::isfinite(value.white)
+        || !value.luminances || !std::isfinite(value.white)
         || value.white < 80.0 || value.white > 500.0 || !std::isfinite(value.minimum)
         || value.minimum < 0.0 || value.minimum >= value.white || !std::isfinite(value.maximum)
         || value.maximum < value.white || value.maximum > 10000.0
-        || !std::isfinite(value.targetMinimum) || value.targetMinimum < 0.0
-        || value.targetMinimum >= value.white || !std::isfinite(value.targetMaximum)
-        || value.targetMaximum <= value.white || value.targetMaximum > 10000.0)
+        || !std::isfinite(targetMinimum) || targetMinimum < 0.0
+        || targetMinimum >= value.white || !std::isfinite(targetMaximum)
+        || targetMaximum <= value.white || targetMaximum > 10000.0)
         return {};
     const auto &primaries = value.targetPrimaries ? value.targetPrimariesValue : value.primariesValue;
     for (double coordinate : primaries)
         if (!std::isfinite(coordinate) || coordinate < 0.0 || coordinate > 1.0) return {};
     State state;
     state.supported = true;
+    state.targetLuminanceProvided = value.targetLuminance;
     state.whiteNits = float(value.white);
     state.minimumNits = float(value.minimum);
     state.maximumNits = float(value.maximum);
-    state.targetMinimumNits = float(value.targetMinimum);
-    state.targetMaximumNits = float(value.targetMaximum);
+    state.targetMinimumNits = float(targetMinimum);
+    state.targetMaximumNits = float(targetMaximum);
     state.targetPrimaries = primaries;
     return state;
 }
