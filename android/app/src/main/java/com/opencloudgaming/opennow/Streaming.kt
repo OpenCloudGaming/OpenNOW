@@ -22,7 +22,6 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
-import android.view.View
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -797,18 +796,18 @@ class NativeStreamClient(
     }
 
     private fun attachRendererSinkIfAvailable(candidate: StreamVideoSurface) {
-        if (renderer !== candidate || candidate.holder.surface?.isValid != true) return
+        if (renderer !== candidate || !candidate.acceptingFrames || candidate.holder.surface?.isValid != true) return
         val track = videoTrack ?: return
         val generation = transportGeneration
         enqueueNativeLifecycleOperation("renderer-sink-attach") {
-            if (
-                activePeerConnection(generation) == null ||
-                videoTrack !== track ||
-                renderer !== candidate
-            ) {
-                return@enqueueNativeLifecycleOperation
+            val attached = rendererSinkLifecycle.requestAttach {
+                activePeerConnection(generation) != null &&
+                    videoTrack === track &&
+                    renderer === candidate &&
+                    candidate.acceptingFrames &&
+                    candidate.holder.surface.isValid
             }
-            if (!rendererSinkLifecycle.requestAttach()) return@enqueueNativeLifecycleOperation
+            if (!attached) return@enqueueNativeLifecycleOperation
             firstVideoFrameWatchdog.reset()
             track.addSink(candidate)
             recordStreamDiagnostic("video renderer sink attached")
@@ -835,20 +834,12 @@ class NativeStreamClient(
     }
 
     private fun prepareRendererForRelease(candidate: StreamVideoSurface) {
+        candidate.prepareForRelease()
         if (renderer === candidate) {
             detachRendererSink(candidate)
         }
         rendererSurfaceCallback?.let(candidate::removeSurfaceCallback)
         rendererSurfaceCallback = null
-        candidate.hideSurfaceBeforeRelease()
-    }
-
-    private fun StreamVideoSurface.hideSurfaceBeforeRelease() {
-        // SurfaceView frames are composited in a separate native layer. Hide that
-        // layer before tearing down WebRTC so a stale/pre-frame buffer cannot remain
-        // above the next Compose screen while SurfaceFlinger processes the detach.
-        alpha = 0f
-        visibility = View.GONE
     }
 
     fun updateRendererSettings(settings: StreamSettings) {

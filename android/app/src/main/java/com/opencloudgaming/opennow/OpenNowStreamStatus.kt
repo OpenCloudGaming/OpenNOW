@@ -92,6 +92,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -181,6 +182,16 @@ internal fun StreamKeyboardBar(
                 ),
                 keyboardActions = KeyboardActions(onSend = { onEnter() }),
             )
+            TextButton(
+                onClick = {
+                    val start = value.selection.min
+                    val text = value.text.replaceRange(start, value.selection.max, "@")
+                    onValueChange(TextFieldValue(text, selection = TextRange(start + 1)))
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Text("@")
+            }
             TextButton(
                 onClick = {
                     if (clearConfirmationEnabled) {

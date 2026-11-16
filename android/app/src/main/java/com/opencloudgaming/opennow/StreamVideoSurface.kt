@@ -34,8 +34,10 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
     private val direct = if (hdr || preferDirectSdr) SurfaceView(context) else null
     private val surfaces = listOfNotNull(direct, sdr)
     @Volatile private var textureRequired = !preferDirectSdr
-    @Volatile private var released = false
-    internal val prefersDirectSdr: Boolean get() = !hdr && direct != null && !textureRequired && !released
+    @Volatile internal var acceptingFrames = true
+        private set
+    private var released = false
+    internal val prefersDirectSdr: Boolean get() = !hdr && direct != null && !textureRequired && acceptingFrames
     private val surfaceView: SurfaceView get() = if (hdr || prefersDirectSdr) direct!! else sdr!!
     val holder: SurfaceHolder get() = surfaceView.holder
     @Volatile internal var decoderTarget: DecoderSurfaceTarget? = null
@@ -53,9 +55,9 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
 
     /** Copies only the active video layer, including the direct decoder path. Call on the UI thread. */
     internal suspend fun captureScreenshot(): android.graphics.Bitmap {
-        check(!released && currentDecodedSize() != null) { "No video frame available" }
+        check(acceptingFrames && currentDecodedSize() != null) { "No video frame available" }
         val source = surfaceView
-        return copyStreamScreenshot(source) { !released && surfaceView === source }
+        return copyStreamScreenshot(source) { acceptingFrames && surfaceView === source }
     }
 
     internal fun setRecordingSink(sink: VideoSink?) {
@@ -67,13 +69,13 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
     internal fun removeSurfaceCallback(callback: SurfaceHolder.Callback) = surfaces.forEach { it.holder.removeCallback(callback) }
 
     internal fun requestTextureOutput(reason: String) {
-        if (hdr || released || textureRequired) return
+        if (hdr || !acceptingFrames || textureRequired) return
         // Decoder workers observe the flag immediately. View mutations remain on the UI thread.
         textureRequired = true
         decoderTarget = null
         NativeInputDiagnostics.addRetained("surface-fallback", "video output switched to EGL textures reason=$reason")
         post {
-            if (!released) {
+            if (acceptingFrames) {
                 direct?.visibility = GONE
                 sdr?.visibility = VISIBLE
                 requestLayout()
@@ -91,11 +93,11 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
         direct?.holder?.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 decoderTarget = when {
-                    released || (!hdr && !prefersDirectSdr) -> null
+                    !acceptingFrames || (!hdr && !prefersDirectSdr) -> null
                     hdr && StreamHdr.displayProfile(context) == null -> null
                     else -> DecoderSurfaceTarget(holder.surface)
                 }
-                if (hdr && decoderTarget == null) NativeInputDiagnostics.add("HDR surface unavailable: display no longer supports HDR10")
+                if (hdr && acceptingFrames && decoderTarget == null) NativeInputDiagnostics.add("HDR surface unavailable: display no longer supports HDR10")
             }
             override fun surfaceDestroyed(holder: SurfaceHolder) { decoderTarget = null }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
@@ -106,8 +108,11 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
         drawer: RendererCommon.GlDrawer) {
         this.events = events
         sdr?.init(context, object : RendererCommon.RendererEvents {
-            override fun onFirstFrameRendered() = events.onFirstFrameRendered()
+            override fun onFirstFrameRendered() {
+                if (acceptingFrames) events.onFirstFrameRendered()
+            }
             override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {
+                if (!acceptingFrames) return
                 val quarterTurns = ((rotation % 360) + 360) % 360
                 publishSize(if (quarterTurns == 90 || quarterTurns == 270) height else width,
                     if (quarterTurns == 90 || quarterTurns == 270) width else height)
@@ -125,7 +130,7 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
     }
 
     override fun onFrame(frame: VideoFrame) {
-        if (released) return
+        if (!acceptingFrames) return
         val opaque = frame.buffer as? MediaCodecSurfaceBuffer
         if (opaque != null) {
             if ((!hdr && !prefersDirectSdr) || !opaque.present()) return
@@ -169,11 +174,21 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
         }
     }
 
-    fun release() {
-        if (released) return
-        released = true
+    /** Called on Main before the native worker tears down the renderer. */
+    internal fun prepareForRelease() {
+        acceptingFrames = false
         recordingSink = null
         decoderTarget = null
+        // Hide the retiring view without asking SurfaceView to destroy its EGL window while
+        // WebRTC can still be inside eglSwapBuffers. Android can still detach the view itself.
+        alpha = 0f
+    }
+
+    /** Called on the native lifecycle worker. WebRTC waits for its EGL thread here. */
+    internal fun release() {
+        if (released) return
+        released = true
         sdr?.release()
+        post { visibility = GONE }
     }
 }

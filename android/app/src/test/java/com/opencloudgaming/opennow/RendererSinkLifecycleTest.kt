@@ -9,8 +9,8 @@ class RendererSinkLifecycleTest {
     fun repeatedSurfaceCallbacksQueueOnlyOneAttachAndDetach() {
         val lifecycle = RendererSinkLifecycle()
 
-        assertTrue(lifecycle.requestAttach())
-        assertFalse(lifecycle.requestAttach())
+        assertTrue(lifecycle.requestAttach { true })
+        assertFalse(lifecycle.requestAttach { true })
         assertTrue(lifecycle.isAttachRequested())
 
         assertTrue(lifecycle.requestDetach())
@@ -22,9 +22,17 @@ class RendererSinkLifecycleTest {
     fun recreatedSurfaceCanAttachAfterDetach() {
         val lifecycle = RendererSinkLifecycle()
 
-        assertTrue(lifecycle.requestAttach())
+        assertTrue(lifecycle.requestAttach { true })
         assertTrue(lifecycle.requestDetach())
-        assertTrue(lifecycle.requestAttach())
+        assertTrue(lifecycle.requestAttach { true })
         assertTrue(lifecycle.isAttachRequested())
+    }
+
+    @Test
+    fun queuedAttachDoesNotReserveSinkForRetiredSurface() {
+        val lifecycle = RendererSinkLifecycle()
+        assertFalse(lifecycle.requestAttach { false })
+        assertFalse(lifecycle.isAttachRequested())
+        assertTrue(lifecycle.requestAttach { true })
     }
 }

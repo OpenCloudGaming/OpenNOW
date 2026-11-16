@@ -11,8 +11,8 @@ internal class RendererSinkLifecycle {
     private var attachRequested = false
 
     @Synchronized
-    fun requestAttach(): Boolean {
-        if (attachRequested) return false
+    fun requestAttach(isAvailable: () -> Boolean): Boolean {
+        if (attachRequested || !isAvailable()) return false
         attachRequested = true
         return true
     }
