@@ -24,6 +24,9 @@ const SND_PCM_NONBLOCK: c_int = 1;
 const AUDIO_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 const PIPEWIRE_RESTART_INTERVAL: Duration = Duration::from_secs(5);
 const PIPEWIRE_LEAD_MS: usize = 40;
+// pw-cat drains its pipe only in real time, so audio queued past the lead is permanent
+// latency. Past this, the sink drops new audio until the pipe is back at the lead.
+const PIPEWIRE_MAX_QUEUED_MS: usize = 2 * PIPEWIRE_LEAD_MS;
 const PIPEWIRE_NODE_LATENCY: &str = "10ms";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -655,6 +658,8 @@ struct PipeWireSink {
     muted: Arc<std::sync::atomic::AtomicBool>,
     silence: Vec<u8>,
     lead: Vec<f32>,
+    max_queued: usize,
+    trimming_since: Option<Instant>,
     channels: usize,
     command: Command,
     process: Option<PipeWireProcess>,
@@ -733,6 +738,10 @@ impl PipeWireSink {
                 config.sample_rate as usize * config.channels as usize * PIPEWIRE_LEAD_MS
                     / 1000
             ],
+            max_queued: config.sample_rate as usize * config.channels as usize
+                * PIPEWIRE_MAX_QUEUED_MS
+                / 1000,
+            trimming_since: None,
             channels: config.channels as usize,
         })
     }
@@ -814,7 +823,19 @@ impl AudioSink for PipeWireSink {
                 &self.muted,
                 cancelled,
             )?;
+        } else if queued_samples > self.max_queued
+            || (self.trimming_since.is_some() && queued_samples > self.lead.len())
+        {
+            let since = *self.trimming_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= AUDIO_WRITE_TIMEOUT {
+                return Err(Error::DeviceLost {
+                    subsystem: Subsystem::PipeWire,
+                    reason: "pw-cat input did not drain within 250 ms".to_owned(),
+                });
+            }
+            return Ok(());
         }
+        self.trimming_since = None;
         write_pipewire_pcm(
             &mut process.stdin,
             pcm,
@@ -951,6 +972,8 @@ mod tests {
             muted: AudioConfig::default().muted,
             silence: vec![0; 46_080],
             lead: Vec::new(),
+            max_queued: usize::MAX,
+            trimming_since: None,
             channels: 2,
         }
     }
@@ -1514,6 +1537,39 @@ mod tests {
         sink.write(&[0.25; 4], &|| false)
             .expect("PCM with lead in place");
         assert_eq!(queued(&sink), 24);
+    }
+
+    #[test]
+    fn pipewire_backlog_is_dropped_back_down_to_the_lead() {
+        let mut sink = pipewire_test_sink("sleep 5");
+        sink.lead = vec![0.0; 16];
+        let queued = |sink: &PipeWireSink| {
+            let mut bytes: c_int = 0;
+            let descriptor = std::os::fd::AsRawFd::as_raw_fd(&sink.process.as_ref().unwrap().stdin);
+            assert_eq!(
+                unsafe { libc::ioctl(descriptor, libc::FIONREAD, &mut bytes) },
+                0
+            );
+            bytes as usize / mem::size_of::<f32>()
+        };
+        sink.write(&[0.25; 24], &|| false).expect("lead and PCM");
+        assert_eq!(queued(&sink), 40);
+        sink.max_queued = 32;
+        let start = Instant::now();
+        sink.write(&[0.25; 4], &|| false).expect("backlog past the cap");
+        assert_eq!(queued(&sink), 40, "audio past the cap must be dropped");
+        assert!(start.elapsed() < Duration::from_millis(50), "dropping must not block");
+        sink.max_queued = usize::MAX;
+        sink.write(&[0.25; 4], &|| false).expect("backlog above the lead");
+        assert_eq!(queued(&sink), 40, "dropping continues until the pipe is back at the lead");
+        std::thread::sleep(AUDIO_WRITE_TIMEOUT);
+        assert!(
+            matches!(
+                sink.write(&[0.25; 4], &|| false),
+                Err(Error::DeviceLost { .. })
+            ),
+            "a pipe that never drains is a stalled pw-cat"
+        );
     }
 
     #[test]
