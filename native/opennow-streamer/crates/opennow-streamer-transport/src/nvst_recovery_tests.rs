@@ -1037,17 +1037,14 @@ fn consecutive_damaged_frames_share_one_nack_window() {
     assert_eq!(stream.feedback.take_nack(now, None), Some((13, 13)));
     assert_eq!(stream.feedback.take_nack(now, None), Some((16, 16)));
 
-    assert!(stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT).is_empty());
-    assert_eq!(
-        gaps(&stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(1))),
-        [(10, 10)]
-    );
-    // Serial waits would hold frame 6, and with it the invalidation request, until 158 ms.
-    let events = stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(3));
+    assert!(stream.poll(RETRANSMISSION_WAIT).is_empty());
+    assert_eq!(gaps(&stream.poll(RETRANSMISSION_WAIT + ms(1))), [(10, 10)]);
+    // Serial waits would hold frame 6, and with it the invalidation request, three times as long.
+    let events = stream.poll(RETRANSMISSION_WAIT + ms(3));
     assert_eq!(gaps(&events), [(13, 13), (16, 16)]);
     assert!(delivered(events).is_empty());
     assert_eq!(stream.feedback.frame_invalidation.take(), Some((3, 5)));
-    assert_eq!(stream.fec_frame(7, 2, ms(60)), [(7, true, true)]);
+    assert_eq!(stream.fec_frame(7, 2, RETRANSMISSION_WAIT + ms(8)), [(7, true, true)]);
     assert_eq!(stream.receiver.packet_gap_recoveries, 3);
     assert_eq!(
         stream.stats(),
@@ -1066,7 +1063,7 @@ fn a_recovery_frame_between_two_expired_gaps_is_delivered() {
     assert!(stream.fec_frame(5, 1, ms(3)).is_empty());
     // Both waits are over by the time the queue is polled. The I-frame sits between the
     // two discontinuities and must reach the decoder.
-    let events = stream.poll(ms(200));
+    let events = stream.poll(RETRANSMISSION_WAIT + ms(20));
     assert_eq!(gaps(&events), [(7, 7), (13, 13)]);
     assert_eq!(delivered(events), [(3, true, true)]);
     assert_eq!(stream.feedback.frame_invalidation.take(), Some((4, 4)));
@@ -1085,10 +1082,7 @@ fn giving_up_on_a_gap_keeps_the_requests_for_later_gaps() {
     assert_eq!(stream.feedback.take_nack(sent_at, None), Some((7, 7)));
     assert_eq!(stream.feedback.take_nack(sent_at, None), Some((13, 13)));
 
-    assert_eq!(
-        gaps(&stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(1))),
-        [(7, 7)]
-    );
+    assert_eq!(gaps(&stream.poll(RETRANSMISSION_WAIT + ms(1))), [(7, 7)]);
     let pending = stream.feedback.pending_nacks.lock().unwrap();
     assert_eq!(pending.keys().copied().collect::<Vec<_>>(), [13]);
     assert_eq!(pending[&13].attempts, 1, "the request was not started over");
@@ -1245,4 +1239,127 @@ fn a_stalled_block_requests_every_run_it_needs_at_once() {
         assert!(push(index).later_nacks.is_empty());
     }
     assert_eq!(push(16).later_nacks, [(9, 10)]);
+}
+
+#[test]
+fn a_retransmission_that_misses_the_usual_wait_is_used() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    stream.feedback.publish_ping(true, stream.origin, ms(30));
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    // At the usual give-up the recovery frame is requested, but the gap stays open.
+    assert!(stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(1)).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((2, 2)));
+    let [_, retransmitted] = typed_fec_frame(2, 1, 0x41);
+    assert_eq!(
+        stream.frames(retransmitted, ms(70)),
+        [(2, false, true), (3, false, true)]
+    );
+    // The server's answer reaches the decoder as an ordinary keyframe.
+    assert_eq!(stream.fec_frame(4, 2, ms(90)), [(4, true, true)]);
+    assert_eq!(stream.receiver.packet_gap_recoveries, 0);
+    assert_eq!(
+        stream.stats(),
+        "rfiSent=0 rfiDropped=0 rfiRecoveredI=0 rfiRecoveredIntraRefresh=0 rfiRecoveredRefPicI=0 rfiIdrBackstop=0"
+    );
+}
+
+#[test]
+fn a_gap_without_its_retransmission_is_given_up_after_the_retransmission_wait() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    stream.feedback.publish_ping(true, stream.origin, ms(30));
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    assert!(stream.poll(ms(53)).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((2, 2)));
+    // Only one request per stall goes out ahead of the give-up.
+    assert!(stream.poll(RETRANSMISSION_WAIT).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), None);
+    let events = stream.poll(RETRANSMISSION_WAIT + ms(1));
+    assert_eq!(gaps(&events), [(7, 7)]);
+    assert!(delivered(events).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((2, 2)));
+    assert_eq!(stream.fec_frame(4, 2, RETRANSMISSION_WAIT + ms(8)), [(4, true, true)]);
+}
+
+#[test]
+fn a_gap_while_a_recovery_is_open_waits_for_its_retransmission_too() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    stream.feedback.publish_ping(true, stream.origin, ms(30));
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    assert_eq!(gaps(&stream.poll(RETRANSMISSION_WAIT + ms(1))), [(7, 7)]);
+    // The recovery frame may itself be the damaged frame, so its gap waits as long. A
+    // complete recovery frame behind the gap would end the wait at once (next test).
+    stream.damaged_fec_frame(4, RETRANSMISSION_WAIT + ms(2));
+    assert!(stream.fec_frame(5, 1, RETRANSMISSION_WAIT + ms(3)).is_empty());
+    assert!(stream.poll(RETRANSMISSION_WAIT * 2 + ms(2)).is_empty());
+    assert_eq!(gaps(&stream.poll(RETRANSMISSION_WAIT * 2 + ms(3))), [(13, 13)]);
+}
+
+#[test]
+fn the_extra_wait_does_not_repeat_the_retransmission_request() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    stream.feedback.publish_ping(true, stream.origin, ms(30));
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    assert_eq!(stream.feedback.take_nack(stream.origin + ms(1), None), Some((7, 7)));
+    // A second request now could not be answered before the extra wait ends.
+    assert!(stream.poll(ms(60)).is_empty());
+    assert_eq!(stream.feedback.take_nack(stream.origin + ms(60), None), None);
+}
+
+#[test]
+fn a_recovery_frame_behind_a_gap_ends_an_open_episode_at_once() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    assert_eq!(gaps(&stream.poll(RETRANSMISSION_WAIT + ms(1))), [(7, 7)]);
+    // A later frame is damaged too, and the server's recovery frame arrives right behind it.
+    stream.damaged_fec_frame(4, RETRANSMISSION_WAIT + ms(8));
+    let [first, last] = typed_fec_frame(5, 2, 0x65);
+    assert!(stream.push(first, RETRANSMISSION_WAIT + ms(9)).is_empty());
+    let events = stream.push(last, RETRANSMISSION_WAIT + ms(9));
+    assert_eq!(gaps(&events), [(13, 13)]);
+    assert_eq!(delivered(events), [(5, true, true)]);
+    assert_eq!(stream.feedback.frame_invalidation.take(), None);
+}
+
+#[test]
+fn a_recovery_frame_that_arrives_inside_the_extra_wait_ends_it() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    stream.feedback.publish_ping(true, stream.origin, ms(50));
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    assert!(stream.poll(ms(53)).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((2, 2)));
+    // The answer comes back sooner than the last ping suggested: 80 ms, not 103 ms.
+    assert_eq!(stream.fec_frame(4, 2, ms(80)), [(4, true, true)]);
+    assert_eq!(stream.receiver.packet_gap_recoveries, 1);
+}
+
+#[test]
+fn an_i_frame_behind_a_fresh_gap_does_not_cut_the_retransmission_short() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 2, ms(1)).is_empty());
+    let [_, retransmitted] = typed_fec_frame(2, 1, 0x41);
+    assert_eq!(
+        stream.frames(retransmitted, ms(40)),
+        [(2, false, true), (3, true, true)]
+    );
 }
