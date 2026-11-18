@@ -29,8 +29,27 @@ StreamVideoItem::StreamVideoItem(QQuickItem *parent)
 StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCapture,
                                bool usesMacPointerCapture, QQuickItem *parent)
     : QQuickItem(parent), m_waylandPointer(std::make_unique<WaylandPointerCapture>()),
-      m_macPointer(std::move(pointerCapture)), m_usesMacPointerCapture(usesMacPointerCapture)
+      m_macPointer(std::move(pointerCapture)), m_usesMacPointerCapture(usesMacPointerCapture),
+      m_touch(StreamTouchGestures::Sink{
+          [this](QPointF position) { if (s_nativeRuntime) submitAbsoluteMouse(position); },
+          [this](QPointF delta) { submitTouchRelative(delta); },
+          [this](int button, bool pressed) { submitTouchButton(button, pressed); },
+          [](int x, int y) {
+              if (s_nativeRuntime)
+                  s_nativeRuntime->submitMouseWheel(static_cast<qint16>(std::clamp(x, -32768, 32767)),
+                                                    static_cast<qint16>(std::clamp(y, -32768, 32767)));
+          },
+          [this](bool armed) {
+              if (armed) m_touchHoldTimer.start(StreamTouchGestures::kHoldDelayMs);
+              else m_touchHoldTimer.stop();
+          },
+          [this] { switchTouchMode(); }})
 {
+    setAcceptTouchEvents(true);
+    connect(this, &StreamVideoItem::relativeMouseChanged, this,
+            &StreamVideoItem::effectiveTouchModeChanged);
+    m_touchHoldTimer.setSingleShot(true);
+    connect(&m_touchHoldTimer, &QTimer::timeout, this, [this] { m_touch.holdTimeout(); });
     connect(m_macPointer.get(), &MacPointerCapture::stateChanged, this, [this] {
         syncCaptureState();
         emit inputCaptureErrorChanged();

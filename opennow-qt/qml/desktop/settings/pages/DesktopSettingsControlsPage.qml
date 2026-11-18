@@ -46,6 +46,15 @@ Column {
             }
         }
         DesktopSettingsChoice {
+            objectName: "touchModeChoice"
+            width: parent.width; title: qsTr("Touchscreen"); glyph: "mouse"
+            description: qsTr("Auto: the finger points directly while the game shows a cursor, and works like a trackpad when the game draws its own. Trackpad: tap clicks, two-finger tap right-clicks, hold then drag drags, two fingers scroll. A three-finger tap switches between them during a stream.")
+            items: [{value: "auto", label: qsTr("Auto")}, {value: "direct", label: qsTr("Direct")},
+                {value: "trackpad", label: qsTr("Trackpad")}]
+            value: controlsRoot.settingsScreen.valueSetting("touchMode", "auto")
+            onSelected: value => controlsRoot.settingsScreen.setChoice("touchMode", value)
+        }
+        DesktopSettingsChoice {
             objectName: "keyboardLayoutChoice"
             width: parent.width; title: qsTr("Keyboard layout"); glyph: "keyboard"
             description: ShellStore.settingsOwnerState.keyboardLayoutDescription

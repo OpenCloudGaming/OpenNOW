@@ -51,6 +51,28 @@ private slots:
         QVERIFY(!capture.locked());
     }
 
+    void seatWithoutPointerNeedsNoLock()
+    {
+        if (!WaylandPointerCapture::isWayland()) {
+            QVERIFY(!WaylandPointerCapture().relativeInputReady());
+            return;
+        }
+        if (!qEnvironmentVariableIsSet("OPENNOW_TEST_WAYLAND_NO_POINTER"))
+            QSKIP("Requires a Wayland seat without a pointer, e.g. weston --backend=headless");
+        InputTestWindow window;
+        window.resize(640, 480);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        WaylandPointerCapture capture;
+        QVERIFY(capture.relativeInputReady());
+        QVERIFY(!capture.locked());
+        capture.setCapture(&window, true, QRect(0, 0, 640, 480));
+        QTest::qWait(250);
+        QVERIFY(capture.relativeInputReady());
+        QVERIFY(!capture.locked());
+        QCOMPARE(capture.error(), QString());
+    }
+
     void compositorCaptureLifecycle()
     {
         if (!WaylandPointerCapture::isWayland()

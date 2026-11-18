@@ -379,6 +379,12 @@ if(BUILD_TESTING)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 15)
         endforeach()
     endforeach()
+    qt_add_executable(opennow-touchgestures-tests
+        tests/tst_touchgestures.cpp
+        src/streaming/StreamTouchGestures.cpp)
+    target_include_directories(opennow-touchgestures-tests PRIVATE src)
+    target_link_libraries(opennow-touchgestures-tests PRIVATE Qt6::Test)
+    add_test(NAME opennow-touchgestures-tests COMMAND opennow-touchgestures-tests -o -,txt)
     qt_add_executable(opennow-framepacer-tests tests/tst_framepacer.cpp)
     target_include_directories(opennow-framepacer-tests PRIVATE src)
     target_link_libraries(opennow-framepacer-tests PRIVATE Qt6::Test)

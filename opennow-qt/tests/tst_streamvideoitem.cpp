@@ -227,6 +227,8 @@ class StreamVideoItemTest final : public QObject
         inline static OpenNowStreamerConfig callbacks;
         inline static QList<QPoint> motions;
         inline static QList<QRect> absoluteMotions;
+        inline static QList<QPair<int, bool>> buttons;
+        inline static QPoint wheel;
 
         explicit CursorSession(NativeStreamRuntime::Api api = CursorSession::api()) : runtime(api) {}
 
@@ -258,6 +260,14 @@ class StreamVideoItemTest final : public QObject
                 absoluteMotions.append(QRect(x, y, width, height));
                 return OPENNOW_STREAMER_OK;
             };
+            api.submitMouseButton = [](const OpenNowStreamer *, std::uint8_t button, bool pressed) {
+                buttons.append({button, pressed});
+                return OPENNOW_STREAMER_OK;
+            };
+            api.submitMouseWheel = [](const OpenNowStreamer *, std::int16_t x, std::int16_t y) {
+                wheel += QPoint(x, y);
+                return OPENNOW_STREAMER_OK;
+            };
             return api;
         }
 
@@ -265,6 +275,8 @@ class StreamVideoItemTest final : public QObject
         {
             motions.clear();
             absoluteMotions.clear();
+            buttons.clear();
+            wheel = {};
             if (!runtime.start()) return false;
             StreamVideoItem::setNativeStreamRuntime(&runtime);
             if (!runtime.send({{QStringLiteral("type"), QStringLiteral("start")},
@@ -344,6 +356,132 @@ private slots:
                 QCOMPARE(swaps.size(), swapsBefore);
             }
         }
+    }
+
+    void touchSecondContactInTheSameEventIsNotADrag()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("direct"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(100, 100));
+        // Contact 1 moves past the slop in the event that adds contact 2, and
+        // the point list has contact 1 first.
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(160, 100)).press(2, QPoint(300, 100));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(160, 100)).release(2, QPoint(300, 100));
+        QVERIFY(CursorSession::buttons.isEmpty());
+    }
+
+    void touchScrollDoesNotDependOnWhichContactLiftsFirst()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(100, 100)).press(2, QPoint(300, 100));
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(100, 120)).move(2, QPoint(300, 120));
+        // Contact 1 lifts in the event that moves contact 2, and is listed first.
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(100, 140)).move(2, QPoint(300, 140));
+        QCOMPARE(qAbs(CursorSession::wheel.y()), qRound(40 * StreamTouchGestures::kWheelPerPixel));
+        QTest::touchEvent(&session.window, touchscreen).release(2, QPoint(300, 140));
+    }
+
+    void cursorUpdateWaitsForATouchDragToEnd()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("direct"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        item.applyRemoteCursor(QByteArray::fromHex("0001"));
+        QVERIFY(!item.relativeMouse());
+
+        // Straight to the gesture state: Qt holds touch moves back until a frame.
+        item.m_touch.pressed(1, {100, 100}, 0, StreamTouchGestures::Mode::Direct);
+        item.m_touch.moved(1, {160, 100}, 10);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}}));
+
+        item.applyRemoteCursor(QByteArray::fromHex("0000"));  // the host hides its cursor
+        QVERIFY(!item.relativeMouse());
+        item.m_touch.moved(1, {220, 100}, 20);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}}));
+
+        item.m_touch.released(1, {220, 100}, 30);
+        QCOMPARE(CursorSession::buttons, (QList<QPair<int, bool>>{{1, true}, {1, false}}));
+        QVERIFY(item.relativeMouse());
+    }
+
+    void trackpadTouchMovesTheLocalCursorWhenTheHostDrawsNone()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("trackpad"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+        session.composition(false);
+        QTRY_VERIFY(!item.m_serverCursorComposited);
+        item.applyRemoteCursor(QByteArray::fromHex("0001"));
+        QVERIFY(!item.relativeMouse());
+        QCursor::setPos(item.mapToGlobal(QPointF(100, 100)).toPoint());
+        QTRY_COMPARE(item.mapFromGlobal(QCursor::pos()).toPoint(), QPoint(100, 100));
+        CursorSession::absoluteMotions.clear();
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(300, 300));
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(340, 320));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(340, 320));
+        QVERIFY(CursorSession::motions.isEmpty());
+        QCOMPARE(item.m_lastMousePosition, QPointF(140, 120));
+        QCOMPARE(CursorSession::absoluteMotions.last(),
+                 StreamVideoItem::absoluteMouseCoordinates(QPointF(140, 120), item.videoSize(), item.size()));
+        QCOMPARE(item.mapFromGlobal(QCursor::pos()).toPoint(), QPoint(140, 120));
+    }
+
+    void geometryChangeCancelsActiveTouch()
+    {
+        CursorSession session;
+        QVERIFY(session.start(QStringLiteral("nvst")));
+        StreamVideoItem item(std::make_unique<MacPointerCapture>(), false, session.window.contentItem());
+        item.setRenderCallback({});
+        QTRY_VERIFY(session.window.isActive());
+        item.setSize(session.window.size());
+        item.setVideoSize(QSize(640, 480));
+        item.setTouchMode(QStringLiteral("trackpad"));
+        item.forceActiveFocus();
+        QTRY_VERIFY(item.captureActive());
+
+        auto *touchscreen = QTest::createTouchDevice();
+        QTest::touchEvent(&session.window, touchscreen).press(1, QPoint(100, 100));
+        item.setPosition(QPointF(50, 0));
+        QTest::touchEvent(&session.window, touchscreen).move(1, QPoint(300, 100));
+        QTest::touchEvent(&session.window, touchscreen).release(1, QPoint(300, 100));
+        QVERIFY(CursorSession::motions.isEmpty());
+        QVERIFY(CursorSession::buttons.isEmpty());
     }
 
     void clipboardPasteRouting_data()

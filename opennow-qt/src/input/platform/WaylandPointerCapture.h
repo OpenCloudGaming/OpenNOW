@@ -16,6 +16,9 @@ public:
 
     [[nodiscard]] static bool isWayland();
     [[nodiscard]] bool locked() const;
+    // Relative input can run: the pointer is locked, or the seat has no pointer
+    // to lock (a touchscreen-only seat), so no mouse input can reach the window.
+    [[nodiscard]] bool relativeInputReady() const;
     [[nodiscard]] QString error() const;
     void setCapture(QWindow *window, bool enabled, const QRect &surfaceRegion);
     void release();

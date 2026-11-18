@@ -211,8 +211,11 @@ unsafe fn initialize_xinput(
     {
         return Err("XInput2 extension is unavailable".to_owned());
     }
+    // Announce XI 2.2 so raw events from touch pointer emulation carry
+    // XIPointerEmulated (see process_raw_event); servers without 2.2 answer
+    // with the version they have.
     let mut major = 2;
-    let mut minor = 0;
+    let mut minor = 2;
     if unsafe { (xi.XIQueryVersion)(display, &mut major, &mut minor) } != 0 || major < 2 {
         return Err(format!(
             "XInput2 2.0 is required (server reported {major}.{minor})"
@@ -236,6 +239,9 @@ unsafe fn initialize_xinput(
     Ok(opcode)
 }
 
+/// XIPointerEmulated from XI2.h (XI 2.2): the event was emulated from a touch.
+const XI_POINTER_EMULATED: libc::c_int = 1 << 16;
+
 fn process_raw_event(
     state: &XInputState,
     raw: &xinput2::XIRawEvent,
@@ -243,6 +249,13 @@ fn process_raw_event(
     residual_y: &mut f64,
 ) {
     if !state.enabled.load(Ordering::Acquire) {
+        return;
+    }
+    // Touchscreen contacts reach X as pointer emulation: absolute screen
+    // positions in the valuators and a button 1 press, which this thread
+    // would send as huge relative jumps and stray clicks. The Qt item turns
+    // touch into stream input itself (StreamTouchGestures).
+    if raw.flags & XI_POINTER_EMULATED != 0 {
         return;
     }
     match raw.evtype {
