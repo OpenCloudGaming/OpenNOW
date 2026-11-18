@@ -800,6 +800,14 @@ void StreamVideoItem::hoverMoveEvent(QHoverEvent *event)
         event->ignore();
         return;
     }
+    // Qt Quick re-delivers the last hover position after frames while the
+    // mouse rests (frame-synchronous hover). Forwarding those repeats sends an
+    // unchanged absolute move per frame and pulls the remote pointer back to
+    // the mouse after anything else, such as a touch, has moved it.
+    if (event->position() == event->oldPosF()) {
+        event->accept();
+        return;
+    }
     // With no button held Qt does not call mouseMoveEvent for this item. Keep
     // the absolute GFN pointer current so remote hover and click hit-testing
     // use the same coordinates.
