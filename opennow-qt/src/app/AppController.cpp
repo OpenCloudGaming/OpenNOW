@@ -493,6 +493,10 @@ void AppController::restoreWindowGeometry(QWindow *window, const QRect &saved,
                                           bool hasPosition) const
 {
     if (!window || saved.isEmpty()) return;
+    // gamescope shows one application at a time and scales its window to
+    // the output; a saved desktop-sized window would be letterboxed and
+    // upscaled. ApplicationStartup opens fullscreen there instead.
+    if (!qEnvironmentVariableIsEmpty("GAMESCOPE_WAYLAND_DISPLAY")) return;
     QList<QRect> screens;
     for (const auto *screen : QGuiApplication::screens())
         screens.append(screen->availableGeometry());
