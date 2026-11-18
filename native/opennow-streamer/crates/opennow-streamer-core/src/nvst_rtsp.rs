@@ -1562,6 +1562,8 @@ fn advertised_bitrate_kbps(settings: &Value) -> u64 {
 }
 
 fn omit_server_announce_attributes(announce: &str, describe: &str) -> String {
+    // Keys returned by `negotiation::forward_server_features` stay out of this
+    // list: their value always equals the signed offer and would be dropped.
     const SERVER_NEGOTIATED: &[&str] = &[
         "video[0].updateSplitEncodeStateDynamically",
         "video[0].enableRtpNack",
@@ -3568,6 +3570,53 @@ mod tests {
                     "{server_owned}"
                 );
             }
+        }
+        // The server's own signed `;;` split-encode value is returned
+        // (`negotiation::forward_server_features`), and nothing else changes: a
+        // main-section-only offer stays absent, the `||` value is never used, and
+        // the other server-owned keys stay absent even when signed beside it.
+        // Adding the key to `SERVER_NEGOTIATED` would drop the returned value,
+        // because it always equals the offer, and fail this check.
+        let split = "video[0].videoSplitEncodeStripsPerFrame";
+        let upstream = format!("||v=0\r\na=x-nv-{split}:2\r\n");
+        let main_only = format!("v=0\r\na=x-nv-{split}:64\r\n{upstream}");
+        let signed = format!(
+            "v=0\r\na=x-nv-{split}:1\r\n;;v=0\r\no=NvStreamer 1 14 IN IPv4 host\r\nk=HMAC:00\r\na=x-nv-{split}:64\r\na=x-nv-video[0].adaptiveQuantization.spatialAQStrength:1\r\na=x-nv-vqos[0].grc.enable:1\r\na=x-nv-aqos.redundancyLevel:3\r\na=x-nv-general.enetControlChannel.mtuSize:1200\r\n{upstream}"
+        );
+        for (describe, returned) in [(main_only, None), (signed, Some("64"))] {
+            let effective = negotiated_announce(&sdp, &describe, &mut json!({})).unwrap();
+            let announce = omit_server_announce_attributes(&effective, &describe);
+            assert_eq!(
+                sdp_attribute(&announce, split).as_deref(),
+                returned,
+                "{describe}"
+            );
+            assert_eq!(
+                announce.matches(split).count(),
+                usize::from(returned.is_some())
+            );
+            if let Some(value) = returned {
+                assert!(
+                    announce
+                        .find(&format!("a=x-nv-{split}:{value}\r\n"))
+                        .unwrap()
+                        < announce.find("\r\nt=0 0\r\n").unwrap(),
+                    "returned as a session-level attribute"
+                );
+            }
+            for server_owned in [
+                "video[0].adaptiveQuantization.spatialAQStrength",
+                "vqos[0].grc.enable",
+                "aqos.redundancyLevel",
+                "general.enetControlChannel.mtuSize",
+            ] {
+                assert_eq!(
+                    sdp_attribute(&announce, server_owned),
+                    None,
+                    "{server_owned}"
+                );
+            }
+            assert!(!announce.contains("HMAC") && !announce.contains("NvStreamer"));
         }
         for invalid_cap in ["0", "not-a-number"] {
             let describe = format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{invalid_cap}\r\n");

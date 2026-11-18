@@ -26,6 +26,28 @@ serializer evidence is macOS `0x4599c0` and `0x3798c0`, and Windows
 The transport's frame-pacing feedback mode follows the effective ANNOUNCE value,
 including a client value that differs from the server baseline.
 
+The `;;` feature section is separately signed (`o=NvStreamer`, `k=HMAC:`).
+ANNOUNCE returns exactly one of its attributes,
+`video[0].videoSplitEncodeStripsPerFrame`, with the server's signed value
+(`forward_server_features` in
+`native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp_negotiation.rs`).
+The value replaces a client line of the same name or is inserted before `t=`,
+and the transport logs `server-features returned=[...]`. Nothing is invented:
+main-section and `||` values are never returned, nothing is sent when `;;` does
+not carry the key, and a value that is not an unsigned integer is logged as
+`ignored-server-offer`. The key is exempt from the equal-value suppression
+above, because the returned value always equals the signed offer.
+
+This is not an echo of the feature section; the official ANNOUNCE is a
+difference against the server offer (#1166). The evidence is an A/B on a
+v1.0.3-based Linux build at 3840×2160 @ 120: 18 sessions without the attribute
+stayed at or below 97 fps (steady 94–96), and 12 with it reached 119–120 fps
+(H.265 10-bit, AV1 8- and 10-bit). Returning only
+`framePacing.pid.minTargetFrameTimeUs` (7936) instead stayed at 96 fps. The
+signed value was 64 in every session that returned it; v1.0.0 and v1.0.1 sent
+64 as a constant until #1025 removed it. Other feature attributes stay withheld
+until their effect is measured.
+
 Server FEC and packet-pacing parameters are retained when supported. Malformed
 values, unsupported pacing versions or modes, invalid booleans, percentages
 outside 0..100, and inconsistent FEC ranges fail negotiation. If the server
