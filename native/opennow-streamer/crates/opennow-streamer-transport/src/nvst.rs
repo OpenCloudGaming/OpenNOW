@@ -95,6 +95,9 @@ const RTCP_SENDER_SSRC: u32 = 0x4f4e_4f57; // "ONOW"
 const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
 const RTCP_RECOVERY_INTERVAL: Duration = Duration::from_millis(4);
 const NACK_RETRY_INTERVAL: Duration = Duration::from_millis(4);
+// Gaps in separate FEC blocks are requested side by side but are not contiguous. One report
+// per recovery tick would stagger them by 4 ms each inside a 52 ms wait.
+const MAX_NACK_REPORTS_PER_TICK: usize = 8;
 const DEFAULT_NACK_RTT: Duration = Duration::from_millis(30);
 const NACK_TRACKING_TIMEOUT: Duration = Duration::from_millis(52);
 const MAX_NACK_ATTEMPTS: u8 = 3;
@@ -225,6 +228,13 @@ const MAX_REORDER_WINDOW: usize = 2_048;
 // Keep the wait exceptional and bounded, but long enough for a retransmission to beat an IDR
 // reset. This adds latency only while a sequence gap is open; the normal path still drains at once.
 const MJOLNIR_REORDER_DEQUEUE_TIMEOUT: Duration = Duration::from_millis(52);
+/// Mjolnir answers a NACK 150-200 ms after the gap opens (measured over Starlink at a 27 ms
+/// round trip). While a recovery frame can still be requested at the usual time, a gap is
+/// held this long so the retransmission can fill it.
+const RETRANSMISSION_WAIT: Duration = Duration::from_millis(220);
+/// How long after its NACK a packet may still arrive as an unprotected retransmission.
+const RETRANSMISSION_ACCEPT_WINDOW: Duration = Duration::from_millis(500);
+const MAX_RETRANSMISSION_REQUESTS: usize = 4_096;
 // The replay filter must be at least as deep as the reorder/NACK window. The old 64-packet bitmap
 // rejected valid retransmissions after roughly 10 ms on a high-bitrate stream, guaranteeing that
 // every NACK eventually degraded into a keyframe reset.
@@ -648,6 +658,9 @@ pub struct NvstFeedbackState {
     pub(crate) frame_invalidation: FrameInvalidationFeedback,
     pending_nacks: Mutex<BTreeMap<u64, PendingNack>>,
     nack_overflows: AtomicU64,
+    /// Packets named in NACKs and when they were first requested. See
+    /// `take_retransmission_request`.
+    retransmission_requests: Mutex<BTreeMap<u64, Instant>>,
     last_sender_frame: AtomicU32,
     completed_frame_bytes: AtomicU64,
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
@@ -682,6 +695,7 @@ impl Default for NvstFeedbackState {
             frame_invalidation: FrameInvalidationFeedback::default(),
             pending_nacks: Mutex::new(BTreeMap::new()),
             nack_overflows: AtomicU64::new(0),
+            retransmission_requests: Mutex::new(BTreeMap::new()),
             last_sender_frame: AtomicU32::new(0),
             completed_frame_bytes: AtomicU64::new(0),
             pending_frame_acks: Mutex::new(VecDeque::new()),
@@ -1009,6 +1023,19 @@ impl NvstFeedbackState {
                 },
             );
         }
+    }
+
+    /// Whether `index` was asked for in a NACK within `RETRANSMISSION_ACCEPT_WINDOW`; consumes
+    /// the request. The Mjolnir server sends most NACK answers without SRTP protection
+    /// (payload type 106, no authentication tag), so a packet that fails authentication is
+    /// accepted only as the answer to a request, once.
+    fn take_retransmission_request(&self, index: u64, now: Instant) -> bool {
+        let mut requests = self
+            .retransmission_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        requests.retain(|_, at| now.saturating_duration_since(*at) < RETRANSMISSION_ACCEPT_WINDOW);
+        requests.remove(&index).is_some()
     }
 
     fn resolve_nack(&self, received_index: u64) -> bool {
@@ -1355,6 +1382,16 @@ impl NvstFeedbackState {
             packet.attempts = packet.attempts.saturating_add(1);
             last = index;
         }
+        let mut requests = self
+            .retransmission_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for index in first..=last {
+            requests.entry(index).or_insert(now);
+        }
+        while requests.len() > MAX_RETRANSMISSION_REQUESTS {
+            requests.pop_first();
+        }
         Some((first, last))
     }
 
@@ -1374,6 +1411,16 @@ impl NvstFeedbackState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+    }
+
+    /// Drops requests the reorder queue has given up on. Later gaps keep their own deadline
+    /// and attempt count instead of being requested again from scratch.
+    fn forget_nacks_through(&self, last_abandoned_index: u64) {
+        let mut pending = self
+            .pending_nacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *pending = pending.split_off(&last_abandoned_index.saturating_add(1));
     }
 }
 
@@ -2595,6 +2642,25 @@ enum SrtpCipher {
 }
 
 impl SrtpReceiver {
+    /// Takes an unprotected retransmission at `index`. The replay window still rejects a
+    /// second copy, and the index is committed like an authenticated packet's.
+    fn accept_unprotected(
+        &mut self,
+        datagram: &[u8],
+        header: RtpHeader,
+        index: u64,
+    ) -> Result<RtpPacket, NvstDropReason> {
+        self.replay.check(index)?;
+        header.payload(datagram).map_err(NvstDropReason::MalformedRtp)?;
+        self.replay.commit(index);
+        Ok(RtpPacket {
+            index,
+            header,
+            plaintext: datagram.to_vec(),
+            origin: RtpPacketOrigin::Authenticated,
+        })
+    }
+
     fn from_material(material: &NvstSrtpMaterial) -> Self {
         let cipher = match material {
             NvstSrtpMaterial::AeadAes128Gcm {
@@ -3069,6 +3135,7 @@ fn build_rtcp_nack(
     packet
 }
 
+/// Returns whether a report was sent, so the caller can send the next pending run.
 fn send_pending_nack(
     feedback: &NvstFeedbackState,
     now: Instant,
@@ -3077,20 +3144,20 @@ fn send_pending_nack(
     mjolnir: bool,
     sender_ssrc: u32,
     media_ssrc: u32,
-) {
+) -> bool {
     let Some(channel) = (if mjolnir {
         Some(channels.control_partial)
     } else {
         channels.rtcp
     }) else {
-        return;
+        return false;
     };
     if rtc.channel(channel).is_none() {
-        return;
+        return false;
     }
     let retry_rtt = mjolnir.then(|| feedback.ping(now).unwrap_or(DEFAULT_NACK_RTT));
     let Some((first, last)) = feedback.take_nack(now, retry_rtt) else {
-        return;
+        return false;
     };
     let admitted = if mjolnir {
         let missing: Vec<u16> = (first..=last).map(|index| index as u16).collect();
@@ -3112,6 +3179,7 @@ fn send_pending_nack(
     } else {
         feedback.mark_nack_send_failed(first, last);
     }
+    admitted
 }
 
 fn send_pending_frame_invalidation(
@@ -3654,6 +3722,8 @@ struct RtpReorderBuffer {
 struct ReorderResult {
     ready: Vec<RtpPacket>,
     nack: Option<(u64, u64)>,
+    /// Gaps behind the head of the FEC queue, requested as soon as they are evident.
+    later_nacks: Vec<(u64, u64)>,
     recovery: Option<NvstRecovery>,
     dropped: Option<NvstDropReason>,
     fec_repaired: usize,
@@ -3682,6 +3752,7 @@ impl RtpReorderBuffer {
             return ReorderResult {
                 ready: Vec::new(),
                 nack: None,
+                later_nacks: Vec::new(),
                 recovery: None,
                 dropped: Some(NvstDropReason::StaleRtpPacket { index }),
                 fec_repaired: 0,
@@ -3691,6 +3762,7 @@ impl RtpReorderBuffer {
             return ReorderResult {
                 ready: Vec::new(),
                 nack: None,
+                later_nacks: Vec::new(),
                 recovery: None,
                 dropped: Some(NvstDropReason::DuplicateRtpPacket { index }),
                 fec_repaired: 0,
@@ -3767,6 +3839,7 @@ impl RtpReorderBuffer {
         ReorderResult {
             ready,
             nack,
+            later_nacks: Vec::new(),
             recovery,
             dropped: None,
             fec_repaired: 0,
@@ -3817,6 +3890,12 @@ struct FecBlock {
     base_index: u64,
     shards: Vec<Option<RtpPacket>>,
     repair_failed: bool,
+    /// When the block's first packet arrived, or for a block that fills a hole behind buffered
+    /// successors, when the first of those arrived. A hole in front of it was evident by then.
+    arrived_at: Instant,
+    /// When a later block first arrived, or reconstruction failed. From then on, whatever
+    /// this block still lacks was lost rather than delayed, and its NACK wait is running.
+    stalled_since: Option<Instant>,
 }
 
 struct Gf256Tables {
@@ -4036,14 +4115,20 @@ fn reconstruct_nvst_cauchy_data(
 }
 
 impl FecBlock {
-    fn new(layout: FecPacketLayout, packet_index: u64) -> Self {
+    fn new(layout: FecPacketLayout, packet_index: u64, now: Instant) -> Self {
         let total = layout.data_shards + layout.parity_shards;
         Self {
             layout,
             base_index: packet_index.saturating_sub(layout.shard_index as u64),
             shards: (0..total).map(|_| None).collect(),
             repair_failed: false,
+            arrived_at: now,
+            stalled_since: None,
         }
+    }
+
+    fn end_index(&self) -> u64 {
+        self.base_index + (self.layout.data_shards + self.layout.parity_shards) as u64
     }
 
     fn matches(&self, layout: FecPacketLayout, packet_index: u64) -> bool {
@@ -4083,6 +4168,33 @@ impl FecBlock {
         ))
     }
 
+    /// The missing data runs that retransmission has to fill before the block can be
+    /// reconstructed. Parity already received covers the rest, so a later run is included
+    /// only when the earlier ones leave the block short. The block's wait is not extended
+    /// for a second round, so everything it needs is requested at once.
+    fn missing_runs_to_complete(&self) -> Vec<(u64, u64)> {
+        let present = self.shards.iter().flatten().count();
+        let mut shortfall = self.layout.data_shards.saturating_sub(present);
+        let mut runs = Vec::new();
+        let mut shard = 0;
+        while shortfall > 0 && shard < self.layout.data_shards {
+            if self.shards[shard].is_some() {
+                shard += 1;
+                continue;
+            }
+            let first = shard;
+            while shard < self.layout.data_shards && self.shards[shard].is_none() {
+                shard += 1;
+            }
+            runs.push((
+                self.base_index + first as u64,
+                self.base_index + shard as u64 - 1,
+            ));
+            shortfall = shortfall.saturating_sub(shard - first);
+        }
+        runs
+    }
+
     fn insert(&mut self, layout: FecPacketLayout, packet: RtpPacket) -> Option<NvstDropReason> {
         let slot = &mut self.shards[layout.shard_index];
         if slot.is_some() {
@@ -4099,6 +4211,19 @@ impl FecBlock {
 
     fn has_enough_shards(&self) -> bool {
         self.shards.iter().filter(|shard| shard.is_some()).count() >= self.layout.data_shards
+    }
+
+    /// Whether this block opens a frame that ends a loss episode, read from the frame header
+    /// in the frame's first packet.
+    fn opens_recovery_frame(&self) -> bool {
+        self.layout.block_index == 0
+            && self.shards[0]
+                .as_ref()
+                .and_then(|packet| packet.header.payload(&packet.plaintext).ok())
+                .is_some_and(|payload| {
+                    matches!(payload, [version, _, _, kind, ..] if version & 0x7f == 1
+                        && NvstFrameType::from_wire(kind & 0x0f).clears_invalidation())
+                })
     }
 
     fn finish(mut self, shard_len: usize) -> Result<(Vec<RtpPacket>, usize), NvstDropReason> {
@@ -4230,7 +4355,11 @@ impl FecBlock {
 struct FecReorderBuffer {
     blocks: BTreeMap<u64, FecBlock>,
     completed_through: Option<u64>,
-    gap_wait: Option<(u64, Instant)>,
+    /// How much longer than `MJOLNIR_REORDER_DEQUEUE_TIMEOUT` a gap is held for its
+    /// retransmission, set by the receiver. See `overdue`.
+    grace: Duration,
+    /// A loss episode is open: frames are withheld until a recovery frame. Set by the receiver.
+    recovering: bool,
     shard_len: usize,
 }
 
@@ -4239,7 +4368,8 @@ impl FecReorderBuffer {
         Self {
             blocks: BTreeMap::new(),
             completed_through: None,
-            gap_wait: None,
+            grace: Duration::ZERO,
+            recovering: false,
             shard_len: video_packet_size + NVST_FEC_RTP_HEADER_ALLOWANCE,
         }
     }
@@ -4247,7 +4377,6 @@ impl FecReorderBuffer {
     fn reset(&mut self) {
         self.blocks.clear();
         self.completed_through = None;
-        self.gap_wait = None;
     }
 
     fn push(&mut self, packet: RtpPacket, layout: FecPacketLayout, now: Instant) -> ReorderResult {
@@ -4259,19 +4388,22 @@ impl FecReorderBuffer {
             return ReorderResult {
                 ready: Vec::new(),
                 nack: None,
+                later_nacks: Vec::new(),
                 recovery: None,
                 dropped: None,
                 fec_repaired: 0,
             };
         }
+        let created = !self.blocks.contains_key(&packet_base);
         let block = self
             .blocks
             .entry(packet_base)
-            .or_insert_with(|| FecBlock::new(layout, packet.index));
+            .or_insert_with(|| FecBlock::new(layout, packet.index, now));
         if !block.matches(layout, packet.index) {
             return ReorderResult {
                 ready: Vec::new(),
                 nack: None,
+                later_nacks: Vec::new(),
                 recovery: None,
                 dropped: Some(NvstDropReason::Unsupported(
                     NvstUnsupportedFeature::FecRepair,
@@ -4284,54 +4416,137 @@ impl FecReorderBuffer {
             return ReorderResult {
                 ready: Vec::new(),
                 nack: None,
+                later_nacks: Vec::new(),
                 recovery: None,
                 dropped,
                 fec_repaired: 0,
             };
         }
 
-        self.poll_deadline(now)
+        let later_nacks = if created {
+            self.start_gap_waits(packet_base, now)
+        } else {
+            Vec::new()
+        };
+        let mut result = self.poll_deadline(now);
+        result.later_nacks = later_nacks;
+        result
     }
 
+    /// The frame after the head gap, once the gap has waited the usual 52 ms but is still held
+    /// for its retransmission. On a long path a retransmission can miss 52 ms by a few
+    /// milliseconds; the recovery frame requested at 52 ms cannot arrive before 52 ms plus a
+    /// round trip, so holding the gap that long costs nothing when the retransmission is lost.
+    fn overdue(&self, now: Instant) -> Option<u32> {
+        let (&base, head) = self.blocks.first_key_value()?;
+        let between_blocks = self.completed_through.is_some_and(|expected| base > expected);
+        let since = if between_blocks {
+            head.arrived_at
+        } else {
+            head.stalled_since?
+        };
+        let lost_head = !between_blocks || head.layout.block_index > 0;
+        (now.saturating_duration_since(since) >= MJOLNIR_REORDER_DEQUEUE_TIMEOUT)
+            .then_some(head.layout.frame_index + u32::from(lost_head))
+    }
+
+    /// Whether the head gap should stop waiting because a complete frame that ends the loss
+    /// episode is buffered behind it. Nothing in front of that frame can be shown once it is
+    /// decoded. Only once a recovery frame has been asked for, so an I-frame that merely
+    /// follows a fresh gap does not cut its retransmission short.
+    fn recovery_frame_ready(&self, waited: Duration) -> bool {
+        if !self.recovering && waited < MJOLNIR_REORDER_DEQUEUE_TIMEOUT {
+            return false;
+        }
+        let mut awaited = None;
+        for (&base, block) in &self.blocks {
+            let layout = block.layout;
+            let continues = awaited == Some((layout.frame_index, layout.block_index, base));
+            awaited = None;
+            if !(continues || block.opens_recovery_frame())
+                || !block.has_enough_shards()
+                || block.repair_failed
+            {
+                continue;
+            }
+            if layout.block_index == layout.last_block_index {
+                return true;
+            }
+            awaited = Some((layout.frame_index, layout.block_index + 1, block.end_index()));
+        }
+        false
+    }
+
+    /// A packet from a new block proves that whatever the earlier blocks still lack was
+    /// skipped, not delayed. Their NACK waits start now and run side by side, so a burst that
+    /// damages several blocks holds the queue for one NACK window instead of one per block.
+    /// Returns the gaps to request at once.
+    fn start_gap_waits(&mut self, new_base: u64, now: Instant) -> Vec<(u64, u64)> {
+        let mut nacks = Vec::new();
+        let mut expected = self.completed_through;
+        for block in self.blocks.range_mut(..new_base).map(|(_, block)| block) {
+            if block.stalled_since.is_none() {
+                block.stalled_since = Some(now);
+                nacks.append(&mut block.missing_runs_to_complete());
+            }
+            expected = Some(block.end_index());
+        }
+        if let Some(expected) = expected
+            && new_base > expected
+            && new_base - expected < MAX_REORDER_WINDOW as u64
+        {
+            nacks.push((expected, new_base - 1));
+        }
+        // A block that fills a hole behind buffered successors was overtaken when the first
+        // of them arrived. Neither it nor a hole still in front of it gets a fresh wait.
+        let overtaken_at = self
+            .blocks
+            .range(new_base + 1..)
+            .map(|(_, block)| block.arrived_at)
+            .min();
+        if let (Some(overtaken_at), Some(block)) = (overtaken_at, self.blocks.get_mut(&new_base)) {
+            block.arrived_at = overtaken_at;
+            block.stalled_since = Some(overtaken_at);
+        }
+        nacks
+    }
+
+    /// Reports at most one discontinuity per call, followed by the packets behind it. Waits
+    /// overlap, so several blocks can run out of time together; the caller polls again while
+    /// a call makes progress. Packets completed ahead of a discontinuity are delivered first.
     fn poll_deadline(&mut self, now: Instant) -> ReorderResult {
         let mut result = ReorderResult {
             ready: Vec::new(),
             nack: None,
+            later_nacks: Vec::new(),
             recovery: None,
             dropped: None,
             fec_repaired: 0,
         };
-        loop {
-            let Some((&base, head)) = self.blocks.first_key_value() else {
-                self.gap_wait = None;
-                break;
-            };
-
+        while let Some((&base, head)) = self.blocks.first_key_value() {
             if let Some(expected) = self.completed_through
                 && base > expected
             {
-                result.nack = Some((expected, base - 1));
-                let started = match self.gap_wait {
-                    Some((waiting_for, started)) if waiting_for == expected => started,
-                    _ => {
-                        self.gap_wait = Some((expected, now));
-                        now
-                    }
-                };
-                if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+                let waited = now.saturating_duration_since(head.arrived_at);
+                if waited < MJOLNIR_REORDER_DEQUEUE_TIMEOUT + self.grace
                     && base.saturating_sub(expected) < MAX_REORDER_WINDOW as u64
                     && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
+                    && !self.recovery_frame_ready(waited)
                 {
+                    // In the extra wait the request has expired. A new one could not be
+                    // answered in time and would only have the packets sent twice.
+                    result.nack = (waited < MJOLNIR_REORDER_DEQUEUE_TIMEOUT)
+                        .then_some((expected, base - 1));
+                    break;
+                }
+                if result.recovery.is_some() || !result.ready.is_empty() {
                     break;
                 }
                 result.recovery = Some(NvstRecovery::PacketGap {
                     first_missing_index: expected,
                     last_missing_index: base - 1,
                 });
-                result.ready.clear();
-                result.nack = None;
                 self.completed_through = Some(base);
-                self.gap_wait = None;
                 continue;
             }
 
@@ -4340,8 +4555,7 @@ impl FecReorderBuffer {
                     .blocks
                     .remove(&base)
                     .expect("head FEC block is present");
-                let completed_through =
-                    base + (completed.layout.data_shards + completed.layout.parity_shards) as u64;
+                let completed_through = completed.end_index();
                 // Only reconstruction can fail. Healthy blocks move their RTP
                 // buffers straight to assembly without copying the video payload.
                 let repair_backup = completed.missing_data_range().map(|_| completed.clone());
@@ -4350,12 +4564,12 @@ impl FecReorderBuffer {
                         result.ready.append(&mut ready);
                         result.fec_repaired += repaired;
                         self.completed_through = Some(completed_through);
-                        self.gap_wait = None;
                         continue;
                     }
                     Err(reason) => {
                         let mut pending = repair_backup.expect("failed repair has missing data");
                         pending.repair_failed = true;
+                        pending.stalled_since = Some(now);
                         let (first_missing, last_missing) = pending
                             .first_missing_data_run()
                             .expect("failed FEC reconstruction has missing data");
@@ -4371,37 +4585,33 @@ impl FecReorderBuffer {
                         );
                         self.blocks.insert(base, pending);
                         result.nack = Some((first_missing, last_missing));
-                        self.gap_wait = Some((first_missing, now));
                         break;
                     }
                 }
             }
 
-            // A later block proves that the head block has stopped arriving normally. Ask for
-            // only the first contiguous missing run and retain all subsequent blocks while the
-            // retransmission is in flight.
-            if self.blocks.len() == 1 && self.gap_wait.is_none() {
+            // Until a later block arrives, the head block is still arriving normally. After
+            // that, ask for the first contiguous missing run and retain all subsequent blocks
+            // while the retransmission is in flight.
+            let Some(stalled_since) = head.stalled_since else {
                 break;
-            }
-            let (first_missing, last_missing) = head
-                .first_missing_data_run()
-                .expect("an incomplete FEC block has missing data");
-            result.nack = Some((first_missing, last_missing));
-            let started = match self.gap_wait {
-                Some((waiting_for, started)) if waiting_for == first_missing => started,
-                _ => {
-                    self.gap_wait = Some((first_missing, now));
-                    now
-                }
             };
             let block_span = self
                 .blocks
                 .last_key_value()
                 .map_or(0, |(&last_base, _)| last_base.saturating_sub(base));
-            if now.saturating_duration_since(started) < MJOLNIR_REORDER_DEQUEUE_TIMEOUT
+            let waited = now.saturating_duration_since(stalled_since);
+            if waited < MJOLNIR_REORDER_DEQUEUE_TIMEOUT + self.grace
                 && block_span < MAX_REORDER_WINDOW as u64
                 && self.blocks.len() < MAX_PENDING_FEC_BLOCKS
+                && !self.recovery_frame_ready(waited)
             {
+                if waited < MJOLNIR_REORDER_DEQUEUE_TIMEOUT {
+                    result.nack = head.first_missing_data_run();
+                }
+                break;
+            }
+            if result.recovery.is_some() || !result.ready.is_empty() {
                 break;
             }
 
@@ -4416,11 +4626,7 @@ impl FecReorderBuffer {
                 first_missing_index,
                 last_missing_index,
             });
-            result.ready.clear();
-            result.nack = None;
-            self.completed_through =
-                Some(base + (failed.layout.data_shards + failed.layout.parity_shards) as u64);
-            self.gap_wait = None;
+            self.completed_through = Some(failed.end_index());
             // Emit any complete successors after the assembler has been marked discontinuous.
         }
         result
@@ -4538,6 +4744,7 @@ pub struct NvstVideoReceiver {
     fec_repaired_packets: u64,
     frames_emitted: u64,
     replay_rejections: u64,
+    unprotected_retransmissions: u64,
     stale_packets: u64,
     recovered_retransmissions: u64,
     packet_gap_recoveries: u64,
@@ -4574,6 +4781,7 @@ impl NvstVideoReceiver {
             fec_repaired_packets: 0,
             frames_emitted: 0,
             replay_rejections: 0,
+            unprotected_retransmissions: 0,
             stale_packets: 0,
             recovered_retransmissions: 0,
             packet_gap_recoveries: 0,
@@ -4719,6 +4927,21 @@ impl NvstVideoReceiver {
         }
     }
 
+    /// An unprotected answer to one of this receiver's NACKs, on the bound SSRC.
+    fn unprotected_retransmission(&mut self, datagram: &[u8], now: Instant) -> Option<RtpPacket> {
+        let header = RtpHeader::parse(datagram).ok()?;
+        if self.bound_ssrc.is_some_and(|ssrc| ssrc != header.ssrc) {
+            return None;
+        }
+        let index = self.srtp.replay.guess_packet_index(header.sequence_number).ok()?;
+        if !self.config.feedback.take_retransmission_request(index, now) {
+            return None;
+        }
+        let packet = self.srtp.accept_unprotected(datagram, header, index).ok()?;
+        self.unprotected_retransmissions += 1;
+        Some(packet)
+    }
+
     pub fn process_datagram(
         &mut self,
         source: SocketAddr,
@@ -4747,12 +4970,18 @@ impl NvstVideoReceiver {
         }
         let packet = match self.srtp.unprotect(datagram) {
             Ok(packet) => packet,
-            Err(reason) => {
-                if reason == NvstDropReason::ReplayRejected {
-                    self.replay_rejections += 1;
+            Err(reason) => match (reason == NvstDropReason::AuthenticationFailed)
+                .then(|| self.unprotected_retransmission(datagram, now))
+                .flatten()
+            {
+                Some(packet) => packet,
+                None => {
+                    if reason == NvstDropReason::ReplayRejected {
+                        self.replay_rejections += 1;
+                    }
+                    return vec![NvstReceiveEvent::Dropped(reason)];
                 }
-                return vec![NvstReceiveEvent::Dropped(reason)];
-            }
+            },
         };
         if let Some(expected) = self.config.expected_payload_type
             && packet.header.payload_type != expected
@@ -4818,21 +5047,21 @@ impl NvstVideoReceiver {
             video,
         );
 
-        let result = if let Some(layout) = FecPacketLayout::from_packet(&packet) {
-            if layout.shard_index >= layout.data_shards {
-                self.fec_packets += 1;
-            }
-            let result = self.fec_reorder.push(packet, layout, now);
-            if layout.shard_index < layout.data_shards
-                && matches!(result.dropped, Some(NvstDropReason::Unsupported(_)))
-            {
-                self.invalidate_picture(now);
-            }
-            result
-        } else {
-            self.reorder.push(packet, now)
+        let Some(layout) = FecPacketLayout::from_packet(&packet) else {
+            let result = self.reorder.push(packet, now);
+            return self.consume_reorder_result(result, now);
         };
-        self.consume_reorder_result(result, now)
+        if layout.shard_index >= layout.data_shards {
+            self.fec_packets += 1;
+        }
+        self.tune_fec_reorder();
+        let result = self.fec_reorder.push(packet, layout, now);
+        if layout.shard_index < layout.data_shards
+            && matches!(result.dropped, Some(NvstDropReason::Unsupported(_)))
+        {
+            self.invalidate_picture(now);
+        }
+        self.consume_fec_result(result, now)
     }
 
     pub fn poll_recovery(&mut self, now: Instant) -> Vec<NvstReceiveEvent> {
@@ -4843,9 +5072,48 @@ impl NvstVideoReceiver {
             .poll_backstop(now, RFI_BACKSTOP_TIMEOUT, &self.config.feedback);
         let reordered = self.reorder.poll_deadline(now);
         let mut events = self.consume_reorder_result(reordered, now);
+        self.tune_fec_reorder();
         let fec = self.fec_reorder.poll_deadline(now);
-        events.extend(self.consume_reorder_result(fec, now));
+        events.extend(self.consume_fec_result(fec, now));
         events
+    }
+
+    fn tune_fec_reorder(&mut self) {
+        self.fec_reorder.recovering = self.frame_invalidation.active();
+        self.fec_reorder.grace = self.retransmission_grace();
+    }
+
+    /// Holds a gap until its retransmission can arrive, while frame types are known. The
+    /// recovery frame is still requested at the usual time (`anticipate`, or the open episode's
+    /// request), and a complete recovery frame queued behind the gap ends the wait, so holding
+    /// longer does not delay recovery.
+    fn retransmission_grace(&self) -> Duration {
+        if !self.frame_invalidation.frame_types_known() {
+            return Duration::ZERO;
+        }
+        RETRANSMISSION_WAIT.saturating_sub(MJOLNIR_REORDER_DEQUEUE_TIMEOUT)
+    }
+
+    /// The FEC queue reports one discontinuity per pass, so that packets completed ahead of
+    /// it are delivered first. Keep polling while a pass makes progress.
+    fn consume_fec_result(
+        &mut self,
+        mut result: ReorderResult,
+        now: Instant,
+    ) -> Vec<NvstReceiveEvent> {
+        let mut events = Vec::new();
+        loop {
+            let progressed = result.recovery.is_some() || !result.ready.is_empty();
+            events.extend(self.consume_reorder_result(result, now));
+            if !progressed {
+                if let Some(frame) = self.fec_reorder.overdue(now) {
+                    self.frame_invalidation
+                        .anticipate(frame, &self.config.feedback);
+                }
+                return events;
+            }
+            result = self.fec_reorder.poll_deadline(now);
+        }
     }
 
     fn consume_reorder_result(
@@ -4855,7 +5123,9 @@ impl NvstVideoReceiver {
     ) -> Vec<NvstReceiveEvent> {
         self.fec_repaired_packets += result.fec_repaired as u64;
         let mut events = Vec::new();
-        if let Some((first_missing_index, last_missing_index)) = result.nack {
+        for (first_missing_index, last_missing_index) in
+            result.nack.into_iter().chain(result.later_nacks)
+        {
             self.config
                 .feedback
                 .request_nack(first_missing_index, last_missing_index, now);
@@ -4869,7 +5139,15 @@ impl NvstVideoReceiver {
         if let Some(recovery) = result.recovery {
             self.packet_gap_recoveries += 1;
             self.invalidate_picture(now);
-            self.config.feedback.clear_nacks();
+            match recovery {
+                NvstRecovery::PacketGap {
+                    last_missing_index, ..
+                } => self
+                    .config
+                    .feedback
+                    .forget_nacks_through(last_missing_index),
+                _ => self.config.feedback.clear_nacks(),
+            }
             events.push(NvstReceiveEvent::RecoveryNeeded(recovery));
         }
         for packet in result.ready {
@@ -4998,7 +5276,7 @@ impl NvstVideoReceiver {
     /// depend on when buffered log lines happen to flush.
     pub fn stats_line(&self, origin: Instant) -> String {
         format!(
-            "elapsed={:.1}s auth={} fec={} fecRecovered={} frames={} replay={} stale={} nackRecovered={} nackPending={} nackOverflow={} gaps={} {} ssrc={:?}",
+            "elapsed={:.1}s auth={} fec={} fecRecovered={} frames={} replay={} stale={} nackRecovered={} nackPending={} nackOverflow={} unprotectedRtx={} gaps={} {} ssrc={:?}",
             origin.elapsed().as_secs_f64(),
             self.authenticated_packets,
             self.fec_packets,
@@ -5014,6 +5292,7 @@ impl NvstVideoReceiver {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len(),
             self.config.feedback.nack_overflows.load(Ordering::Relaxed),
+            self.unprotected_retransmissions,
             self.packet_gap_recoveries,
             self.config.feedback.frame_invalidation.stats(),
             self.bound_ssrc,
@@ -8171,15 +8450,19 @@ fn run_nvst_webrtc_bundle(
             && let Some((media_ssrc, _)) = feedback.stream_snapshot()
         {
             if let Some(channels) = input_channels {
-                send_pending_nack(
-                    &feedback,
-                    now,
-                    &mut rtc,
-                    channels,
-                    mjolnir,
-                    rtcp_sender_ssrc,
-                    media_ssrc,
-                );
+                for _ in 0..MAX_NACK_REPORTS_PER_TICK {
+                    if !send_pending_nack(
+                        &feedback,
+                        now,
+                        &mut rtc,
+                        channels,
+                        mjolnir,
+                        rtcp_sender_ssrc,
+                        media_ssrc,
+                    ) {
+                        break;
+                    }
+                }
             }
             last_recovery_send = now;
         }
@@ -13584,7 +13867,7 @@ mod tests {
             plaintext,
             origin: RtpPacketOrigin::Authenticated,
         };
-        let mut block = FecBlock::new(layout(0), base_index);
+        let mut block = FecBlock::new(layout(0), base_index, Instant::now());
         assert_eq!(block.insert(layout(0), packet(0, data[0].clone())), None);
         assert_eq!(block.insert(layout(2), packet(2, data[2].clone())), None);
         assert_eq!(block.insert(layout(3), packet(3, data[3].clone())), None);
@@ -13678,7 +13961,7 @@ mod tests {
             plaintext,
             origin: RtpPacketOrigin::Authenticated,
         };
-        let mut block = FecBlock::new(layout(0), base_index);
+        let mut block = FecBlock::new(layout(0), base_index, Instant::now());
         assert_eq!(block.insert(layout(1), packet(1, parity[0].clone())), None);
         assert!(block.has_enough_shards());
 
