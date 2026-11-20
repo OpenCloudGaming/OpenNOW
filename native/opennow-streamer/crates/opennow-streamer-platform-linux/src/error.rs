@@ -32,6 +32,13 @@ pub enum Error {
         subsystem: Subsystem,
         reason: String,
     },
+    /// An output that stopped taking data in time (a stall rather than an
+    /// error from the device); worth reopening, unlike DeviceLost.
+    #[error("{subsystem:?} output stalled: {reason}")]
+    OutputStalled {
+        subsystem: Subsystem,
+        reason: String,
+    },
     #[error("decoded frame import is unsupported by the render device: {0}")]
     ImportUnsupported(String),
     #[error("invalid media format: {0}")]
