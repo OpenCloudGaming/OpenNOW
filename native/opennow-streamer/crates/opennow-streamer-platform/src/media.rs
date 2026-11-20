@@ -1423,6 +1423,10 @@ impl MediaSession {
         };
         config.decoder_preference = decoder_preference;
         config.embedded_presentation = true;
+        // 200 ms at 120 fps: rides out a brief decoder or network stall; a
+        // backlog that does not drain is dropped by the session (STALE_BACKLOG)
+        // rather than kept as latency.
+        config.encoded_queue_depth = 24;
         config.stream_format.pixel_format = stream.color_quality.linux_pixel_format();
         if stream.hdr {
             config.stream_format.color_transfer =
@@ -3619,10 +3623,10 @@ fn run_embedded_linux_monitor(
                 opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
                     request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
                 }
-                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media, count } => {
                     let _ = shared
                         .feedback
-                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                        .send(MediaFeedback::QueueDropped { media, count });
                 }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {
@@ -3752,10 +3756,10 @@ fn run_linux_monitor(shared: Arc<SharedPipeline>, host_commands: Sender<HostComm
                 opennow_streamer_platform_linux::BackendEvent::NeedKeyframe => {
                     request_linux_keyframe(&shared, "Linux decoder requires a fresh keyframe");
                 }
-                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media } => {
+                opennow_streamer_platform_linux::BackendEvent::QueueOverflow { media, count } => {
                     let _ = shared
                         .feedback
-                        .send(MediaFeedback::QueueDropped { media, count: 1 });
+                        .send(MediaFeedback::QueueDropped { media, count });
                 }
                 opennow_streamer_platform_linux::BackendEvent::DeviceLost { subsystem, reason } => {
                     let _ = shared.feedback.send(MediaFeedback::DeviceLost {

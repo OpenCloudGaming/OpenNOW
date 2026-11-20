@@ -176,6 +176,7 @@ pub enum BackendEvent {
     NeedKeyframe,
     QueueOverflow {
         media: &'static str,
+        count: usize,
     },
     DeviceLost {
         subsystem: Subsystem,
@@ -543,7 +544,13 @@ fn queue_video_command(
     }) {
         QueuePush::Added => Ok(PushOutcome::Queued),
         QueuePush::Full => {
-            emit(events, BackendEvent::QueueOverflow { media: "video" });
+            emit(
+                events,
+                BackendEvent::QueueOverflow {
+                    media: "video",
+                    count: 1,
+                },
+            );
             needs_keyframe.store(true, Ordering::Release);
 
             // A keyframe that happens to arrive at the overflow boundary can
@@ -641,7 +648,13 @@ fn run_video_worker(
 
     let mut active_format = config.stream_format;
     let mut active_generation = 0;
+    let mut backlog_since: Option<Instant> = None;
     loop {
+        // Every recovery ends in a wait for a keyframe; a backlog is measured
+        // from that keyframe, not from before the recovery.
+        if need_keyframe {
+            backlog_since = None;
+        }
         let poll_output = decoder_needs_poll(backend, config.codec);
         let command =
             match commands.wait_pop(Duration::from_millis(if poll_output { 5 } else { 100 })) {
@@ -713,31 +726,38 @@ fn run_video_worker(
                 {
                     decoded.clear();
                     decode_timings.clear();
-                    if backend == DecoderBackend::MediaCodec {
-                        if let Err(error) = close_decoder(&mut decoder) {
-                            report_video_close_error(error, &close_error, &state, &events);
-                            return;
-                        }
-                        drop(decoder);
-                    }
-                    match open_preferred_decoder(&config, active_format) {
-                        Ok((new_backend, new_decoder)) => {
-                            if new_backend != backend {
-                                emit(
-                                    &events,
-                                    BackendEvent::DecoderChanged {
-                                        from: backend,
-                                        to: new_backend,
-                                        reason: "encoded queue discontinuity".to_owned(),
-                                    },
-                                );
+                    // Reopening a hardware decoder takes long enough (V4L2
+                    // stream off/on, buffer allocation) for the encoded queue
+                    // to overflow again, so one overflow turned into seconds of
+                    // back-to-back recoveries. Decoders that can drop their
+                    // state in place (FFmpeg: avcodec_flush_buffers) do that.
+                    if !decoder.reset_in_place() {
+                        if backend == DecoderBackend::MediaCodec {
+                            if let Err(error) = close_decoder(&mut decoder) {
+                                report_video_close_error(error, &close_error, &state, &events);
+                                return;
                             }
-                            backend = new_backend;
-                            decoder = new_decoder;
+                            drop(decoder);
                         }
-                        Err(error) => {
-                            report_worker_error(&state, &events, error);
-                            return;
+                        match open_preferred_decoder(&config, active_format) {
+                            Ok((new_backend, new_decoder)) => {
+                                if new_backend != backend {
+                                    emit(
+                                        &events,
+                                        BackendEvent::DecoderChanged {
+                                            from: backend,
+                                            to: new_backend,
+                                            reason: "encoded queue discontinuity".to_owned(),
+                                        },
+                                    );
+                                }
+                                backend = new_backend;
+                                decoder = new_decoder;
+                            }
+                            Err(error) => {
+                                report_worker_error(&state, &events, error);
+                                return;
+                            }
                         }
                     }
                     need_keyframe = true;
@@ -762,7 +782,11 @@ fn run_video_worker(
         let call_duration = call_started.elapsed();
         match result {
             Ok(frames) => {
-                if frame.is_some() || !frames.is_empty() {
+                // Only a submitted frame ends the wait for a keyframe: the gate
+                // already let it through. Polled output can be left over from
+                // before a stale backlog was dropped, and says nothing about
+                // the deltas that follow.
+                if frame.is_some() {
                     need_keyframe = false;
                 }
                 if !frames.is_empty() {
@@ -775,6 +799,31 @@ fn run_video_worker(
                 record_decoded_outputs(&decode_timings, &frames);
                 decode_timings.record_call(call_duration, !frames.is_empty());
                 enqueue_frames(&decoded, &events, frames);
+                // A short stall leaves a backlog that a decoder running just
+                // under the frame interval drains only slowly, keeping the
+                // picture late for seconds. Drop it instead and restart from
+                // a keyframe, as a queue overflow would.
+                if frame.is_some() && commands.len() >= BACKLOG_FRAMES {
+                    let now = Instant::now();
+                    let since = *backlog_since.get_or_insert(now);
+                    if now.duration_since(since) >= STALE_BACKLOG {
+                        backlog_since = None;
+                        let backlog = drop_stale_backlog(&commands, active_generation);
+                        emit(
+                            &events,
+                            BackendEvent::QueueOverflow {
+                                media: "video",
+                                count: backlog.dropped,
+                            },
+                        );
+                        if !backlog.recovery_queued {
+                            need_keyframe = true;
+                            emit(&events, BackendEvent::NeedKeyframe);
+                        }
+                    }
+                } else {
+                    backlog_since = None;
+                }
             }
             Err(error @ Error::ReferenceLost { .. }) => {
                 decoded.clear();
@@ -885,6 +934,41 @@ fn decoder_needs_poll(backend: DecoderBackend, codec: VideoCodec) -> bool {
         || (backend == DecoderBackend::V4l2 && codec == VideoCodec::H264)
 }
 
+/// Encoded frames still queued after a decode. A backlog this deep that does
+/// not drain (the decoder keeps pace but no longer catches up) only adds
+/// latency; past `STALE_BACKLOG` it is dropped and a keyframe requested.
+const BACKLOG_FRAMES: usize = 12;
+const STALE_BACKLOG: Duration = Duration::from_millis(250);
+
+struct StaleBacklog {
+    dropped: usize,
+    /// A newer generation's keyframe is queued, so the recovery it starts is
+    /// already on its way and no other keyframe has to be requested.
+    recovery_queued: bool,
+}
+
+/// Drops the frames of the generation being decoded. A queue overflow can have
+/// put a newer generation behind them, and that one is the recovery itself.
+fn drop_stale_backlog(commands: &BoundedQueue<VideoCommand>, generation: u64) -> StaleBacklog {
+    let mut recovery_queued = false;
+    let dropped = commands.remove_where(|queued| match queued {
+        VideoCommand::Decode {
+            frame,
+            generation: queued,
+            ..
+        } if *queued > generation => {
+            recovery_queued |= frame.keyframe;
+            false
+        }
+        VideoCommand::Decode { .. } => true,
+        VideoCommand::Reconfigure { .. } => false,
+    });
+    StaleBacklog {
+        dropped,
+        recovery_queued,
+    }
+}
+
 const AUDIO_DECODE_STRIKES_BEFORE_RESET: u32 = 8;
 const AUDIO_DECODER_RESET_LIMIT: u32 = 2;
 
@@ -956,7 +1040,13 @@ fn submit_audio_packet(
     match queue.push_latest(packet) {
         QueuePush::Added => Ok(PushOutcome::Queued),
         QueuePush::DroppedOldest => {
-            emit(events, BackendEvent::QueueOverflow { media: "audio" });
+            emit(
+                events,
+                BackendEvent::QueueOverflow {
+                    media: "audio",
+                    count: 1,
+                },
+            );
             Ok(PushOutcome::DroppedOldest)
         }
         QueuePush::Full => unreachable!(),
@@ -1504,6 +1594,7 @@ fn enqueue_frames(
                 events,
                 BackendEvent::QueueOverflow {
                     media: "decoded-video",
+                    count: 1,
                 },
             );
         }
@@ -2007,6 +2098,45 @@ mod tests {
         assert_eq!(session.submit_video(frame).unwrap(), PushOutcome::Queued);
 
         assert!(session.stop().is_ok());
+    }
+
+    #[test]
+    fn stale_backlog_drop_keeps_a_newer_generation_recovery() {
+        let decode = |generation, keyframe| super::VideoCommand::Decode {
+            frame: super::EncodedVideoFrame::new(vec![0, 0, 0, 1, 0x65], 42, keyframe).unwrap(),
+            generation,
+            reset: keyframe,
+        };
+        let commands = super::BoundedQueue::new(8);
+        for command in [
+            decode(1, false),
+            decode(1, false),
+            decode(2, true),
+            decode(2, false),
+        ] {
+            assert!(matches!(commands.push(command), super::QueuePush::Added));
+        }
+        let backlog = super::drop_stale_backlog(&commands, 1);
+        assert_eq!(backlog.dropped, 2);
+        assert!(backlog.recovery_queued);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            commands.try_pop(),
+            Some(super::VideoCommand::Decode {
+                generation: 2,
+                reset: true,
+                ..
+            })
+        ));
+
+        let commands = super::BoundedQueue::new(8);
+        assert!(matches!(
+            commands.push(decode(1, false)),
+            super::QueuePush::Added
+        ));
+        let backlog = super::drop_stale_backlog(&commands, 1);
+        assert_eq!(backlog.dropped, 1);
+        assert!(!backlog.recovery_queued);
     }
 
     #[test]
