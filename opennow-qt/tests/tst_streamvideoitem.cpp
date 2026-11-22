@@ -2586,19 +2586,26 @@ private slots:
         QCOMPARE(PhysicalKeyMap::layoutFor("ja-106"), PhysicalKeyMap::layoutFor("ja-JP"));
         QCOMPARE(PhysicalKeyMap::layoutFor("Japanese106"), PhysicalKeyMap::layoutFor("ja-JP"));
         QCOMPARE(PhysicalKeyMap::layoutFor("JA_106"), PhysicalKeyMap::layoutFor("ja-JP"));
-        const auto *usPositions = PhysicalKeyMap::layoutFor("en-US");
-        QVERIFY(usPositions);
-        for (const auto locale : {"es", "es-ES", "ES_es_TRADNL", "es-MX"}) {
-            const auto *spanish = PhysicalKeyMap::layoutFor(locale);
-            QCOMPARE(spanish, usPositions);
-            QCOMPARE(PhysicalKeyMap::virtualKey(spanish, 39), quint16(0xba));
-        }
+        QCOMPARE(PhysicalKeyMap::layoutFor("es"), PhysicalKeyMap::layoutFor("es-ES"));
+        QCOMPARE(PhysicalKeyMap::layoutFor("ES_es_TRADNL"), PhysicalKeyMap::layoutFor("es-ES"));
         QVERIFY(!PhysicalKeyMap::layoutFor("unknown"));
         QCOMPARE(PhysicalKeyMap::virtualKey(nullptr, 26), quint16(0));
         QCOMPARE(PhysicalKeyMap::virtualKey(swedish, 128), quint16(0));
         QCOMPARE(PhysicalKeyMap::virtualKey(swedish, 0xffffffff), quint16(0));
         QCOMPARE(PhysicalKeyMap::evdevCodeFromNativeScanCode(0), quint32(0));
         QCOMPARE(PhysicalKeyMap::evdevCodeFromNativeScanCode(7), quint32(0));
+    }
+
+    void spanishLayoutsUseUsPositions()
+    {
+        const auto *usPositions = PhysicalKeyMap::layoutFor("en-US");
+        QVERIFY(usPositions);
+        for (const auto locale : {"es-ES_tradnl", "es-MX"}) {
+            const auto *spanish = PhysicalKeyMap::layoutFor(locale);
+            QVERIFY(spanish);
+            QVERIFY(spanish->virtualKeys == usPositions->virtualKeys);
+            QCOMPARE(PhysicalKeyMap::virtualKey(spanish, 39), quint16(0xba));
+        }
     }
 
     void internationalExtraKeyIsLimitedToBrazilianAndJapaneseLayouts()

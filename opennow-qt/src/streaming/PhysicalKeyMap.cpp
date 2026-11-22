@@ -25,10 +25,7 @@ bool matchesLocale(std::string_view left, std::string_view right)
 const Layout *layoutFor(std::string_view locale)
 {
     if (matchesLocale(locale, "ja-106") || matchesLocale(locale, "Japanese106")) locale = "ja-JP";
-    // GFN applies the negotiated Spanish layout to US-position virtual keys.
-    if (matchesLocale(locale, "es") || matchesLocale(locale, "es-ES")
-        || matchesLocale(locale, "es-ES_tradnl") || matchesLocale(locale, "es-MX"))
-        locale = "en-US";
+    if (matchesLocale(locale, "es-ES_tradnl")) locale = "es-ES";
     if (matchesLocale(locale, "no-NO") || matchesLocale(locale, "nn-NO")
         || matchesLocale(locale, "no") || matchesLocale(locale, "nn")) locale = "nb-NO";
     for (const auto &layout : layouts) {
