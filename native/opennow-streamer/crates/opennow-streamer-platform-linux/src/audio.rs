@@ -575,7 +575,7 @@ impl AudioSink for AlsaSink {
                 return Err(Error::QueueClosed);
             }
             if Instant::now() >= deadline {
-                return Err(Error::DeviceLost {
+                return Err(Error::OutputStalled {
                     subsystem: Subsystem::Alsa,
                     reason: "PCM output did not complete within 250 ms".to_owned(),
                 });
@@ -857,7 +857,7 @@ fn write_pipewire_pcm(
             return Err(Error::QueueClosed);
         }
         if Instant::now() >= deadline {
-            return Err(Error::DeviceLost {
+            return Err(Error::OutputStalled {
                 subsystem: Subsystem::PipeWire,
                 reason: "pw-cat input did not drain within 250 ms".to_owned(),
             });
@@ -1009,6 +1009,9 @@ mod tests {
                     Err(Error::DeviceLost {
                         subsystem: Subsystem::Alsa,
                         ..
+                    } | Error::OutputStalled {
+                        subsystem: Subsystem::Alsa,
+                        ..
                     })
                 ),
                 "{result:?}"
@@ -1024,7 +1027,7 @@ mod tests {
         let start = Instant::now();
         let result = sink.write(&[0.25; 1920], &|| start.elapsed() >= Duration::from_secs(1));
         assert!(
-            matches!(result, Err(Error::DeviceLost { .. })),
+            matches!(result, Err(Error::OutputStalled { .. })),
             "{result:?}"
         );
         sink.command = pipewire_test_command("exec cat > /dev/null");
@@ -1078,7 +1081,7 @@ mod tests {
                 start.elapsed() >= Duration::from_secs(1)
             });
             assert!(
-                matches!(result, Err(Error::DeviceLost { .. })),
+                matches!(result, Err(Error::OutputStalled { .. })),
                 "{result:?}"
             );
             let pid = sink.process.as_ref().unwrap().child.id();
@@ -1457,7 +1460,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(Error::DeviceLost {
+                Err(Error::OutputStalled {
                     subsystem: Subsystem::PipeWire,
                     ..
                 })
@@ -1491,7 +1494,7 @@ mod tests {
             &|| start.elapsed() >= Duration::from_secs(1),
         );
         assert!(
-            matches!(result, Err(Error::DeviceLost { .. })),
+            matches!(result, Err(Error::OutputStalled { .. })),
             "{result:?}"
         );
     }
