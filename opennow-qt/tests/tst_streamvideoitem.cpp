@@ -2529,8 +2529,9 @@ private slots:
         row("french-q", "fr-FR", Qt::Key_Q, 0, 30, 0x51);
         row("french-m", "fr-FR", Qt::Key_M, 0, 39, 0x4d);
         row("french-e-acute", "fr-FR", Qt::Key_Eacute, 0, 3, 0x32);
-        row("spanish-enye", "es-ES", Qt::Key_Ntilde, 0, 39, 0xc0);
-        row("latin-american-dead-acute", "es-MX", Qt::Key_Dead_Acute, 0, 26, 0xba);
+        row("spanish-enye", "es-ES", Qt::Key_Ntilde, 0, 39, 0xba);
+        row("latin-american-enye", "es-MX", Qt::Key_Ntilde, 0, 39, 0xba);
+        row("latin-american-dead-acute", "es-MX", Qt::Key_Dead_Acute, 0, 26, 0xdb);
         row("italian-e-grave", "it-IT", Qt::Key_Egrave, 0, 26, 0xba);
         row("portuguese-cedilla", "pt-PT", Qt::Key_Ccedilla, 0, 39, 0xc0);
         row("brazilian-cedilla", "pt-BR", Qt::Key_Ccedilla, 0, 39, 0xba);
@@ -2547,7 +2548,7 @@ private slots:
         row("japanese-at", "ja-JP", Qt::Key_At, 0, 26, 0xc0);
         row("japanese-canonical-id", "ja-106", Qt::Key_At, 0, 26, 0xc0);
         row("japanese-legacy-id", "Japanese106", Qt::Key_At, 0, 26, 0xc0);
-        row("spanish-canonical-id", "es-ES_tradnl", Qt::Key_Ntilde, 0, 39, 0xc0);
+        row("spanish-canonical-id", "es-ES_tradnl", Qt::Key_Ntilde, 0, 39, 0xba);
         row("japanese-yen", "ja-JP", Qt::Key_yen, 0, 124, 0xdc);
         row("japanese-ro", "ja-JP", Qt::Key_Backslash, 0, 89, 0xe2);
         row("japanese-convert", "ja-JP", Qt::Key_Henkan, 0, 92, 0x1c);
@@ -2572,6 +2573,7 @@ private slots:
     {
         linuxPhysicalKeysFollowTheRequestedKeyboardLayout();
     }
+#endif
 
     void regionalLayoutLookupIsBoundedAndNormalizesLocaleNames()
     {
@@ -2584,7 +2586,13 @@ private slots:
         QCOMPARE(PhysicalKeyMap::layoutFor("ja-106"), PhysicalKeyMap::layoutFor("ja-JP"));
         QCOMPARE(PhysicalKeyMap::layoutFor("Japanese106"), PhysicalKeyMap::layoutFor("ja-JP"));
         QCOMPARE(PhysicalKeyMap::layoutFor("JA_106"), PhysicalKeyMap::layoutFor("ja-JP"));
-        QCOMPARE(PhysicalKeyMap::layoutFor("es-ES_tradnl"), PhysicalKeyMap::layoutFor("es-ES"));
+        const auto *usPositions = PhysicalKeyMap::layoutFor("en-US");
+        QVERIFY(usPositions);
+        for (const auto locale : {"es", "es-ES", "ES_es_TRADNL", "es-MX"}) {
+            const auto *spanish = PhysicalKeyMap::layoutFor(locale);
+            QCOMPARE(spanish, usPositions);
+            QCOMPARE(PhysicalKeyMap::virtualKey(spanish, 39), quint16(0xba));
+        }
         QVERIFY(!PhysicalKeyMap::layoutFor("unknown"));
         QCOMPARE(PhysicalKeyMap::virtualKey(nullptr, 26), quint16(0));
         QCOMPARE(PhysicalKeyMap::virtualKey(swedish, 128), quint16(0));
@@ -2603,6 +2611,7 @@ private slots:
         }
     }
 
+#if defined(Q_OS_LINUX)
     void linuxAltGrAndLayoutChangesPreserveKeyLifetimes_data()
     {
         QTest::addColumn<bool>("fullscreen");
