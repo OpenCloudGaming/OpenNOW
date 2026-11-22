@@ -51,8 +51,9 @@ these canonical identifiers to the corresponding regional tables. Ukrainian
 `opennow-qt/src/streaming/PhysicalKeyMapData.h` is generated from the Windows
 keyboard tables published by [kbdlayout.info](https://kbdlayout.info/).
 `scripts/generate-keyboard-maps.py` lists the source driver for every locale.
-Japanese uses `KBD106`, not the US-shaped `KBDJPN` stub. Chinese uses the US
-physical-key arrangement. The generator converts PC scan codes to Linux evdev
+Japanese uses `KBD106`. Chinese, Spanish, and Latin American Spanish share the
+US physical-key arrangement. GeForce NOW applies the negotiated Spanish layout
+on the server. The generator converts PC scan codes to Linux evdev
 codes for the international keys, including Brazilian ABNT keys.
 
 The source is mapping data, not text-translation data. Keep dead keys as key

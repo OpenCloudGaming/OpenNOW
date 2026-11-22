@@ -7,7 +7,8 @@ import xml.etree.ElementTree as ET
 
 LAYOUTS = {
     "en-US": "KBDUS", "en-GB": "KBDUK", "tr-TR": "KBDTUQ", "de-DE": "KBDGR",
-    "fr-FR": "KBDFR", "es-ES": "KBDSP", "es-MX": "KBDLA", "it-IT": "KBDIT",
+    # GFN applies the negotiated Spanish layouts to US-position virtual keys.
+    "fr-FR": "KBDFR", "es-ES": "KBDUS", "es-MX": "KBDUS", "it-IT": "KBDIT",
     "pt-PT": "KBDPO", "pt-BR": "KBDBR", "pl-PL": "KBDPL1", "da-DK": "KBDDA",
     "nb-NO": "KBDNO", "sv-SE": "KBDSW", "fi-FI": "KBDFI", "ru-RU": "KBDRU",
     "uk-UA": "KBDUR", "ja-JP": "KBD106", "ko-KR": "KBDKOR",
@@ -55,6 +56,11 @@ def read_layout(driver, source_dir):
     return keys
 
 
+def key_rows(keys, indent):
+    for offset in range(0, len(keys), 16):
+        yield indent + ', '.join(f'0x{key:02x}' for key in keys[offset:offset + 16]) + ','
+
+
 def main():
     parser = argparse.ArgumentParser(description="Regenerate Windows regional VK tables from kbdlayout.info.")
     parser.add_argument("--source-dir", type=Path)
@@ -64,12 +70,16 @@ def main():
     with ThreadPoolExecutor(max_workers=6) as pool:
         tables = dict(zip(drivers, pool.map(lambda driver: read_layout(driver, args.source_dir), drivers)))
     lines = ['#pragma once', '', '#include "streaming/PhysicalKeyMap.h"', '',
-             'namespace PhysicalKeyMap {', '', 'inline constexpr Layout layouts[] = {']
+             'namespace PhysicalKeyMap {', '',
+             'inline constexpr std::array<std::uint16_t, 128> usPositionKeys {{',
+             *key_rows(tables['KBDUS'], '    '), '}};', '',
+             'inline constexpr Layout layouts[] = {']
     for locale, driver in LAYOUTS.items():
+        if driver == 'KBDUS':
+            lines.append(f'    {{"{locale}", usPositionKeys}},')
+            continue
         lines.append(f'    {{"{locale}", {{{{')
-        keys = tables[driver]
-        for offset in range(0, len(keys), 16):
-            lines.append('        ' + ', '.join(f'0x{key:02x}' for key in keys[offset:offset + 16]) + ',')
+        lines.extend(key_rows(tables[driver], '        '))
         lines.append('    }}},')
     lines.extend(['};', '', '}', ''])
     result = '\n'.join(lines)
