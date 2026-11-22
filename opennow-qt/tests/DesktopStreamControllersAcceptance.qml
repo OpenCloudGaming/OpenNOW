@@ -37,6 +37,7 @@ QtObject {
         property bool forwardFlightControls: true
         property var basePads: []
         property var controllerProfiles: ({})
+        property bool swapControllerAB: false
         property int leftStickDeadzone: 5
         property int rightStickDeadzone: 5
         property int vibrationIntensity: 100
