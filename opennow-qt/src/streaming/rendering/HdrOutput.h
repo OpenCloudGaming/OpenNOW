@@ -21,6 +21,14 @@ class HdrOutput final : public QObject
     Q_PROPERTY(bool chromeRequired READ chromeRequired NOTIFY changed)
 
 public:
+    struct LuminanceRange {
+        float minimum = 0.0f;
+        float maximum = 0.0f;
+        float white = 203.0f;
+    };
+    // Parses OPENNOW_GAMESCOPE_HDR: "min,max[,sdr_white]", all in nits.
+    [[nodiscard]] static std::optional<LuminanceRange> parseGamescopeLuminance(const QString &value);
+
     enum OutputMode {
         Sdr = 0,
         LinearScRgb = 1,

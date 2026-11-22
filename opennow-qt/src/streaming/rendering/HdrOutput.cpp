@@ -18,11 +18,49 @@ std::atomic<int> HdrOutput::s_mode{0};
 std::atomic<float> HdrOutput::s_whiteNits{203.0f};
 std::atomic<bool> HdrOutput::s_supported{false};
 
+std::optional<HdrOutput::LuminanceRange> HdrOutput::parseGamescopeLuminance(const QString &value)
+{
+    const auto parts = value.split(u',');
+    if (parts.size() < 2) return std::nullopt;
+    bool okMin = false, okMax = false, okWhite = true;
+    const double minimum = parts[0].toDouble(&okMin);
+    const double maximum = parts[1].toDouble(&okMax);
+    const double white = parts.size() > 2 ? parts[2].toDouble(&okWhite) : 203.0;
+    if (!okMin || !okMax || !okWhite || !std::isfinite(minimum) || !std::isfinite(maximum)
+            || !std::isfinite(white) || minimum < 0.0 || white < 80.0 || white > 500.0 || minimum >= white
+            || maximum <= white || maximum > 10000.0)
+        return std::nullopt;
+    return LuminanceRange{float(minimum), float(maximum), float(white)};
+}
+
+// gamescope offers no wp_color_manager_v1 to clients: HDR there goes through its
+// Vulkan WSI layer, which exposes HDR10 swapchain formats only while gamescope's
+// output is HDR. The panel luminance range comes from OPENNOW_GAMESCOPE_HDR; the
+// HDR10 swapchain format check still decides whether HDR is actually available.
+static WaylandHdrOutput::State withGamescopeFallback(WaylandHdrOutput::State wayland)
+{
+#if defined(Q_OS_LINUX)
+    if (wayland.supported || qEnvironmentVariableIsEmpty("GAMESCOPE_WAYLAND_DISPLAY"))
+        return wayland;
+    const auto range = HdrOutput::parseGamescopeLuminance(
+        qEnvironmentVariable("OPENNOW_GAMESCOPE_HDR"));
+    if (!range) return wayland;
+    WaylandHdrOutput::State state;
+    state.supported = true;
+    state.whiteNits = range->white;
+    state.minimumNits = state.targetMinimumNits = range->minimum;
+    state.maximumNits = state.targetMaximumNits = range->maximum;
+    return state;
+#else
+    return wayland;
+#endif
+}
+
 HdrOutput::HdrOutput(QObject *parent) : QObject(parent)
 {
     m_waylandOutput = std::make_unique<WaylandHdrOutput>();
     connect(m_waylandOutput.get(), &WaylandHdrOutput::changed, this, [this] {
-        if (!m_waylandOutput->state().supported && m_supported) {
+        if (!withGamescopeFallback(m_waylandOutput->state()).supported && m_supported) {
             m_supported = false;
             emit changed();
         }
@@ -113,7 +151,7 @@ void HdrOutput::publish(State state)
     s_whiteNits.store(state.whiteNits);
     s_supported.store(state.supported);
     QMetaObject::invokeMethod(this, [this, state]() mutable {
-        const auto wayland = m_waylandOutput->state();
+        const auto wayland = withGamescopeFallback(m_waylandOutput->state());
 #if defined(Q_OS_LINUX)
         state.supported = state.supported && wayland.supported;
 #endif
@@ -183,7 +221,7 @@ void HdrOutput::updateOutput()
     if (!probe && d->hasActiveSwapchain && d->hasRenderableSwapchain
             && (sc->format() != QRhiSwapChain::HDR10
                 || (m_outputPass && m_outputPass->matches(d->rhi, sc)))) return;
-    const auto waylandOutput = m_waylandOutput->state();
+    const auto waylandOutput = withGamescopeFallback(m_waylandOutput->state());
 #if defined(Q_OS_LINUX)
     const bool platformReady = waylandOutput.supported;
 #else
