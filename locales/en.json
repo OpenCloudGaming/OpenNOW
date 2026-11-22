@@ -3840,6 +3840,7 @@
     "session_resume_stop_failed": "The previous game hasn't closed. Try again in a moment. We won't start another game until it has ended.",
     "session_resume_discovery_failed": "We couldn't check whether your game is still running. Check your connection, then try again.",
     "session_resume_claim_failed": "We couldn't reconnect to your game. Try returning to it again, or end it and start over. Ending it may lose unsaved progress.",
+    "session_resume_webrtc_disabled": "Set WebRTC compatibility mode to On to return to this game, or end it here.",
     "session_resume_eyebrow": "YOUR GAME IS STILL RUNNING",
     "session_resume_selected_game": "your selected game",
     "session_resume_unknown_game": "Your running game",
