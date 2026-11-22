@@ -47,7 +47,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 libc = "0.2"
 opennow-streamer-platform-linux = { path = "../opennow-streamer-platform-linux" }
 raw-window-handle = "0.6"

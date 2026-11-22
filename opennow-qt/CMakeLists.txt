@@ -41,7 +41,7 @@ if(NOT TARGET Qt6::QuickPrivate)
 endif()
 find_package(SDL3 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
     find_package(Vulkan REQUIRED)
 endif()
 if(TARGET SDL3::SDL3-shared)
@@ -95,7 +95,7 @@ target_link_libraries(opennow-qt PRIVATE
     Qt6::Multimedia
     SDL3::SDL3
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
     target_link_libraries(opennow-qt PRIVATE Vulkan::Vulkan)
 elseif(APPLE)
     target_link_libraries(opennow-qt PRIVATE Qt6::Svg)

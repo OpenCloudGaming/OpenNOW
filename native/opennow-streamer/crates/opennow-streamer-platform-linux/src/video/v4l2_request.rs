@@ -246,7 +246,10 @@ fn inspect(
         .file
         .metadata()
         .map_err(|error| format!("fstat failed: {error}"))?;
-    let device = (libc::major(metadata.rdev()), libc::minor(metadata.rdev()));
+    let device = (
+        libc::major(metadata.rdev()) as u32,
+        libc::minor(metadata.rdev()) as u32,
+    );
     let mut failures = Vec::new();
     for path in media_paths {
         let result = (|| {

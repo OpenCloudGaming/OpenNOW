@@ -233,6 +233,10 @@ pub fn compatible_package_extension() -> Result<&'static str, String> {
         let root = installation_target(InstallKind::WindowsMsi, &executable)?;
         windows_update_package_extension(managed::windows_managed(&root)?)
     }
+    #[cfg(target_os = "freebsd")]
+    {
+	Ok("txz")
+    }
 }
 
 pub fn prepare_update(request: PrepareRequest) -> Result<PreparedUpdate, String> {

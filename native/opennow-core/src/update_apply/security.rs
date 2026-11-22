@@ -123,6 +123,11 @@ fn preserve_unix_acl(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
+fn preserve_unix_acl(_source: &Path, _destination: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;
