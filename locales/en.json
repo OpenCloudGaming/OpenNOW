@@ -3655,6 +3655,8 @@
     "s_qt_controller_source_all": "All controllers (multiplayer)",
     "s_qt_controller_source_device": "Device %1 · %2",
     "s_qt_controller_source_disconnected": "Selected controller disconnected",
+    "s_qt_swap_controller_ab": "Swap A and B in games",
+    "s_qt_swap_controller_ab_hint": "Reverse the A and B inputs sent to the game.",
     "s_qt_microphone_build_unavailable": "Microphone capture is unavailable in this build.",
     "s_qt_microphone_error": "Microphone error",
     "s_qt_microphone_muted": "Muted",

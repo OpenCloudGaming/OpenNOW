@@ -416,6 +416,11 @@ ApplicationWindow {
         property: "controllerProfiles"
         value: ShellStore.settings.controllerProfiles || ({})
     }
+    Binding {
+        target: ControllerInput
+        property: "swapControllerAB"
+        value: ShellStore.settings.swapControllerAB === true
+    }
 
     Shortcut {
         objectName: "configuredStreamStatsShortcut"

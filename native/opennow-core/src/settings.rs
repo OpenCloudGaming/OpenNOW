@@ -1446,6 +1446,7 @@ fn defaults() -> Map<String, Value> {
         "appAccentColor":"green", "appTheme":"auto", "appLanguage":"system", "themePack":"nocturne", "translucentUI":false,
         "showTileLabels":true,
         "controllerMode":true, "controllerModePromptDismissed":false, "forwardFlightControls":true,
+        "swapControllerAB":false,
         "controllerLeftStickDeadzone":5, "controllerRightStickDeadzone":5,
         "controllerVibrationIntensity":100, "controllerProfiles":{},
         "reducedMotion":false, "uiSoundsEnabled":true, "confirmQuitWhenIdle":true,
@@ -3882,6 +3883,12 @@ mod tests {
             .as_nanos();
         let directory = env::temp_dir().join(format!("opennow-controller-tuning-{unique}"));
         let mut store = SettingsStore::load(Some(directory.clone())).unwrap();
+        assert_eq!(store.all()["swapControllerAB"], false);
+        assert_eq!(store.set("swapControllerAB", json!(true)).unwrap(), true);
+        assert_eq!(
+            SettingsStore::load(Some(directory.clone())).unwrap().all()["swapControllerAB"],
+            true
+        );
         for (key, default, maximum) in [
             ("controllerLeftStickDeadzone", 5, 50),
             ("controllerRightStickDeadzone", 5, 50),

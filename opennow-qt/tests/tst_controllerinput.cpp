@@ -159,6 +159,40 @@ private slots:
         QCOMPARE(sink.leftPresses, count);
     }
 
+    void swappingABUpdatesHeldGameplayButtons()
+    {
+        ControllerInput input;
+        QSignalSpy snapshots(&input, &ControllerInput::gamepadSnapshot);
+        SDL_VirtualJoystickDesc descriptor{};
+        SDL_INIT_INTERFACE(&descriptor);
+        descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_SOUTH) | (1u << SDL_GAMEPAD_BUTTON_EAST);
+        descriptor.name = "OpenNOW A/B swap regression";
+        const auto id = SDL_AttachVirtualJoystick(&descriptor);
+        QVERIFY2(id != 0, SDL_GetError());
+        const auto cleanup = qScopeGuard([id] { SDL_DetachVirtualJoystick(id); });
+        QTRY_COMPARE(input.controllerCount(), 1);
+        auto *joystick = SDL_GetJoystickFromID(id);
+        QVERIFY(joystick);
+        input.setShellCaptureEnabled(false);
+        const auto buttons = [&snapshots] { return snapshots.isEmpty() ? 0u : snapshots.last().at(2).toUInt(); };
+
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        QTRY_COMPARE(buttons(), 0x1000u);
+        input.setSwapControllerAB(true);
+        QCOMPARE(buttons(), 0x2000u);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, true));
+        QTRY_COMPARE(buttons(), 0x3000u);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, false));
+        QTRY_COMPARE(buttons(), 0x1000u);
+        input.setSwapControllerAB(false);
+        QCOMPARE(buttons(), 0x2000u);
+        QVERIFY(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_EAST, false));
+        QTRY_COMPARE(buttons(), 0u);
+    }
+
     void suspendedInputNeutralizesAndStopsBackgroundGameplay()
     {
         ControllerInput input;
