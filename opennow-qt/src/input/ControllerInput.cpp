@@ -415,6 +415,23 @@ void ControllerInput::setControllerProfiles(const QVariantMap &profiles)
     emit controllerProfilesChanged();
 }
 
+void ControllerInput::setSwapControllerAB(bool enabled)
+{
+    if (m_swapControllerAB == enabled) return;
+    m_swapControllerAB = enabled;
+    if (!m_shellCaptureEnabled) publishConnectedInputs();
+    emit swapControllerABChanged();
+}
+
+quint16 ControllerInput::gameplayButtons(const GamepadSlot &slot) const
+{
+    const auto buttons = slot.forwardedButtons();
+    if (!m_swapControllerAB) return buttons;
+    const auto a = buttonMask(SDL_GAMEPAD_BUTTON_SOUTH);
+    const auto b = buttonMask(SDL_GAMEPAD_BUTTON_EAST);
+    return static_cast<quint16>((buttons & ~(a | b)) | ((buttons & a) ? b : 0) | ((buttons & b) ? a : 0));
+}
+
 void ControllerInput::applySlotTuning()
 {
     bool sticksChanged = false;
@@ -917,7 +934,7 @@ void ControllerInput::publishGamepad(int slotIndex, bool neutral)
     const auto right = neutral ? QPair<qint16, qint16>{}
         : radialDeadzone(slot.rawRightX, slot.rawRightY, slot.rightDeadzone);
     emit gamepadSnapshot(static_cast<quint8>(effectiveSlot(slotIndex)), gamepadBitmap(),
-                         neutral ? 0 : slot.forwardedButtons(),
+                         neutral ? 0 : gameplayButtons(slot),
                          neutral ? 0 : slot.leftTrigger, neutral ? 0 : slot.rightTrigger,
                          left.first, static_cast<qint16>(-left.second),
                          right.first, static_cast<qint16>(-right.second));
@@ -981,7 +998,7 @@ void ControllerInput::publishSonySnapshot(int slotIndex, bool neutral)
     SonySnapshot snapshot;
     snapshot.slot = static_cast<quint8>(effectiveSlot(slotIndex));
     snapshot.incarnation = slot.incarnation;
-    snapshot.buttons = cleared ? 0 : slot.forwardedButtons();
+    snapshot.buttons = cleared ? 0 : gameplayButtons(slot);
     snapshot.leftTrigger = cleared ? 0 : slot.leftTrigger;
     snapshot.rightTrigger = cleared ? 0 : slot.rightTrigger;
     snapshot.leftStickX = left.first;

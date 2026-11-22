@@ -67,6 +67,16 @@ DesktopSettingsPanel {
         DesktopSettingsButton { text: qsTr("Controller order"); onClicked: AppController.navigate("joining") }
     }
     DesktopSettingsRow {
+        width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Swap A and B in games")
+        description: qsTr("Reverse the A and B inputs sent to the game.")
+        DesktopSettingsToggle {
+            objectName: "swapControllerABToggle"
+            Accessible.name: qsTr("Swap A and B in games")
+            checked: controlsRoot.settingsScreen.boolSetting("swapControllerAB", false)
+            onValueChangedByUser: value => controlsRoot.settingsScreen.setSetting("swapControllerAB", value)
+        }
+    }
+    DesktopSettingsRow {
         width: parent.width; paperStyle: true; glyph: "controller"; title: qsTr("Left stick dead zone")
         description: qsTr("Ignore stick drift during gameplay. Default: 5%. The remaining travel is rescaled to full range.")
         DesktopSettingsSlider {

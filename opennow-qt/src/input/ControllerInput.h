@@ -27,6 +27,7 @@ class ControllerInput final : public QObject
     Q_PROPERTY(QVariantList flightDevices READ flightDevices NOTIFY flightDevicesChanged)
     Q_PROPERTY(QVariantList supportedFlightDevices READ supportedFlightDevices CONSTANT)
     Q_PROPERTY(bool forwardFlightControls READ forwardFlightControls WRITE setForwardFlightControls NOTIFY forwardFlightControlsChanged)
+    Q_PROPERTY(bool swapControllerAB READ swapControllerAB WRITE setSwapControllerAB NOTIFY swapControllerABChanged)
     Q_PROPERTY(quint32 inputControllerId READ inputControllerId WRITE setInputControllerId NOTIFY inputControllerIdChanged)
     Q_PROPERTY(bool shellCaptureEnabled READ shellCaptureEnabled WRITE setShellCaptureEnabled NOTIFY shellCaptureEnabledChanged)
     Q_PROPERTY(bool inputSuspended READ inputSuspended WRITE setInputSuspended NOTIFY inputSuspendedChanged)
@@ -74,6 +75,8 @@ public:
     [[nodiscard]] QVariantList flightDevices() const { return m_flightDevices; }
     [[nodiscard]] bool forwardFlightControls() const { return m_forwardFlightControls; }
     void setForwardFlightControls(bool enabled);
+    [[nodiscard]] bool swapControllerAB() const { return m_swapControllerAB; }
+    void setSwapControllerAB(bool enabled);
     [[nodiscard]] QVariantList supportedFlightDevices() const;
     [[nodiscard]] quint32 inputControllerId() const;
     void setInputControllerId(quint32 id);
@@ -115,6 +118,7 @@ signals:
     void availableControllersChanged();
     void flightDevicesChanged();
     void forwardFlightControlsChanged();
+    void swapControllerABChanged();
     void inputControllerIdChanged();
     void shellCaptureEnabledChanged();
     void inputSuspendedChanged();
@@ -227,6 +231,7 @@ private:
     void refreshFlightDevices();
     void applySlotTuning();
     void tuneSlot(GamepadSlot &slot) const;
+    [[nodiscard]] quint16 gameplayButtons(const GamepadSlot &slot) const;
     static quint16 buttonMask(Uint8 button);
     static QPair<qint16, qint16> radialDeadzone(qint16 x, qint16 y, int percent);
     static quint8 triggerValue(qint16 value);
@@ -255,6 +260,7 @@ private:
     int m_rightStickDeadzone = 5;
     int m_vibrationIntensity = 100;
     QVariantMap m_controllerProfiles;
+    bool m_swapControllerAB = false;
     bool m_leftStickNavigationEnabled = true;
     qint64 m_lastControllerMetadataAt = 0;
     qint64 m_lastGamepadSnapshotAt = 0;
