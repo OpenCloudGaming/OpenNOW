@@ -448,3 +448,20 @@ fn resolving_holes_and_readding_ranges_does_not_reset_nack_attempts() {
         None
     );
 }
+
+#[test]
+fn nacked_packets_are_accepted_unprotected_once_within_the_window() {
+    let now = Instant::now();
+    let feedback = NvstFeedbackState::default();
+    feedback.request_nack(100, 102, now);
+    assert_eq!(feedback.take_nack(now, Some(DEFAULT_NACK_RTT)), Some((100, 102)));
+
+    let answered = now + Duration::from_millis(200);
+    assert!(feedback.take_retransmission_request(101, answered));
+    assert!(!feedback.take_retransmission_request(101, answered), "accepted only once");
+    assert!(!feedback.take_retransmission_request(103, answered), "never requested");
+    assert!(
+        !feedback.take_retransmission_request(100, now + RETRANSMISSION_ACCEPT_WINDOW),
+        "requests expire"
+    );
+}

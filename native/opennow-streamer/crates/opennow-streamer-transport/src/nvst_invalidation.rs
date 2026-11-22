@@ -37,7 +37,7 @@ impl NvstFrameType {
         }
     }
 
-    fn clears_invalidation(self) -> bool {
+    pub(crate) fn clears_invalidation(self) -> bool {
         matches!(self, Self::I | Self::IntraRefresh | Self::RefPicI)
     }
 }
@@ -126,9 +126,21 @@ pub(crate) struct FrameInvalidation {
     active_since: Option<Instant>,
     last_retry_at: Option<Instant>,
     backstop_requested: bool,
+    /// The last assembled frame when a request went out ahead of a give-up.
+    anticipated: Option<u32>,
 }
 
 impl FrameInvalidation {
+    /// Whether a loss episode is open, i.e. frames are withheld until a recovery frame.
+    pub(crate) fn active(&self) -> bool {
+        self.active_since.is_some()
+    }
+
+    /// Whether recovery is reported by frame range, so a held gap cannot delay it.
+    pub(crate) fn frame_types_known(&self) -> bool {
+        self.frame_types_known
+    }
+
     pub(crate) fn reset(&mut self, feedback: &NvstFeedbackState) {
         feedback.frame_invalidation.discard();
         *self = Self::default();
@@ -142,6 +154,33 @@ impl FrameInvalidation {
         }
         self.active_since.get_or_insert(now);
         true
+    }
+
+    /// A gap has waited the usual time for its retransmission and is held a little longer.
+    /// Report the frames at risk now, when the give-up would have, so the server's recovery
+    /// frame is no later than without the extra wait. Nothing is withheld: if the
+    /// retransmission completes the gap, its frames are delivered and the server's answer is an
+    /// ordinary keyframe. If not, the give-up follows with the full range. One request per stall.
+    pub(crate) fn anticipate(&mut self, revealed_by_frame: u32, feedback: &NvstFeedbackState) {
+        let Some(last) = self.last_frame else {
+            return;
+        };
+        if !self.frame_types_known || self.active_since.is_some() || self.anticipated == Some(last)
+        {
+            return;
+        }
+        self.anticipated = Some(last);
+        let first = u64::from(last) + 1;
+        let range = (
+            first,
+            first.max(u64::from(revealed_by_frame).saturating_sub(1)),
+        );
+        feedback.frame_invalidation.queue(range);
+        opennow_streamer_protocol::log::log_async(
+            "INFO",
+            "nvst-rfi",
+            &format!("early request frames={}..={}", range.0, range.1),
+        );
     }
 
     pub(crate) fn poll_backstop(
@@ -271,5 +310,6 @@ impl FrameInvalidation {
         self.active_since = None;
         self.last_retry_at = None;
         self.backstop_requested = false;
+        self.anticipated = None;
     }
 }
