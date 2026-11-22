@@ -57,9 +57,12 @@ fn multiple_reorder_gaps_do_not_revalidate_post_gap_references() {
                 _ => None,
             })
             .collect();
+        // The FEC queue reports each gap separately, so the complete keyframe between the
+        // two gaps is delivered instead of being discarded with the second one.
+        let between_gaps: &[(u32, bool, bool)] = if fec { &[(2, true, false)] } else { &[] };
         assert_eq!(
             frames,
-            [(100, false, false), (101, false, true)],
+            [between_gaps, &[(100, false, false), (101, false, true)]].concat(),
             "fec={fec}"
         );
         assert!(receiver.config.feedback.keyframe_request_pending());
@@ -957,4 +960,289 @@ fn rfi_retries_preserve_the_episode_deadline_and_stop_on_recovery() {
         .poll_recovery(stream.origin + Duration::from_secs(1));
     assert_eq!(stream.feedback.frame_invalidation.take(), None);
     assert!(!stream.feedback.keyframe_request_pending());
+}
+
+/// One frame as a single FEC block of two data packets; its parity packet (index `3 * frame
+/// + 2`) is never sent, so a frame that loses a data packet cannot be reconstructed.
+fn typed_fec_frame(frame: u32, frame_type: u8, nal: u8) -> [Vec<u8>; 2] {
+    let base = (frame * 3) as u16;
+    let with_fec_word = |mut packet: Vec<u8>, shard: u32| {
+        packet[28..32].copy_from_slice(&((50_u32 << 4) | (shard << 12) | (2 << 22)).to_le_bytes());
+        packet
+    };
+    [
+        with_fec_word(
+            build_plaintext_rtp(
+                base,
+                FLAG_SOF | FLAG_CONTAINS_PIC_DATA,
+                frame,
+                &[0x01, 0, 0, frame_type, 0, 0, 0, 0, 0, 0, 0, 1, nal, 0x88],
+            ),
+            0,
+        ),
+        with_fec_word(
+            build_plaintext_rtp(base + 1, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, frame, &[0x99]),
+            1,
+        ),
+    ]
+}
+
+impl TypedStream {
+    fn fec_frame(&mut self, frame: u32, frame_type: u8, after: Duration) -> Vec<(u32, bool, bool)> {
+        let nal = if frame_type == 2 { 0x65 } else { 0x41 };
+        let [first, last] = typed_fec_frame(frame, frame_type, nal);
+        let mut frames = self.frames(first, after);
+        frames.extend(self.frames(last, after));
+        frames
+    }
+
+    /// Delivers only the first packet of a P-frame.
+    fn damaged_fec_frame(&mut self, frame: u32, after: Duration) {
+        let [first, _] = typed_fec_frame(frame, 1, 0x41);
+        assert!(self.push(first, after).is_empty());
+    }
+
+    fn poll(&mut self, after: Duration) -> Vec<NvstReceiveEvent> {
+        self.receiver.poll_recovery(self.origin + after)
+    }
+}
+
+fn gaps(events: &[NvstReceiveEvent]) -> Vec<(u64, u64)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            NvstReceiveEvent::RecoveryNeeded(NvstRecovery::PacketGap {
+                first_missing_index,
+                last_missing_index,
+            }) => Some((*first_missing_index, *last_missing_index)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn consecutive_damaged_frames_share_one_nack_window() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    assert_eq!(stream.fec_frame(2, 1, ms(0)), [(2, false, true)]);
+    // Frames 3, 4 and 5 each lose a packet. Each loss is evident when the next frame starts.
+    stream.damaged_fec_frame(3, ms(0));
+    stream.damaged_fec_frame(4, ms(1));
+    stream.damaged_fec_frame(5, ms(2));
+    assert!(stream.fec_frame(6, 1, ms(3)).is_empty());
+    // All three retransmissions are requested at once, not one per expired wait.
+    let now = stream.origin + ms(3);
+    assert_eq!(stream.feedback.take_nack(now, None), Some((10, 10)));
+    assert_eq!(stream.feedback.take_nack(now, None), Some((13, 13)));
+    assert_eq!(stream.feedback.take_nack(now, None), Some((16, 16)));
+
+    assert!(stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT).is_empty());
+    assert_eq!(
+        gaps(&stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(1))),
+        [(10, 10)]
+    );
+    // Serial waits would hold frame 6, and with it the invalidation request, until 158 ms.
+    let events = stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(3));
+    assert_eq!(gaps(&events), [(13, 13), (16, 16)]);
+    assert!(delivered(events).is_empty());
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((3, 5)));
+    assert_eq!(stream.fec_frame(7, 2, ms(60)), [(7, true, true)]);
+    assert_eq!(stream.receiver.packet_gap_recoveries, 3);
+    assert_eq!(
+        stream.stats(),
+        "rfiSent=0 rfiDropped=1 rfiRecoveredI=1 rfiRecoveredIntraRefresh=0 rfiRecoveredRefPicI=0 rfiIdrBackstop=0"
+    );
+}
+
+#[test]
+fn a_recovery_frame_between_two_expired_gaps_is_delivered() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 2, ms(1)).is_empty());
+    stream.damaged_fec_frame(4, ms(2));
+    assert!(stream.fec_frame(5, 1, ms(3)).is_empty());
+    // Both waits are over by the time the queue is polled. The I-frame sits between the
+    // two discontinuities and must reach the decoder.
+    let events = stream.poll(ms(200));
+    assert_eq!(gaps(&events), [(7, 7), (13, 13)]);
+    assert_eq!(delivered(events), [(3, true, true)]);
+    assert_eq!(stream.feedback.frame_invalidation.take(), Some((4, 4)));
+}
+
+#[test]
+fn giving_up_on_a_gap_keeps_the_requests_for_later_gaps() {
+    let ms = Duration::from_millis;
+    let mut stream = TypedStream::new();
+    assert_eq!(stream.fec_frame(1, 2, ms(0)), [(1, true, true)]);
+    stream.damaged_fec_frame(2, ms(0));
+    assert!(stream.fec_frame(3, 1, ms(1)).is_empty());
+    stream.damaged_fec_frame(4, ms(30));
+    assert!(stream.fec_frame(5, 1, ms(31)).is_empty());
+    let sent_at = stream.origin + ms(31);
+    assert_eq!(stream.feedback.take_nack(sent_at, None), Some((7, 7)));
+    assert_eq!(stream.feedback.take_nack(sent_at, None), Some((13, 13)));
+
+    assert_eq!(
+        gaps(&stream.poll(MJOLNIR_REORDER_DEQUEUE_TIMEOUT + ms(1))),
+        [(7, 7)]
+    );
+    let pending = stream.feedback.pending_nacks.lock().unwrap();
+    assert_eq!(pending.keys().copied().collect::<Vec<_>>(), [13]);
+    assert_eq!(pending[&13].attempts, 1, "the request was not started over");
+    assert_eq!(pending[&13].last_sent_at, Some(sent_at));
+}
+
+#[test]
+fn fec_holes_wait_from_the_packet_that_revealed_them() {
+    let now = Instant::now();
+    let ms = Duration::from_millis;
+    let mut reorder = FecReorderBuffer::new(48);
+    // One data and one parity packet per block: block `n` owns indices `2n` and `2n + 1`.
+    let data = |block: u64| {
+        let plaintext = build_plaintext_rtp(
+            (block * 2) as u16,
+            FLAG_SOF | FLAG_EOF,
+            block as u32,
+            &[0, 0, 0, 1, 0x65],
+        );
+        let packet = RtpPacket {
+            index: block * 2,
+            header: RtpHeader::parse(&plaintext).unwrap(),
+            plaintext,
+            origin: RtpPacketOrigin::Authenticated,
+        };
+        let layout = FecPacketLayout {
+            frame_index: block as u32,
+            block_index: 0,
+            last_block_index: 0,
+            shard_index: 0,
+            data_shards: 1,
+            parity_shards: 1,
+        };
+        (packet, layout)
+    };
+    let indices = |result: &ReorderResult| -> Vec<u64> {
+        result.ready.iter().map(|packet| packet.index).collect()
+    };
+    let (packet, layout) = data(0);
+    assert_eq!(indices(&reorder.push(packet, layout, now)), [0]);
+    // Blocks 1 and 3 are lost whole.
+    let (packet, layout) = data(2);
+    let first_hole = reorder.push(packet, layout, now);
+    assert_eq!(first_hole.nack, Some((2, 3)));
+    let (packet, layout) = data(4);
+    let second_hole = reorder.push(packet, layout, now + ms(10));
+    assert_eq!(second_hole.later_nacks, [(6, 7)]);
+    assert!(second_hole.ready.is_empty());
+
+    let at = now + MJOLNIR_REORDER_DEQUEUE_TIMEOUT;
+    let first = reorder.poll_deadline(at);
+    assert_eq!(
+        first.recovery,
+        Some(NvstRecovery::PacketGap {
+            first_missing_index: 2,
+            last_missing_index: 3
+        })
+    );
+    assert_eq!(indices(&first), [4]);
+    let waiting = reorder.poll_deadline(at + ms(10) - Duration::from_nanos(1));
+    assert_eq!(waiting.recovery, None);
+    assert_eq!(waiting.nack, Some((6, 7)));
+    // The second hole was revealed 10 ms after the first and ends 10 ms after it, not 52.
+    let second = reorder.poll_deadline(at + ms(10));
+    assert_eq!(
+        second.recovery,
+        Some(NvstRecovery::PacketGap {
+            first_missing_index: 6,
+            last_missing_index: 7
+        })
+    );
+    assert_eq!(indices(&second), [8]);
+    assert!(reorder.blocks.is_empty());
+}
+
+#[test]
+fn a_block_that_fills_a_hole_does_not_restart_the_wait() {
+    let now = Instant::now();
+    let ms = Duration::from_millis;
+    let mut reorder = FecReorderBuffer::new(48);
+    // Two data packets and one parity packet per block: block `n` starts at index `3n`.
+    let packet = |index: u64| {
+        let plaintext = build_plaintext_rtp(index as u16, FLAG_SOF, (index / 3) as u32, &[0x55]);
+        let packet = RtpPacket {
+            index,
+            header: RtpHeader::parse(&plaintext).unwrap(),
+            plaintext,
+            origin: RtpPacketOrigin::Authenticated,
+        };
+        let layout = FecPacketLayout {
+            frame_index: (index / 3) as u32,
+            block_index: 0,
+            last_block_index: 0,
+            shard_index: (index % 3) as usize,
+            data_shards: 2,
+            parity_shards: 1,
+        };
+        (packet, layout)
+    };
+    let mut push = |index: u64, at: Instant| {
+        let (packet, layout) = packet(index);
+        reorder.push(packet, layout, at)
+    };
+    push(0, now);
+    assert_eq!(push(1, now).ready.len(), 2);
+    // Block 1 is lost whole, then one of its packets is retransmitted 40 ms later.
+    push(6, now);
+    assert_eq!(push(7, now).nack, Some((3, 5)));
+    let partial = push(3, now + ms(40));
+    assert_eq!(partial.nack, Some((4, 4)));
+    assert!(partial.recovery.is_none());
+    let just_before = now + MJOLNIR_REORDER_DEQUEUE_TIMEOUT - Duration::from_nanos(1);
+    assert!(reorder.poll_deadline(just_before).recovery.is_none());
+    let expired = reorder.poll_deadline(now + MJOLNIR_REORDER_DEQUEUE_TIMEOUT);
+    assert_eq!(
+        expired.recovery,
+        Some(NvstRecovery::PacketGap {
+            first_missing_index: 4,
+            last_missing_index: 4
+        })
+    );
+    assert_eq!(expired.ready.len(), 2);
+}
+
+#[test]
+fn a_stalled_block_requests_every_run_it_needs_at_once() {
+    let now = Instant::now();
+    let mut reorder = FecReorderBuffer::new(48);
+    // Six data packets and two parity packets per block: block `n` starts at index `8n`.
+    let mut push = |index: u64| {
+        let plaintext = build_plaintext_rtp(index as u16, FLAG_SOF, (index / 8) as u32, &[0x55]);
+        let packet = RtpPacket {
+            index,
+            header: RtpHeader::parse(&plaintext).unwrap(),
+            plaintext,
+            origin: RtpPacketOrigin::Authenticated,
+        };
+        let layout = FecPacketLayout {
+            frame_index: (index / 8) as u32,
+            block_index: 0,
+            last_block_index: 0,
+            shard_index: (index % 8) as usize,
+            data_shards: 6,
+            parity_shards: 2,
+        };
+        reorder.push(packet, layout, now)
+    };
+    // Block 0 keeps data 0 and 3: it is four packets short, in two separate runs.
+    push(0);
+    push(3);
+    // Block 1 keeps data 8, 11, 12, 13 and one parity packet: one more packet completes it.
+    assert_eq!(push(8).later_nacks, [(1, 2), (4, 5)]);
+    for index in [11, 12, 13, 14] {
+        assert!(push(index).later_nacks.is_empty());
+    }
+    assert_eq!(push(16).later_nacks, [(9, 10)]);
 }
