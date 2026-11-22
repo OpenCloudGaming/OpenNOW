@@ -24,6 +24,7 @@ QtObject {
         property int rightStickDeadzone: 5
         property int vibrationIntensity: 100
         property var controllerProfiles: ({})
+        property bool swapControllerAB: false
         property bool leftStickNavigationEnabled: true
         function stickSample(instanceId) { return ({}) }
         function testRumble(instanceId) { return false }
@@ -50,6 +51,13 @@ QtObject {
         check(input.inputSuspended && !input.shellCaptureEnabled,
             "disabled shell navigation must not transfer controller input or rumble to gameplay")
         ShellStore.applySetting("controllerMode", true)
+        const swap = find(page, "swapControllerABToggle")
+        check(swap && !swap.checked && !input.swapControllerAB, "A/B swap defaults off")
+        for (const enabled of [true, false]) {
+            swap.valueChangedByUser(enabled)
+            check(ShellStore.settings.swapControllerAB === enabled, "A/B swap saved")
+            check(input.swapControllerAB === enabled && swap.checked === enabled, "A/B swap reaches the input owner")
+        }
         for (const setting of [
             ["controllerLeftStickDeadzone", "leftStickDeadzone", 5, 50],
             ["controllerRightStickDeadzone", "rightStickDeadzone", 5, 50],
