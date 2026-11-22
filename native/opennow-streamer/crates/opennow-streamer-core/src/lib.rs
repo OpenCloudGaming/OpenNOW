@@ -128,7 +128,11 @@ enum State {
     Connected,
 }
 
-const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 8;
+/// When a lost packet is retransmitted, the reorder queue releases every frame it held behind
+/// the gap at once: up to 52 ms of video, 7 frames at 120 fps or 13 at 240, and more when
+/// several waits overlap. A frame that does not fit is dropped and costs a keyframe, so leave
+/// room for such a release.
+const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 32;
 const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
 const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
 const MAX_STREAM_FPS: u32 = 360;
