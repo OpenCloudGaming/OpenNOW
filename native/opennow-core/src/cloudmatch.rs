@@ -1576,6 +1576,9 @@ impl CloudMatchService {
         if layout_applied {
             info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         }
+        if webrtc && params["signalingReconnect"] == true {
+            info["signalingReconnect"] = json!(true);
+        }
         info["resumePending"] = json!(true);
         info["phase"] = json!("resuming");
         self.remember_webrtc_allocation(&info, auth)?;
@@ -2565,6 +2568,9 @@ fn preserve_session_profile(info: &mut Value, previous: &Value) {
     }
     if previous["transportMode"] == "webrtc" {
         info["transportMode"] = json!("webrtc");
+        if previous["signalingReconnect"] == true {
+            info["signalingReconnect"] = json!(true);
+        }
         select_webrtc_endpoint(info);
         for key in ["resolution", "width", "height", "fps"] {
             if info["negotiatedStreamProfile"][key].is_null() && !profile[key].is_null() {
@@ -5519,13 +5525,14 @@ mod tests {
             restored.set_test_control_base(base);
             let claimed = restored
                 .claim(
-                    &json!({"sessionId":"A"}),
+                    &json!({"sessionId":"A","signalingReconnect":true}),
                     &json!({"allianceWebrtcCompatibility":false,"codec":"av1"}),
                     &auth,
                     "device",
                 )
                 .unwrap();
             assert_eq!(claimed["session"]["transportMode"], "webrtc");
+            assert_eq!(claimed["session"]["signalingReconnect"], true);
             assert_eq!(
                 claimed["session"]["negotiatedStreamProfile"]["codec"],
                 "H264"
@@ -5535,6 +5542,7 @@ mod tests {
                 .unwrap();
             assert_eq!(polled["session"]["resumePending"], false);
             assert_eq!(polled["session"]["transportMode"], "webrtc");
+            assert_eq!(polled["session"]["signalingReconnect"], true);
             assert_eq!(
                 polled["session"]["negotiatedStreamProfile"]["resolution"],
                 "1280x720"
@@ -5586,6 +5594,7 @@ mod tests {
                 let claimed = result.unwrap();
                 assert_eq!(claimed["session"]["transportMode"], "webrtc");
                 assert_eq!(claimed["session"]["resumePending"], true);
+                assert!(claimed["session"]["signalingReconnect"].is_null());
                 let requests = server.join().unwrap();
                 assert_eq!(requests.len(), 2);
                 assert!(requests[1].starts_with("PUT "));
