@@ -8,8 +8,20 @@ import org.webrtc.EncodedImage
 import org.webrtc.OpenNowMediaCodecTuning
 import org.webrtc.VideoCodecStatus
 import org.webrtc.VideoDecoder
+import org.webrtc.VideoFrame
 import java.lang.reflect.Field
 import java.util.Locale
+
+private const val ALLWINNER_HEVC_DECODER = "OMX.allwinner.video.decoder.hevc"
+private const val HD_WIDTH = 1280
+private const val HD_HEIGHT = 720
+private const val ALLWINNER_PADDED_HD_HEIGHT = 736
+
+internal fun allwinnerHevcNeeds720pCrop(
+    width: Int?, height: Int?, sliceHeight: Int?,
+    cropLeft: Int?, cropTop: Int?, cropRight: Int?, cropBottom: Int?,
+): Boolean = width == HD_WIDTH && height == ALLWINNER_PADDED_HD_HEIGHT && sliceHeight == height &&
+    cropLeft == 0 && cropTop == 0 && cropRight == HD_WIDTH - 1 && cropBottom == height - 1
 
 class LowLatencyVideoDecoder(
     private val delegate: VideoDecoder,
@@ -23,6 +35,9 @@ class LowLatencyVideoDecoder(
     private var wrapperInstalled = false
     private var initializationCleanupFailed = false
     private val bufferProgress = CodecBufferProgress()
+    private val allwinnerHevc = delegate.implementationName.equals(ALLWINNER_HEVC_DECODER, ignoreCase = true)
+    @Volatile private var allwinnerConfiguredFor720p = false
+    @Volatile private var allwinnerOutputIsPadded = false
 
     internal val canBorrowEncodedInput: Boolean
         get() = delegate.supportsBorrowedNvstInput()
@@ -34,7 +49,28 @@ class LowLatencyVideoDecoder(
                 "standardLowLatency=$standardLowLatencyEnabled tuning=$tuningEnabled",
         )
         patchMediaCodecWrapperFactory()
-        return delegate.initDecode(settings, decodeCallback)
+        val callback = if (allwinnerHevc && decodeCallback != null) {
+            VideoDecoder.Callback { frame, decodeTimeMs, qp ->
+                val buffer = frame.buffer
+                if (allwinnerOutputIsPadded && buffer is VideoFrame.TextureBuffer &&
+                    buffer.width == HD_WIDTH && buffer.height == ALLWINNER_PADDED_HD_HEIGHT
+                ) {
+                    val visible = VideoFrame(
+                        buffer.cropAndScale(0, 0, HD_WIDTH, HD_HEIGHT, HD_WIDTH, HD_HEIGHT),
+                        frame.rotation,
+                        frame.timestampNs,
+                    )
+                    try {
+                        decodeCallback.onDecodedFrame(visible, decodeTimeMs, qp)
+                    } finally {
+                        visible.release()
+                    }
+                } else {
+                    decodeCallback.onDecodedFrame(frame, decodeTimeMs, qp)
+                }
+            }
+        } else decodeCallback
+        return delegate.initDecode(settings, callback)
     }
 
     override fun release(): VideoCodecStatus {
@@ -88,6 +124,11 @@ class LowLatencyVideoDecoder(
                         if (tuningEnabled) selectStreamCodecName(originalName, lowLatencyEnabled) else originalName
 
                     override fun configure(codecName: String, format: MediaFormat) {
+                        if (allwinnerHevc) {
+                            allwinnerOutputIsPadded = false
+                            allwinnerConfiguredFor720p = format.intOrNull(MediaFormat.KEY_WIDTH) == HD_WIDTH &&
+                                format.intOrNull(MediaFormat.KEY_HEIGHT) == HD_HEIGHT
+                        }
                         NativeInputDiagnostics.add(
                             "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
                                 "lowLatency=$lowLatencyEnabled standardLowLatency=$standardLowLatencyEnabled before=$format",
@@ -120,6 +161,15 @@ class LowLatencyVideoDecoder(
                     }
 
                     override fun outputFormat(codecName: String, format: MediaFormat) {
+                        if (allwinnerHevc) {
+                            // This decoder reports the aligned slice as the visible image for 720p.
+                            allwinnerOutputIsPadded = allwinnerConfiguredFor720p && allwinnerHevcNeeds720pCrop(
+                                format.intOrNull(MediaFormat.KEY_WIDTH), format.intOrNull(MediaFormat.KEY_HEIGHT),
+                                format.intOrNull("slice-height"), format.intOrNull("crop-left"),
+                                format.intOrNull("crop-top"), format.intOrNull("crop-right"),
+                                format.intOrNull("crop-bottom"),
+                            )
+                        }
                         // Negotiated hdr=false does not establish the actual decoder transfer,
                         // range or standard. Retain output metadata for intermittent washed-out
                         // startup reports, even if the recent-event ring has since rolled over.
@@ -141,6 +191,8 @@ class LowLatencyVideoDecoder(
             NativeInputDiagnostics.add("LowLatencyVideoDecoder: $msg")
         }
     }
+
+    private fun MediaFormat.intOrNull(key: String): Int? = if (containsKey(key)) getInteger(key) else null
 
     private fun retainBufferProgress(force: Boolean = false) {
         bufferProgress.report(android.os.SystemClock.elapsedRealtime(), force)?.let { progress ->

@@ -11,6 +11,15 @@ import org.webrtc.VideoDecoder
 
 class VideoDecoderPerformanceTest {
     @Test
+    fun allwinner720pCropMatchesTheFullPaddedSliceOnly() {
+        assertTrue(allwinnerHevcNeeds720pCrop(1280, 736, 736, 0, 0, 1279, 735))
+        assertFalse(allwinnerHevcNeeds720pCrop(1280, 736, 736, 0, 0, 1279, 719))
+        assertFalse(allwinnerHevcNeeds720pCrop(1280, 720, 736, 0, 0, 1279, 719))
+        assertFalse(allwinnerHevcNeeds720pCrop(1280, 736, null, 0, 0, 1279, 735))
+        assertFalse(allwinnerHevcNeeds720pCrop(1280, 736, 736, 0, 16, 1279, 735))
+    }
+
+    @Test
     fun qualcommLowLatencyOperatingRateDoesNotUnderRequestHighFps() {
         assertEquals(120, vendorLowLatencyOperatingRate("c2.qti.avc.decoder", 60))
         assertEquals(120, vendorLowLatencyOperatingRate("OMX.qcom.video.decoder.avc", 120))
