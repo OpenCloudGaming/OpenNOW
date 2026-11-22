@@ -2,10 +2,51 @@ package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SdpToolsTest {
+    @Test
+    fun microphoneUsesTheDedicatedMidWhenItCanReceiveAudio() {
+        val offer = """
+            v=0
+            a=group:BUNDLE 0 3 4
+            m=audio 9 UDP/TLS/RTP/SAVPF 111
+            a=mid:0
+            a=sendrecv
+            m=audio 0 UDP/TLS/RTP/SAVPF 111
+            a=mid:3
+            a=bundle-only
+            a=recvonly
+            m=audio 9 UDP/TLS/RTP/SAVPF 111
+            a=mid:4
+            a=recvonly
+        """.trimIndent()
+
+        assertEquals("3", SdpTools.microphoneUplinkMid(offer.replace("\n", "\r\n")))
+        assertEquals("4", SdpTools.microphoneUplinkMid(offer.replace("a=bundle-only\n", "")))
+    }
+
+    @Test
+    fun microphoneSkipsDownlinkAudioAndUsesTheOfferedUplink() {
+        val offer = """
+            v=0
+            a=sendonly
+            m=audio 9 UDP/TLS/RTP/SAVPF 111
+            a=mid:3
+            m=video 9 UDP/TLS/RTP/SAVPF 99
+            a=mid:1
+            a=recvonly
+            m=audio 9 UDP/TLS/RTP/SAVPF 111
+            a=mid:voice
+            a=recvonly
+        """.trimIndent()
+
+        assertEquals("voice", SdpTools.microphoneUplinkMid(offer))
+        assertNull(SdpTools.microphoneUplinkMid(offer.replace("a=mid:voice\na=recvonly", "a=mid:voice\na=inactive")))
+    }
+
     @Test
     fun codecSelectionPreservesOfferedFlexfecAndMatchingRetransmissionForEveryCodec() {
         for ((codec, payload) in listOf(VideoCodec.H264 to 99, VideoCodec.H265 to 103, VideoCodec.AV1 to 96)) {

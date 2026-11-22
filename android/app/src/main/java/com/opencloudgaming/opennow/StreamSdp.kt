@@ -4,6 +4,7 @@ import java.net.InetAddress
 import java.util.Locale
 
 internal const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
+private const val GFN_MICROPHONE_MID = "3"
 
 /**
  * The native NVST transport owns SDP negotiation outside [Streaming], so its negotiated gamepad
@@ -17,6 +18,30 @@ internal fun effectivePartiallyReliableGamepadMask(
 
 object SdpTools {
     data class RewriteResult(val sdp: String, val replacements: Int)
+
+    internal fun microphoneUplinkMid(offer: String): String? {
+        val sections = offer.split(Regex("(?m)(?=^m=)"))
+        val sessionDirection = mediaDirection(sections.first().lineSequence()) ?: "a=sendrecv"
+        val candidates = sections.drop(1).mapNotNull { section ->
+            val lines = section.lines()
+            if (!lines.first().startsWith("m=audio ")) return@mapNotNull null
+            val port = lines.first().substringAfter(" ").trimStart()
+                .substringBefore(" ").substringBefore("/").toIntOrNull()
+            if (port == null || (port == 0 && "a=bundle-only" !in lines)) return@mapNotNull null
+            val direction = mediaDirection(lines.asSequence()) ?: sessionDirection
+            if (direction != "a=recvonly" && direction != "a=sendrecv") return@mapNotNull null
+            val mid = lines.firstOrNull { it.startsWith("a=mid:") }?.substringAfter(":")?.trim()
+            if (mid.isNullOrEmpty()) return@mapNotNull null
+            mid to direction
+        }
+        return candidates.firstOrNull { (mid, _) -> mid == GFN_MICROPHONE_MID }?.first
+            ?: candidates.firstOrNull { (_, direction) -> direction == "a=recvonly" }?.first
+            ?: candidates.firstOrNull()?.first
+    }
+
+    private fun mediaDirection(lines: Sequence<String>): String? = lines.firstOrNull { line ->
+        line == "a=sendonly" || line == "a=recvonly" || line == "a=sendrecv" || line == "a=inactive"
+    }
 
     fun fixServerIp(sdp: String, serverIp: String): String =
         fixServerEndpoint(sdp, serverIp, mediaConnectionInfo = null)

@@ -2935,7 +2935,7 @@ class NativeStreamClient(
                         // microphone sender remains valid through transport teardown.
                         val transceivers = active.transceivers
                         applyVideoCodecPreferences(transceivers)
-                        attachMicrophoneTrack(active, transceivers)
+                        attachMicrophoneTrack(preferred, transceivers)
                         active.createAnswer(
                             object : SimpleSdpObserver() {
                                 override fun onCreateSuccess(description: SessionDescription?) {
@@ -3096,7 +3096,7 @@ class NativeStreamClient(
 
     @Synchronized
     private fun attachMicrophoneTrack(
-        pc: PeerConnection,
+        offer: String,
         transceivers: List<RtpTransceiver>,
     ) {
         val permissionGranted = ContextCompat.checkSelfPermission(
@@ -3111,6 +3111,28 @@ class NativeStreamClient(
         }
 
         releaseMicrophoneTrack()
+        val mid = SdpTools.microphoneUplinkMid(offer)
+        val transceiver = mid?.let { offeredMid ->
+            transceivers.firstOrNull { it.mid == offeredMid && it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO }
+        }
+        if (transceiver == null) {
+            recordStreamDiagnostic("microphone not attached: no offered audio transceiver can receive microphone audio")
+            return
+        }
+
+        val canSend = when (transceiver.direction) {
+            RtpTransceiver.RtpTransceiverDirection.RECV_ONLY ->
+                transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+            RtpTransceiver.RtpTransceiverDirection.INACTIVE ->
+                transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY)
+            RtpTransceiver.RtpTransceiverDirection.STOPPED -> false
+            else -> true
+        }
+        if (!canSend) {
+            recordStreamDiagnostic("microphone not attached: unable to enable sending on mid=$mid")
+            return
+        }
+
         val audioConstraints = MediaConstraints().apply {
             optional.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
             optional.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
@@ -3121,41 +3143,16 @@ class NativeStreamClient(
         val track = requireNotNull(factory).createAudioTrack(MICROPHONE_TRACK_ID, source)
         track.setEnabled(!microphoneMuted)
 
-        val audioTransceivers = transceivers.filter {
-            it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO ||
-                it.receiver?.track()?.kind() == MediaStreamTrack.AUDIO_TRACK_KIND
+        val sender = transceiver.sender
+        val attached = try {
+            sender.setStreams(listOf(MICROPHONE_STREAM_ID))
+            sender.setTrack(track, false)
+        } catch (error: IllegalStateException) {
+            if (!isDisposedRtpSenderFailure(error)) throw error
+            recordStreamDiagnostic("microphone sender was disposed during attachment")
+            false
         }
-        val transceiver = audioTransceivers.firstOrNull { it.mid == GFN_MICROPHONE_MID }
-            ?: audioTransceivers.firstOrNull {
-                it.direction == RtpTransceiver.RtpTransceiverDirection.SEND_ONLY &&
-                    it.sender?.track() == null
-            }
-            ?: audioTransceivers.firstOrNull { it.sender?.track() == null }
-
-        val sender = if (transceiver != null) {
-            when (transceiver.direction) {
-                RtpTransceiver.RtpTransceiverDirection.RECV_ONLY ->
-                    transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
-                RtpTransceiver.RtpTransceiverDirection.INACTIVE ->
-                    transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY)
-                else -> Unit
-            }
-            transceiver.sender.apply {
-                setStreams(listOf(MICROPHONE_STREAM_ID))
-            }.takeIf { sender ->
-                runCatching { sender.setTrack(track, false) }
-                    .onFailure { error ->
-                        if (error is IllegalStateException && isDisposedRtpSenderFailure(error)) {
-                            recordStreamDiagnostic("microphone sender was disposed during setTrack attachment")
-                        } else throw error
-                    }
-                    .getOrDefault(false)
-            }
-        } else {
-            pc.addTrack(track, listOf(MICROPHONE_STREAM_ID))
-        }
-
-        if (sender == null) {
+        if (!attached) {
             track.dispose()
             source.dispose()
             recordStreamDiagnostic("microphone sender attachment failed")
@@ -3166,7 +3163,7 @@ class NativeStreamClient(
         microphoneSender = sender
         audioDeviceModule.setMicrophoneMute(microphoneMuted)
         recordStreamDiagnostic(
-            "microphone track attached mid=${transceiver?.mid ?: "new"} direction=${transceiver?.direction?.name ?: "new"} muted=$microphoneMuted",
+            "microphone track attached mid=$mid direction=${transceiver.direction.name} muted=$microphoneMuted",
         )
     }
 

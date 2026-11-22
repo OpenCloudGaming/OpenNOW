@@ -110,19 +110,20 @@ and bounded attachment/MediaCodec failure details survive subsequent stream test
 The supplied report does not retain the later NVST failure event; sustained
 bitrate, resolution and busy-scene 4K playback still require device verification.
 
-Android now sends native touch records through the reliable RemoteInput envelope, forwards
+Android sends native touch records through the reliable RemoteInput envelope, forwards
 bounded server input notifications to the Android haptics parser, and initially advertises haptics
-disabled until Android supplies the actual user/device capability. The microphone sender uses the
-native-bundle path already announced by dev: MID 3 (the Android GFN microphone contract), Opus
-PT 111 inside RFC 2198 RED PT 63, stereo 48 kHz / 20 ms / 16 kbps, with three prior blocks and
-in-band FEC disabled. Opus is built from the Cargo-locked audiopus_sys sources, statically per ABI.
+disabled until Android supplies the actual user/device capability. Android's microphone sender
+uses the native bundle format verified by the desktop streamer in dev commits 8b959ef5d and
+866bc2e5d: MID 2, SSRC 1, and plain Opus PT 111 at 48 kHz / 10 ms / 16 kbps mono.
+Opus is built from the Cargo-locked audiopus_sys sources, statically per ABI.
 
 Rumble ServerControl framing (0x010b, reserved/controller/low-frequency/high-frequency) follows
 wire facts documented in Moonlight's ControlStream.c; no Moonlight implementation code is copied:
 https://github.com/moonlight-stream/moonlight-common-c/blob/master/src/ControlStream.c
 Touch records and OC report layout reuse Android's existing input protocol. Mapping those records
-onto native RemoteInput and the native descriptor indices needs live GFN/device verification;
-unit tests cover framing, bounds, motor ordering, and Opus/RED round trips, not host acceptance.
+onto native RemoteInput and the native descriptor indices needs live GFN/device verification.
+Unit tests cover framing, bounds, motor ordering, and Opus round trips. Android microphone
+acceptance still needs a live GFN session.
 
 Alliance native startup correction (2026-10-30), compared with dev 5b89338a3:
 - YES CloudMatch identities now request secure RTSP and omit GSStreamerType=WebRTC

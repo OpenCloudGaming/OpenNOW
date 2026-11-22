@@ -138,12 +138,7 @@ pub extern "system" fn Java_com_opencloudgaming_opennow_NvstBridge_microphone(
             };
             *encoder = Some(created);
         }
-        let Ok(payload) =
-            encoder
-                .as_mut()
-                .unwrap()
-                .encode(&samples, timestamp as u32, restart != 0)
-        else {
+        let Ok(payload) = encoder.as_mut().unwrap().encode(&samples, restart != 0) else {
             return 0;
         };
         payload

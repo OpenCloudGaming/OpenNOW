@@ -72,9 +72,9 @@ FEC/NACK recovery, Opus audio, and native SCTP keyboard/mouse/gamepad input. And
 hardware decoder and renderer. Input and encoded-media queues are bounded. Reconnects retain the
 cloud session; only the existing explicit End Session action owns cloud-session termination.
 
-Microphone upstream uses 48 kHz Opus with 20 ms frames and RED redundancy on the encrypted
-bundle. Capture follows microphone permission, foreground-service, mute, and attachment lifecycle;
-muting releases the recorder and clears redundant speech on resume. Native game touch uses reliable
+Microphone upstream uses plain 48 kHz Opus with 10 ms mono frames on the encrypted bundle.
+Capture follows microphone permission, foreground-service, mute, and attachment lifecycle.
+Muting releases the recorder and revokes pending microphone packets. Native game touch uses reliable
 control messages, and received rumble uses the existing vibration switch and controller/device routing.
 On-screen gamepad and touch mouse continue to use ordinary gamepad/mouse packets. A previously allocated WebRTC session might not provide an NVST endpoint;
 the app reports this and retains that session rather than terminating or replacing it.

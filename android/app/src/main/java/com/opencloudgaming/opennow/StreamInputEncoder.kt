@@ -658,7 +658,6 @@ internal fun isDisposedRtpSenderFailure(error: IllegalStateException): Boolean =
 internal fun advancedCodecRestartSettleDelayMs(codec: VideoCodec, hadStableMedia: Boolean): Long =
     if (hadStableMedia && codec != VideoCodec.H264) ANDROID_CODEC_RESTART_SETTLE_MS else 0L
 
-internal const val GFN_MICROPHONE_MID = "3"
 internal const val MICROPHONE_STREAM_ID = "mic"
 internal const val MICROPHONE_TRACK_ID = "mic"
 internal const val DEFAULT_INPUT_PROTOCOL_VERSION = 2

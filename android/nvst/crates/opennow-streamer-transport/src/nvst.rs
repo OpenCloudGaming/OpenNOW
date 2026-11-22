@@ -4949,13 +4949,12 @@ fn run_nvst_webrtc_bundle(
     let mut hole_punch_pings = 0_u64;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
-    // The native-bundle microphone uses the same mic MID as GFN's WebRTC offer.
-    // str0m owns SRTP, sequence tracking, RTCP and socket output.
+    // Use the native bundle microphone identity verified by the desktop streamer.
     let microphone_ssrc = {
         let mut api = rtc.direct_api();
-        let mid = Mid::from("3");
+        let mid = Mid::from("2");
         api.declare_media(mid, MediaKind::Audio);
-        let ssrc = api.new_ssrc();
+        let ssrc = Ssrc::from(1);
         api.declare_stream_tx(ssrc, None, mid, None);
         ssrc
     };
@@ -5026,7 +5025,7 @@ fn run_nvst_webrtc_bundle(
                         if let Some(stream) = rtc.direct_api().stream_tx(&microphone_ssrc) {
                             stream.write_rtp(
                                 str0m::rtp::RtpWrite::new(
-                                    GFN_RED_PAYLOAD_TYPE.into(),
+                                    GFN_OPUS_PAYLOAD_TYPE.into(),
                                     microphone_sequence.into(),
                                     timestamp,
                                     captured_at,

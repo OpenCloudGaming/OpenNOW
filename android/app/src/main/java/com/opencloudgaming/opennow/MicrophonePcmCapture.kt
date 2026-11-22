@@ -11,6 +11,9 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import androidx.core.content.ContextCompat
 
+private const val MICROPHONE_SAMPLE_RATE = 48_000
+private const val MICROPHONE_FRAME_SAMPLES = MICROPHONE_SAMPLE_RATE / 100
+
 /** Capture owns AudioRecord and effects on one worker. Never opens a recorder while muted. */
 internal class MicrophonePcmCapture(
     private val context: Context,
@@ -44,13 +47,13 @@ internal class MicrophonePcmCapture(
                 check(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                     "Microphone permission is unavailable"
                 }
-                val minimum = AudioRecord.getMinBufferSize(48_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                val minimum = AudioRecord.getMinBufferSize(MICROPHONE_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 check(minimum > 0) { "48 kHz microphone capture is unavailable" }
                 recorder = AudioRecord.Builder()
                     .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-                    .setAudioFormat(AudioFormat.Builder().setSampleRate(48_000)
+                    .setAudioFormat(AudioFormat.Builder().setSampleRate(MICROPHONE_SAMPLE_RATE)
                         .setChannelMask(AudioFormat.CHANNEL_IN_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                    .setBufferSizeInBytes(maxOf(minimum, 960 * 2 * 4)).build()
+                    .setBufferSizeInBytes(maxOf(minimum, MICROPHONE_FRAME_SAMPLES * 2 * 8)).build()
                 check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Microphone initialization failed" }
                 if (deviceId.isNotBlank()) {
                     val selected = context.getSystemService(AudioManager::class.java)
@@ -62,7 +65,7 @@ internal class MicrophonePcmCapture(
                 if (!active()) continue
                 recorder.startRecording()
                 check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
-                val samples = ShortArray(960)
+                val samples = ShortArray(MICROPHONE_FRAME_SAMPLES)
                 var filled = 0
                 var restart = true
                 while (active()) {
@@ -73,7 +76,7 @@ internal class MicrophonePcmCapture(
                     if (filled == samples.size) {
                         // Recheck after read so muting cannot enqueue newly captured speech.
                         if (!active()) break
-                        if (restart) timestamp = android.os.SystemClock.elapsedRealtime() * 48
+                        if (restart) timestamp = android.os.SystemClock.elapsedRealtime() * (MICROPHONE_SAMPLE_RATE / 1000)
                         check(send(samples, timestamp, restart)) { "Microphone transport is unavailable" }
                         timestamp += samples.size
                         restart = false
