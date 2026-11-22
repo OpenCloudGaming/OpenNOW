@@ -436,8 +436,14 @@ static int runApplicationSession(int argc, char *argv[], QString &restartExecuta
     }
 #endif
     if (acceptance->prepareWindow() != EXIT_SUCCESS) return EXIT_FAILURE;
-    if (rootWindow && arguments.contains(u"--fullscreen"_s)) rootWindow->showFullScreen();
-    else if (rootWindow && !rootWindow->isVisible()) rootWindow->show();
+    // Under gamescope the window is the whole screen (see
+    // AppController::restoreWindowGeometry); fullscreen states that, so the
+    // window matches the output instead of being scaled from a saved size.
+    if (rootWindow && (arguments.contains(u"--fullscreen"_s)
+                       || !qEnvironmentVariableIsEmpty("GAMESCOPE_WAYLAND_DISPLAY")))
+        rootWindow->showFullScreen();
+    else if (rootWindow && !rootWindow->isVisible())
+        rootWindow->show();
     const auto qmlReadyMs = startupTimer.elapsed();
     controller.handleArguments(arguments);
     QObject::connect(&controller, &AppController::activationRequested,
