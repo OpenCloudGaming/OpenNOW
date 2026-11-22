@@ -2743,9 +2743,12 @@ private slots:
                 restart: function() { this.running = true; this.restarts++; },
                 stop: function() { this.running = false; }};
             var streamPollTimer = {stop: function() {}, restart: function() {}};
-            var CoreClient = {cancel: function() {}, request: function(type) {
+            var CoreClient = {cancel: function() {}, request: function(type, params) {
                 if (type === 'streamer.prepare') { prepares++; return 'prepare'; }
-                if (type === 'session.claim') { claims++; return 'claim'; }
+                if (type === 'session.claim') {
+                    if (params.signalingReconnect !== true) throw new Error('Recovery must request reconnect signaling');
+                    claims++; return 'claim';
+                }
                 if (type === 'session.poll') { discoveries++; return 'discovery'; }
                 throw new Error('Unexpected request: ' + type);
             }};

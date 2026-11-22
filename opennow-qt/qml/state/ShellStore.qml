@@ -2715,6 +2715,7 @@ QtObject {
             sessionId: recoverySessionId,
             streamingBaseUrl: existing.streamingBaseUrl || activeSession.streamingBaseUrl,
             appId: String(activeSession.appId || "0"),
+            signalingReconnect: true,
             recoveryMode: true
         }, 35000)
         if (sessionClaimRequestId === "") scheduleSessionRecovery(qsTr("Waiting to resume the session…"))

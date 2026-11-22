@@ -1045,11 +1045,11 @@ failures and other transport/API failures remain typed RPC errors.
 
 Qt polls every 1.5 seconds with only one request outstanding, bounded by 60 polls
 and a 90-second deadline checked between requests. Native connection recovery first
-stops the old media transport, discovers the same session ID through
-`session.remote.list`, then claims/polls it and calls `streamer.prepare` for fresh
-connection context. It never creates a replacement cloud game or claims a different
-session. During recovery, `session.remote.list` accepts the active `sessionId` so the
-core can use its remembered regional service rather than the native server IP.
+stops the old media transport, refreshes its active session through `session.poll`,
+then claims and polls the same seat before calling `streamer.prepare` for fresh
+connection context. The recovery claim passes `signalingReconnect: true`. The core
+keeps this flag through polling for the owned WebRTC seat, and the next signaling
+connection sends `reconnect=1`. Fresh launches use the ordinary signaling handshake.
 Failed recovery attempts back off up to eight seconds and stop after eight
 attempts; only a presented first frame resets this budget. Ending the session cancels
 recovery. A native stop stalled for 30 seconds reports an error without launching

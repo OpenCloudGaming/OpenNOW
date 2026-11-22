@@ -2163,14 +2163,17 @@ impl GfnService {
         let mut routing = crate::store_requests::lock(&self.session_routing)?;
         let _operation = crate::store_requests::lock(&self.auth_operation)?;
         let (session, generation) = self.session_snapshot_locked()?;
-        let params = self.owned_session_params(params, &routing, &session, generation, true)?;
+        let mut owned = self.owned_session_params(params, &routing, &session, generation, true)?;
         let active = self.cloudmatch.active()["session"].clone();
-        if !active.is_null() && active["sessionId"] != params["sessionId"] {
+        if !active.is_null() && active["sessionId"] != owned["sessionId"] {
             return Err(session_owner_error());
+        }
+        if !active.is_null() && params["signalingReconnect"] == true {
+            owned["signalingReconnect"] = json!(true);
         }
         let result = scoped_result(
             self.cloudmatch
-                .claim(&params, settings, &session, &self.device_id)?,
+                .claim(&owned, settings, &session, &self.device_id)?,
             &session,
             generation,
         );
