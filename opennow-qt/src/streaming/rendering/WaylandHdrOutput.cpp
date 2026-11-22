@@ -71,8 +71,7 @@ struct WaylandHdrOutput::Private
         auto *screen = window->screen();
         const QRect frame = window->frameGeometry();
         if (!screen || frame.isEmpty() || !screen->geometry().contains(frame)) return nullptr;
-        const auto screens = QGuiApplication::screens();
-        if (screens.size() != 1 || !screens.contains(screen)) return nullptr;
+        if (!QGuiApplication::screens().contains(screen)) return nullptr;
         return screen;
     }
 
