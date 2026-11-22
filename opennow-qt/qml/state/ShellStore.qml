@@ -654,13 +654,7 @@ QtObject {
                     root.lastError = root.streamMessage
                     return
                 }
-                root.forceNewAfterStop = true
-                root.streamState = "stopping"
-                root.streamMessage = qsTr("Closing the previous cloud session…")
-                root.streamStopRequestId = CoreClient.request("session.stop", {
-                    sessionId:root.conflictSession.sessionId, streamingBaseUrl:root.conflictSession.streamingBaseUrl,
-                    serverIp:root.conflictSession.serverIp || ""
-                }, 35000)
+                root.stopConflictingSession()
             } else if (stage === "create") {
                 root.requestNewSession()
             }
@@ -1115,16 +1109,8 @@ QtObject {
         }
         conflictSession = session
         conflictSessionNeedsRefresh = false
-        streamState = "resuming"
-        streamMessage = qsTr("Resuming your active GeForce NOW session…")
-        sessionClaimIsRecovery = false
-        sessionClaimRequestId = CoreClient.request("session.claim", {
-            sessionId: session.sessionId,
-            streamingBaseUrl: session.streamingBaseUrl,
-            appId: String(session.appId || "0"),
-            recoveryMode: true
-        }, 35000)
         AppController.navigate("inserting")
+        claimConflictingSession(qsTr("Resuming your active GeForce NOW session…"))
     }
 
     function codecNamesFromCapabilities(capabilities) {
@@ -2137,6 +2123,49 @@ QtObject {
         }
     }
 
+    function claimConflictingSession(progressMessage) {
+        streamState = "resuming"
+        streamMessage = progressMessage
+        sessionClaimIsRecovery = false
+        sessionClaimRequestId = CoreClient.request("session.claim", {
+            sessionId: conflictSession.sessionId,
+            streamingBaseUrl: conflictSession.streamingBaseUrl,
+            appId: String(conflictSession.appId || "0"),
+            recoveryMode: true
+        }, 35000)
+        if (sessionClaimRequestId === "") showConflictClaimFailure("")
+    }
+
+    function showConflictClaimFailure(code) {
+        conflictSessionNeedsRefresh = code !== "session_transport_not_enabled"
+        streamState = "conflict"
+        streamMessage = code === "session_transport_not_enabled"
+            ? qsTr("Set WebRTC compatibility mode to On to return to this game, or end it here.")
+            : qsTr("We couldn't reconnect to your game. Try returning to it again, or end it and start over. Ending it may lose unsaved progress.")
+        lastError = streamMessage
+        AppController.showOverlay("session-conflict")
+    }
+
+    function stopConflictingSession() {
+        if (!ready || !signedIn || !conflictSession || streamStopRequestId !== "") return
+        forceNewAfterStop = true
+        streamState = "stopping"
+        streamMessage = qsTr("Closing the previous cloud session…")
+        streamStopRequestId = CoreClient.request("session.stop", {
+            sessionId: conflictSession.sessionId, streamingBaseUrl: conflictSession.streamingBaseUrl,
+            serverIp: conflictSession.serverIp || ""
+        }, 35000)
+        if (streamStopRequestId === "") showSessionStopFailure()
+    }
+
+    function showSessionStopFailure() {
+        forceNewAfterStop = false
+        streamState = conflictSession ? "conflict" : "error"
+        streamMessage = qsTr("The previous game hasn't closed. Try again in a moment. We won't start another game until it has ended.")
+        lastError = streamMessage
+        if (conflictSession) AppController.showOverlay("session-conflict")
+    }
+
     function resolveSessionConflict(choice) {
         if (streamBusy)
             return
@@ -2162,17 +2191,10 @@ QtObject {
                     sessionId: conflictSession.sessionId,
                     streamingBaseUrl: conflictSession.streamingBaseUrl
                 }, 30000)
+                if (remoteSessionsRequestId === "") showConflictClaimFailure("")
                 return
             }
-            streamState = "resuming"
-            streamMessage = qsTr("Reconnecting to your running game. You don't need to start again.")
-            sessionClaimIsRecovery = false
-            sessionClaimRequestId = CoreClient.request("session.claim", {
-                sessionId: conflictSession.sessionId,
-                streamingBaseUrl: conflictSession.streamingBaseUrl,
-                appId: String(conflictSession.appId || "0"),
-                recoveryMode: true
-            }, 35000)
+            claimConflictingSession(qsTr("Reconnecting to your running game. You don't need to start again."))
             return
         }
         if (choice === "new") {
@@ -2180,7 +2202,10 @@ QtObject {
                 createPendingSession()
                 return
             }
-            inspectLaunch("stop")
+            if (pendingLaunchParams)
+                inspectLaunch("stop")
+            else
+                stopConflictingSession()
         }
     }
 
@@ -4787,13 +4812,8 @@ QtObject {
                         root.finishRemoteSession({source: "cloudmatch-http", httpStatus: 404, resumable: false})
                     else
                         root.scheduleSessionRecovery(message)
-                } else {
-                    root.conflictSessionNeedsRefresh = true
-                    root.streamState = "conflict"
-                    root.streamMessage = qsTr("We couldn't reconnect to your game. Try returning to it again, or end it and start over. Ending it may lose unsaved progress.")
-                    root.lastError = root.streamMessage
-                    AppController.showOverlay("session-conflict")
-                }
+                } else
+                    root.showConflictClaimFailure(code)
             } else if (requestId === root.streamCreateRequestId) {
                 root.streamCreateRequestId = ""
                 root.handleSessionCreateFailure(code, message)
@@ -4806,12 +4826,7 @@ QtObject {
                     root.pendingAccountSwitch = null
                     root.accountMessage = message
                 }
-                root.forceNewAfterStop = false
-                root.streamState = root.conflictSession ? "conflict" : "error"
-                root.streamMessage = qsTr("The previous game hasn't closed. Try again in a moment. We won't start another game until it has ended.")
-                root.lastError = root.streamMessage
-                if (root.conflictSession)
-                    AppController.showOverlay("session-conflict")
+                root.showSessionStopFailure()
             } else if (requestId === root.streamerPrepareRequestId) {
                 root.streamerPrepareRequestId = ""
                 root.acceptStreamerSnapshot({ status: "error", message: message, errorCode: code })

@@ -1003,7 +1003,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(prepareLaunchGuards(engine));
         engine.installExtensions(QJSEngine::TranslationExtension);
-        for (const auto &name : {"inspectRemoteSessions", "resolveSessionConflict", "createPendingSession",
+        for (const auto &name : {"inspectRemoteSessions", "resolveSessionConflict", "claimConflictingSession", "createPendingSession",
                                  "checkLaunchSessions", "handleSessionCreateFailure", "retrySessionLaunch"}) {
             const auto match = QRegularExpression(QStringLiteral(
                 "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
@@ -1050,6 +1050,42 @@ private slots:
             QVERIFY(!engine.evaluate(QStringLiteral("inspectRemoteSessions({sessions:[]})")).isError());
             QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
         }
+    }
+
+    void incompatibleRemoteSessionCanBeEndedWithoutALaunch()
+    {
+        QJSEngine engine;
+        engine.installExtensions(QJSEngine::TranslationExtension);
+        for (const auto &name : {"resolveSessionConflict", "claimConflictingSession", "showConflictClaimFailure",
+                                 "stopConflictingSession", "showSessionStopFailure"})
+            QVERIFY(loadShellFunction(engine, QString::fromLatin1(name)));
+        const auto result = engine.evaluate(QStringLiteral(R"JS(
+            var ready = true, signedIn = true, streamBusy = false;
+            var conflictSession = {sessionId:'browser-session', streamingBaseUrl:'https://region'};
+            var pendingLaunchParams = null, streamStopRequestId = '', sessionClaimRequestId = '';
+            var forceNewAfterStop = false, refuseRequest = false, requests = [];
+            var CoreClient = {request: function(method, params) {
+                if (refuseRequest) return '';
+                requests.push({method:method,params:params}); return 'request-' + requests.length;
+            }};
+            var AppController = {overlay: '', showOverlay: function(name) {this.overlay=name;}};
+            showConflictClaimFailure('session_transport_not_enabled');
+        )JS"));
+        QVERIFY2(!result.isError(), qPrintable(result.toString()));
+        QVERIFY(engine.evaluate(QStringLiteral("streamMessage.includes('WebRTC compatibility mode')")).toBool());
+        QVERIFY(!engine.evaluate(QStringLiteral("conflictSessionNeedsRefresh")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("session-conflict"));
+
+        QVERIFY(!engine.evaluate(QStringLiteral("refuseRequest = true; resolveSessionConflict('new');")).isError());
+        QVERIFY(!engine.evaluate(QStringLiteral("forceNewAfterStop")).toBool());
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("conflict"));
+        QCOMPARE(engine.evaluate(QStringLiteral("AppController.overlay")).toString(), QStringLiteral("session-conflict"));
+
+        QVERIFY(!engine.evaluate(QStringLiteral("refuseRequest = false; resolveSessionConflict('new');")).isError());
+        QCOMPARE(engine.evaluate(QStringLiteral("streamState")).toString(), QStringLiteral("stopping"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests.length")).toInt(), 1);
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].method")).toString(), QStringLiteral("session.stop"));
+        QCOMPARE(engine.evaluate(QStringLiteral("requests[0].params.sessionId")).toString(), QStringLiteral("browser-session"));
     }
 
     void refusedCreateLeavesRequestingState()
@@ -1537,7 +1573,7 @@ private slots:
         QJSEngine engine;
         QVERIFY(prepareLaunchGuards(engine));
         engine.installExtensions(QJSEngine::TranslationExtension);
-        for (const auto &name : {"resolveSessionConflict", "inspectRemoteSessions"}) {
+        for (const auto &name : {"resolveSessionConflict", "inspectRemoteSessions", "claimConflictingSession"}) {
             const auto match = QRegularExpression(QStringLiteral(
                 "    function %1\\([^\\n]*\\) \\{.*?\\n    \\}").arg(QString::fromLatin1(name)),
                 QRegularExpression::DotMatchesEverythingOption).match(shell);

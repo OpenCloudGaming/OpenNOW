@@ -35,7 +35,9 @@ FocusScope {
         statusText: qsTr("Needs a decision")
         eyebrow: qsTr("Your game is still running")
         headline: root.runningTitle ? qsTr("Return to %1?").arg(root.runningTitle) : qsTr("Return to your game?")
-        detail: qsTr("OpenNOW found another session on your NVIDIA account. Ending it closes the game, and unsaved progress may be lost.")
+        detail: ShellStore.lastError !== "" && ShellStore.lastError === ShellStore.streamMessage
+            ? ShellStore.streamMessage
+            : qsTr("OpenNOW found another session on your NVIDIA account. Ending it closes the game, and unsaved progress may be lost.")
         copyWidth: 860
         detailWidth: 780
 
@@ -58,7 +60,7 @@ FocusScope {
                 text: root.launchTitle === "" ? qsTr("End game")
                     : root.runningTitle ? qsTr("End %1 and start %2").arg(root.runningTitle).arg(root.launchTitle)
                     : qsTr("End game and start %1").arg(root.launchTitle)
-                detail: qsTr("Closes the running game first")
+                detail: qsTr("Ending the game will close it. Unsaved progress may be lost.")
                 KeyNavigation.up: resumeButton
                 KeyNavigation.down: cancelButton
                 onClicked: ShellStore.resolveSessionConflict("new")
