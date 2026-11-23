@@ -21,8 +21,6 @@ on:
   push:
     branches:
       - main
-      - gh-runners
-      - vn-translation
     paths:
       - ".github/workflows/opennow-orc-windows.yml"
       - ".github/workflows/qt-checks.yml"
@@ -105,12 +103,23 @@ jobs:
           npm run locales:check
           node --test scripts/check-translations.test.mjs scripts/check-keyboard-layouts.test.mjs
 
-      - name: Test CI and packaging contracts
+      - name: Test CI and Windows packaging contracts
         shell: bash
         run: |
           python3 -m venv "$RUNNER_TEMP/qt-contracts"
           "$RUNNER_TEMP/qt-contracts/bin/python" -m pip install -r opennow-qt/packaging/icon-requirements.txt
-          "$RUNNER_TEMP/qt-contracts/bin/python" -m unittest discover -s opennow-qt/tests -p 'test_*.py'
+          PYTHONPATH=opennow-qt/tests "$RUNNER_TEMP/qt-contracts/bin/python" -m unittest \
+            test_ci_workflow \
+            test_ci_release_trust \
+            test_windows_setup \
+            test_windows_test_bundle \
+            test_nightly_release \
+            test_stable_release \
+            test_supporter_build \
+            test_release_metadata \
+            test_release_tag \
+            test_native_checks_runner \
+            test_nightly_stable_base_guard
 
       - name: Resolve immutable build version
         id: version

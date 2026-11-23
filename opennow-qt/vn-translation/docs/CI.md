@@ -193,7 +193,7 @@ For OpenNOW-ORC (`huyzoz/OpenNOW-ORC` and `duyzoz/OpenNOW-ORC`), use the dedicat
     - `build_channel`: `nightly` (`1.0.4-nightly.<run>.<attempt>`) or `stable` (`1.0.4`).
     - `run_tests`: Runs ECC verification, `translation_logic_check.py`, `cargo test` (`opennow-streamer-platform-windows`), and `opennow-translation-tests`.
     - `publish_release`: Optional `true` to create a GitHub Prerelease with `.zip`, `-setup.exe`, and `SHA256SUMS`.
-  - `push` & `pull_request` on `main`, `gh-runners`, `vn-translation`.
+  - `push` on `main`, and `pull_request` on `main`, `gh-runners`, `vn-translation`.
 - **What it produces:**
   - Artifact `OpenNOW-ORC-Windows-x64-<version>` containing:
     - `OpenNOW-Qt-<version>-Windows-x64.zip` (portable ZIP verified by `Assert-OpenNowPackagePayload`)
