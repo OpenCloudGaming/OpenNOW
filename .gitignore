@@ -61,3 +61,5 @@ result
 
 /android/app/.cxx
 /android/app/release
+
+__pycache__/

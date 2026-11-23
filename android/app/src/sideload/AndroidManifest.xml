@@ -16,6 +16,12 @@
     </queries>
 
     <application>
+        <activity
+            android:name=".boosteroid.BoosteroidActivity"
+            android:enableOnBackInvokedCallback="false"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
         <!-- Matches the value the main manifest already merges in; stated here so the
              fragment is self-describing and Android 12's exported requirement is explicit. -->
         <activity

@@ -12,6 +12,15 @@ Open it from Android Studio with **File > Open > `OpenNOW/android`**. Android St
 
 Release and debug builds include `arm64-v8a`, `armeabi-v7a`, and `x86_64`. The `armeabi-v7a` slice supports 32-bit ARM phones and 32-bit Android TV firmware. OpenNOW recommends 720p/30 FPS/12 Mbps for 32-bit processes and memory-constrained TVs, and warns when a custom profile exceeds that recommendation without overriding the user's selection.
 
+## Boosteroid in APK builds
+
+The OpenNOW sign-in screen lets you select NVIDIA or Boosteroid. If you're already signed in,
+use **Switch service** to reopen that selector. Boosteroid has separate account storage,
+a Store and Library, and its own stream settings. OpenNOW uses a blue-purple cloud in that mode.
+
+Direct APKs include the Boosteroid activity and provider code. Google Play bundles omit both.
+For custom bundle tasks, pass `-Pdistribution=play-store`.
+
 ## Release Notes and First-Install Defaults
 
 - Edit `changelogs.json` in this folder for each version code. See `docs/changelogs.md` for the note format.

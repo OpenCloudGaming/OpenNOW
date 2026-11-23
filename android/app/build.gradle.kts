@@ -23,10 +23,14 @@ androidComponents.onVariants { variant ->
     )
 }
 
+val bundleRequest = Regex(
+    "bundle(?:Debug|Release)?|(?:package|sign)(?:Debug|Release)Bundle",
+    RegexOption.IGNORE_CASE,
+)
 val buildingPlayReleaseBundle =
     providers.gradleProperty("distribution").orNull.equals("play-store", ignoreCase = true) ||
         gradle.startParameter.taskNames.any { taskName ->
-            taskName.substringAfterLast(":").equals("bundleRelease", ignoreCase = true)
+            bundleRequest.matches(taskName.substringAfterLast(":"))
         }
 
 android {
@@ -40,13 +44,13 @@ android {
         // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 198
-        versionName = "2.4.2"
+        versionCode = 199
+        versionName = "2.4.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
-        buildConfigField("boolean", "PLAY_STORE_RELEASE", "false")
-        buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
+        buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
+        buildConfigField("boolean", "PLAY_STORE_RELEASE", buildingPlayReleaseBundle.toString())
+        buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", (!buildingPlayReleaseBundle).toString())
 
         ndk {
             // Keep legacy Intel TV devices eligible; App Bundles deliver only the matching ABI.
@@ -62,9 +66,6 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
-            buildConfigField("boolean", "PLAY_STORE_RELEASE", buildingPlayReleaseBundle.toString())
-            buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", (!buildingPlayReleaseBundle).toString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -73,14 +74,18 @@ android {
     }
 
     sourceSets {
-        getByName("debug").manifest.srcFile("src/sideload/AndroidManifest.xml")
-        getByName("release").manifest.srcFile(
-            if (buildingPlayReleaseBundle) {
-                "src/playBundle/AndroidManifest.xml"
-            } else {
-                "src/sideload/AndroidManifest.xml"
-            },
-        )
+        // Both the activity and provider implementation are APK-only.
+        val distributionSource = if (buildingPlayReleaseBundle) "playBundle" else "sideload"
+        listOf("debug", "release").forEach { buildType ->
+            getByName(buildType).apply {
+                manifest.srcFile("src/$distributionSource/AndroidManifest.xml")
+                kotlin.directories.add("src/$distributionSource/java")
+                assets.directories.add("src/$distributionSource/assets")
+            }
+        }
+        if (!buildingPlayReleaseBundle) {
+            getByName("test").kotlin.directories.add("src/testSideload/java")
+        }
     }
 
     buildFeatures {
@@ -114,6 +119,15 @@ android {
     }
 }
 
+// Guard the packaging task too, so abbreviated or custom Gradle tasks cannot emit a sideload AAB.
+if (!buildingPlayReleaseBundle) {
+    tasks.configureEach {
+        if (name.matches(Regex("package(?:Debug|Release)Bundle"))) {
+            doFirst { throw GradleException("Build app bundles with -Pdistribution=play-store.") }
+        }
+    }
+}
+
 // New Android copy stays in the shared English source; Android XML is generated.
 val touchButtonResources = layout.buildDirectory.dir("generated/touchButtonResources")
 val touchButtonEnglishSource = rootProject.file("../locales/en.json")
@@ -126,7 +140,8 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
             (source["androidStreamInput"] as Map<*, *>) +
             (source["androidStreamVideo"] as Map<*, *>) +
             (source["androidQueueSelector"] as Map<*, *>) +
-            (source["androidSetup"] as Map<*, *>)
+            (source["androidSetup"] as Map<*, *>) +
+            (source["androidBoosteroid"] as Map<*, *>)
         fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
         val output = outputs.files.singleFile.resolve("values/touch_buttons.xml")

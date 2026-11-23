@@ -364,16 +364,12 @@ internal fun StreamScreen(
                 statusBarDragging = false
                 statusDrag = Offset.Zero
             }
-            else -> {
-                NativeInputDiagnostics.addRetained("stream.controls.open", "stream controls open origin=back")
-                NativeStreamInputRouter.setStreamUiActive(true)
-                controlsOpen = true
-            }
+            else -> openControls("back")
         }
     }
     BackHandler(enabled = streamReady) {
         NativeInputDiagnostics.addRetained("stream.controls.back", "stream controls back origin=android-back-dispatcher")
-        NativeStreamInputRouter.dispatchSystemBack()
+        handleStreamBack()
     }
     val client = remember {
         NativeStreamClient(

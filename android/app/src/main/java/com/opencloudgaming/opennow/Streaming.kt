@@ -244,7 +244,7 @@ class NativeStreamClient(
     private val onFirstVideoFrameRendered: () -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
     private val onControllerMouseAssistChanged: (Boolean) -> Unit = {},
-) {
+) : TouchOverlayInput {
     private val appContext = context.applicationContext
     private val wifiPerformance = StreamWifiPerformanceLock(appContext)
     private val initialAndroidTvProfile = isAndroidTvProfile(appContext)
@@ -1987,7 +1987,7 @@ class NativeStreamClient(
     }
 
     private suspend fun sendTextLocked(text: String, generation: Int) {
-        for (chunk in streamKeyboardInputChunks(text, physicalSymbols = settings.keyboardLayout == "en-US")) {
+        for (chunk in streamKeyboardInputChunks(text, settings.keyboardLayout)) {
             when (chunk) {
                 is StreamKeyboardInputChunk.Text -> inputEncoder.encodeTextInput(chunk.value).forEach { packet ->
                     if (!sendTextPacketWithRetry(packet, generation)) return
@@ -1995,17 +1995,13 @@ class NativeStreamClient(
                 StreamKeyboardInputChunk.SpaceKey -> {
                     if (!sendTextKeyStroke(KeyEvent.KEYCODE_SPACE, generation)) return
                 }
-                is StreamKeyboardInputChunk.SymbolKey -> {
-                    if (!sendTextSymbolKeyStroke(chunk.char, generation)) return
+                is StreamKeyboardInputChunk.PrintableKey -> {
+                    val sent = sendStreamKeyboardPrintableKeyStroke(chunk.spec) { payload, pressed ->
+                        sendKeyboardPayloadWithRetry(payload, pressed, generation)
+                    }
+                    if (!sent) return
                 }
             }
-        }
-    }
-
-    private suspend fun sendTextSymbolKeyStroke(char: Char, generation: Int): Boolean {
-        val spec = InputEncoder.mapTextCharToKeySpec(char) ?: return false
-        return sendStreamKeyboardSymbolKeyStroke(spec) { payload, pressed ->
-            sendKeyboardPayloadWithRetry(payload, pressed, generation)
         }
     }
 
@@ -2136,12 +2132,15 @@ class NativeStreamClient(
         )
     }
 
+    override fun setVirtualMouseButtonFromSource(button: Int, sourceId: String, pressed: Boolean): Boolean =
+        setVirtualMouseButtonFromSource(button, sourceId, pressed, sendPartiallyReliableCopy = true)
+
     /** Shares button edges between physical mice, the keyboard overlay, touchpad, and synthesized clicks. */
     fun setVirtualMouseButtonFromSource(
         button: Int,
         sourceId: String,
         pressed: Boolean,
-        sendPartiallyReliableCopy: Boolean = true,
+        sendPartiallyReliableCopy: Boolean,
     ): Boolean {
         if (button !in 1..3) return false
         return mouseButtonPressSources.update(button, sourceId, pressed) { edgePressed ->
@@ -2229,12 +2228,12 @@ class NativeStreamClient(
         return sent
     }
 
-    fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
+    override fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
         setVirtualButtonFromSource(buttonMask, "primary-$buttonMask", pressed)
     }
 
     /** Keeps duplicate movable buttons from releasing an action another finger still holds. */
-    fun setVirtualButtonFromSource(buttonMask: Int, sourceId: String, pressed: Boolean) {
+    override fun setVirtualButtonFromSource(buttonMask: Int, sourceId: String, pressed: Boolean) {
         val sources = virtualButtonPressSources.getOrPut(buttonMask) { mutableSetOf() }
         val wasEffectivelyPressed = sources.isNotEmpty()
         val changed = if (pressed) sources.add(sourceId) else sources.remove(sourceId)
@@ -2304,12 +2303,12 @@ class NativeStreamClient(
         }
     }
 
-    fun setVirtualTrigger(left: Boolean, pressed: Boolean) {
+    override fun setVirtualTrigger(left: Boolean, pressed: Boolean) {
         setVirtualTriggerFromSource(left, if (left) "primary-left" else "primary-right", pressed)
     }
 
     /** Trigger equivalent of [setVirtualButtonFromSource]. */
-    fun setVirtualTriggerFromSource(left: Boolean, sourceId: String, pressed: Boolean) {
+    override fun setVirtualTriggerFromSource(left: Boolean, sourceId: String, pressed: Boolean) {
         val sources = if (left) virtualLeftTriggerPressSources else virtualRightTriggerPressSources
         val wasEffectivelyPressed = sources.isNotEmpty()
         val changed = if (pressed) sources.add(sourceId) else sources.remove(sourceId)
@@ -2331,11 +2330,11 @@ class NativeStreamClient(
         )
     }
 
-    fun setVirtualLeftStick(x: Float, y: Float) {
+    override fun setVirtualLeftStick(x: Float, y: Float) {
         setVirtualLeftStickFromSource("primary-left-stick", x, y)
     }
 
-    fun setVirtualLeftStickFromSource(sourceId: String, x: Float, y: Float) {
+    override fun setVirtualLeftStickFromSource(sourceId: String, x: Float, y: Float) {
         // The touch surface already applied the user's joystick dead zone. Applying another
         // fixed dead zone here makes small movements unresponsive even when it is set to zero.
         val input = virtualLeftStickSources.update(sourceId, virtualStickAxis(x), virtualStickAxis(y))
@@ -2357,7 +2356,7 @@ class NativeStreamClient(
     }
 
     /** Keyboard equivalent of the source-aware virtual gamepad APIs used by extra buttons. */
-    fun setVirtualKeyboardKeyFromSource(keyCode: Int, sourceId: String, pressed: Boolean) {
+    override fun setVirtualKeyboardKeyFromSource(keyCode: Int, sourceId: String, pressed: Boolean) {
         val payload = InputEncoder.mapKeyboardPayload(keyCode, unicode = 0, scanCode = 0) ?: return
         val sources = virtualKeyboardPressSources.getOrPut(keyCode) { mutableSetOf() }
         val wasEffectivelyPressed = sources.isNotEmpty()
@@ -2374,7 +2373,7 @@ class NativeStreamClient(
         }
     }
 
-    fun setVirtualRightStick(x: Float, y: Float) {
+    override fun setVirtualRightStick(x: Float, y: Float) {
         val normalizedX = virtualStickAxis(x)
         val normalizedY = virtualStickAxis(y)
         if (controllerMouseEmulationActive) {
@@ -5367,10 +5366,12 @@ class NativeStreamClient(
             ((source and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
                 InputDevice.getDevice(deviceId)?.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC)
 
-    private fun MotionEvent.isGamepadMotionEvent(): Boolean =
-        isFromSource(InputDevice.SOURCE_JOYSTICK) ||
-            isFromSource(InputDevice.SOURCE_GAMEPAD) ||
-            (AndroidControllerInput.isControllerEvent(source, deviceId) && !isMouseLikePointer())
+    private fun MotionEvent.isGamepadMotionEvent(): Boolean {
+        val controllerSource = AndroidControllerInput.hasControllerSource(source)
+        if (controllerSource && deviceId in controllerSlots) return true
+        return (controllerSource || !isMouseLikePointer()) &&
+            AndroidControllerInput.isControllerEvent(source, deviceId)
+    }
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
         AndroidControllerInput.isControllerEvent(source, deviceId)

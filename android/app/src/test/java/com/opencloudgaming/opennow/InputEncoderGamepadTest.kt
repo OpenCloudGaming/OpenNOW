@@ -206,6 +206,24 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun androidTvReceiversWithGamepadSourceBitsStayOffTheGamepadRoute() {
+        val keySource = InputDevice.SOURCE_KEYBOARD or InputDevice.SOURCE_DPAD or InputDevice.SOURCE_GAMEPAD
+        val bleSources = keySource or InputDevice.SOURCE_JOYSTICK
+
+        for ((name, sources) in listOf(
+            "MStar Smart TV IR Receiver" to keySource,
+            "Smart BLE Remote Consumer Control" to bleSources,
+        )) {
+            assertFalse(AndroidControllerInput.isControllerDevice(sources, name))
+            assertFalse(AndroidControllerInput.isControllerEvent(keySource, sources, name))
+        }
+        assertFalse(AndroidControllerInput.isControllerEvent(
+            InputDevice.SOURCE_JOYSTICK, bleSources, "Smart BLE Remote Consumer Control",
+        ))
+        assertTrue(AndroidControllerInput.isControllerDevice(bleSources, "Wireless Controller Touchpad"))
+    }
+
+    @Test
     fun gamepadEventsFromUnknownCompositePadsKeepTheirControllerRoute() {
         val compositeSources = InputDevice.SOURCE_GAMEPAD or
             InputDevice.SOURCE_JOYSTICK or InputDevice.SOURCE_TOUCHPAD or InputDevice.SOURCE_KEYBOARD

@@ -37,6 +37,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -79,6 +80,30 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.floor
+
+internal enum class LoginService { Nvidia, Boosteroid }
+
+@Composable
+internal fun LoginServiceSelector(
+    selected: LoginService?,
+    onNvidia: () -> Unit,
+    onBoosteroid: () -> Unit,
+    nvidiaChoice: (@Composable () -> Unit)? = null,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (nvidiaChoice != null) nvidiaChoice()
+        else FilterChip(
+            selected = selected == LoginService.Nvidia,
+            onClick = onNvidia,
+            label = { Text(stringResource(R.string.login_service_nvidia)) },
+        )
+        FilterChip(
+            selected = selected == LoginService.Boosteroid,
+            onClick = onBoosteroid,
+            label = { Text(stringResource(R.string.boosteroid_name)) },
+        )
+    }
+}
 
 @Composable
 internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
@@ -163,18 +188,35 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 )
                 Spacer(Modifier.height(if (compactForPhonePairing) 8.dp else 20.dp))
                 Text(
-                    "OpenNOW",
+                    stringResource(R.string.app_name),
                     color = TextPrimary,
                     style = if (compactForPhonePairing) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                 )
-                Text(
-                    stringResource(R.string.login_tagline),
-                    color = TextMuted,
-                    style = if (compactForPhonePairing) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-                )
-                Spacer(Modifier.height(if (compactForPhonePairing) 12.dp else 28.dp))
-                ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
+                Spacer(Modifier.height(if (compactForPhonePairing) 12.dp else 24.dp))
+                if (BOOSTEROID_AVAILABLE) {
+                    if (deviceLoginPrompt == null && !normalLoginBusy) {
+                        val showAllianceOptions = state.providers.size > 1 ||
+                            !state.selectedProvider.code.equals("NVIDIA", ignoreCase = true)
+                        LoginServiceSelector(
+                            selected = LoginService.Nvidia,
+                            onNvidia = {},
+                            onBoosteroid = { openBoosteroid(context) },
+                            nvidiaChoice = if (showAllianceOptions) {
+                                {
+                                    ProviderPicker(
+                                        state.providers,
+                                        state.selectedProvider,
+                                        viewModel::selectProvider,
+                                        serviceName = stringResource(R.string.login_service_nvidia),
+                                    )
+                                }
+                            } else null,
+                        )
+                    }
+                } else {
+                    ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
+                }
                 Spacer(Modifier.height(if (compactForPhonePairing) 8.dp else 16.dp))
                 deviceLoginPrompt?.let { prompt ->
                     DeviceLoginPanel(prompt = prompt, phase = state.launchPhase, onCancel = viewModel::cancelLogin)
@@ -199,6 +241,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         Text(
                             when {
                                 state.launchPhase.isNotBlank() -> state.launchPhase
+                                BOOSTEROID_AVAILABLE -> stringResource(R.string.action_sign_in)
                                 preferDeviceCodeLogin -> stringResource(R.string.login_tv_start, state.selectedProvider.displayName)
                                 else -> stringResource(R.string.login_with_provider, state.selectedProvider.displayName)
                             },

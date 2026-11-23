@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.view.InputDevice
 import android.view.KeyEvent
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -7,18 +8,40 @@ import org.junit.Test
 
 class StreamControlsShortcutRoutingTest {
     @Test
-    fun backAsEscapeIsOptInAndOnlyOwnsGameplayBack() {
+    fun backAsEscapeIsOptInAndOnlyOwnsGameplayKeyboardBack() {
         assertTrue(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
         ))
         assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = false, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
         ))
         assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = true, streamUiActive = true, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
         ))
         assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = true, streamUiActive = false, clientAttached = false,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
+        ))
+    }
+
+    @Test
+    fun dedicatedBackButtonsStayLocalAndPhysicalEscapeScanCodeStillWorks() {
+        assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
+            enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = null,
+        ))
+        assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
+            enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC,
+            physicalKeyboardScanCode = 158,
+        ))
+        assertTrue(NativeStreamInputRouter.shouldSendBackAsEscape(
+            enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_NON_ALPHABETIC,
+            physicalKeyboardScanCode = 1,
         ))
     }
 
@@ -26,15 +49,18 @@ class StreamControlsShortcutRoutingTest {
     fun backAsEscapePreservesControllerSelectMouseRightClickAndTvRemoteAliases() {
         assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
             controllerInputDevice = true,
         ))
         assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
             enabled = true, streamUiActive = false, clientAttached = true,
+            keyCode = KeyEvent.KEYCODE_BACK, physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
             externalMouseInputDevice = true,
         ))
         for (key in listOf(KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_ENTER)) {
             assertFalse(NativeStreamInputRouter.shouldSendBackAsEscape(
                 enabled = true, streamUiActive = false, clientAttached = true, keyCode = key,
+                physicalKeyboardType = InputDevice.KEYBOARD_TYPE_ALPHABETIC,
             ))
         }
     }
@@ -95,6 +121,20 @@ class StreamControlsShortcutRoutingTest {
             assertFalse(remoteActivation(key, dpad = false))
         }
         assertFalse(remoteActivation(KeyEvent.KEYCODE_DPAD_UP))
+    }
+
+    @Test
+    fun knownTvRemoteOkKeepsItsShortcutWithTheKeyboardSourceBitSet() {
+        assertTrue(NativeStreamInputRouter.shouldOpenStreamControlsShortcutKey(
+            keyCode = KeyEvent.KEYCODE_DPAD_CENTER,
+            streamUiActive = false,
+            androidTvProfile = true,
+            controllerInputDevice = false,
+            hardwareKeyboardSource = true,
+            externalMouseInputDevice = false,
+            dpadSource = true,
+            knownTvRemote = true,
+        ))
     }
 
     @Test

@@ -1,0 +1,20 @@
+OpenStroid Android
+
+This product is derived from and incorporates portions of the following projects:
+
+OpenNOW
+Copyright (c) 2026 Kief5555
+https://github.com/OpenCloudGaming/OpenNOW
+Licensed under the MIT License. The complete license text is available in
+OpenStroid-OpenNOW-MIT.txt.
+
+OpenStroid Android
+Author: Kief5555
+https://github.com/OpenCloudGaming/OpenStroid-Android
+Licensed under the Apache License, Version 2.0. The complete license text is
+available in OpenStroid-APACHE-2.0.txt.
+
+OpenStroid Android contains modifications to adapt the OpenNOW native Android
+client and the OpenStroid service behavior into a dedicated Android application.
+
+OpenNOW Android adapts portions of OpenStroid Android for APK distribution.

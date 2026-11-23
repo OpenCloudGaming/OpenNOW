@@ -2147,7 +2147,8 @@ internal fun TopBarProfileMenu(
     onOpenLocalApps: () -> Unit,
     onSpaceUiChange: (Boolean) -> Unit,
 ) {
-    val activity = LocalContext.current as? Activity
+    val context = LocalContext.current
+    val activity = context as? Activity
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     var focused by remember { mutableStateOf(false) }
@@ -2233,6 +2234,16 @@ internal fun TopBarProfileMenu(
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (BOOSTEROID_AVAILABLE && state.streamStatus == "idle") {
+                ProfileDropdownMenuItem(
+                    text = { Text(stringResource(R.string.login_switch_service), fontWeight = FontWeight.SemiBold) },
+                    onClick = {
+                        expanded = false
+                        haptics?.play(HapticCue.Activate)
+                        openBoosteroid(context, chooseService = true)
+                    },
                 )
             }
             if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED) {

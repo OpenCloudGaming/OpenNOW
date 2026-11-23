@@ -14,6 +14,8 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+private const val LINUX_ESCAPE_SCAN_CODE = 1
+
 internal fun touchMouseEnabledForStream(
     touch: AndroidTouchSettings,
     streamReady: Boolean,
@@ -440,14 +442,6 @@ object NativeStreamInputRouter {
         systemBackHandler = handler
     }
 
-    fun dispatchSystemBack(): Boolean {
-        if (shouldSendBackAsEscape(backAsEscape, streamUiActive, client != null)) {
-            client?.sendTextControlKey(KeyEvent.KEYCODE_ESCAPE)
-            return true
-        }
-        return dispatchLocalBack()
-    }
-
     private fun dispatchLocalBack(): Boolean {
         val handler = systemBackHandler ?: return false
         handler()
@@ -843,11 +837,20 @@ object NativeStreamInputRouter {
             return true
         }
         val streamExitShortcut = event.isStreamExitShortcutKey(externalMouseInputDevice)
+        val backKeyDevice = if (backAsEscape && event.keyCode == KeyEvent.KEYCODE_BACK) {
+            event.device?.takeUnless { it.isVirtual }
+        } else {
+            null
+        }
         val sendBackAsEscape = shouldSendBackAsEscape(
             enabled = backAsEscape,
             streamUiActive = streamUiActive,
             clientAttached = client != null,
             keyCode = event.keyCode,
+            physicalKeyboardType = backKeyDevice?.keyboardType,
+            physicalKeyboardScanCode = event.scanCode.takeIf {
+                backKeyDevice != null && event.isFromSource(InputDevice.SOURCE_KEYBOARD)
+            },
             controllerInputDevice = controllerInputDevice,
             externalMouseInputDevice = externalMouseInputDevice,
         )
@@ -921,11 +924,17 @@ object NativeStreamInputRouter {
         enabled: Boolean,
         streamUiActive: Boolean,
         clientAttached: Boolean,
-        keyCode: Int = KeyEvent.KEYCODE_BACK,
+        keyCode: Int,
+        physicalKeyboardType: Int?,
+        physicalKeyboardScanCode: Int? = null,
         controllerInputDevice: Boolean = false,
         externalMouseInputDevice: Boolean = false,
     ): Boolean = enabled && clientAttached && !streamUiActive &&
-        keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice && !externalMouseInputDevice
+        keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice && !externalMouseInputDevice &&
+        // Dedicated Android/remote Back buttons can also report SOURCE_KEYBOARD. Require
+        // an alphabetic keyboard or the Linux KEY_ESC scan code from a physical keyboard source.
+        (physicalKeyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC ||
+            physicalKeyboardScanCode == LINUX_ESCAPE_SCAN_CODE)
 
     fun dispatchMotion(event: MotionEvent): Boolean {
         if (streamUiActive && event.isExternalMousePointerEvent()) {
@@ -968,6 +977,8 @@ object NativeStreamInputRouter {
             hardwareKeyboardSource = isHardwareKeyboardSource(),
             externalMouseInputDevice = isExternalMouseInputDevice(),
             dpadSource = isDpadSource(),
+            knownTvRemote = androidTvProfile && isDpadSource() &&
+                AndroidControllerInput.isKnownTvRemoteName(device?.name),
         )
 
     internal fun shouldOpenStreamControlsShortcutKey(
@@ -978,6 +989,7 @@ object NativeStreamInputRouter {
         hardwareKeyboardSource: Boolean,
         externalMouseInputDevice: Boolean,
         dpadSource: Boolean,
+        knownTvRemote: Boolean = false,
     ): Boolean =
         // This fallback is for a TV remote's OK button only. Dock/receiver devices can also
         // advertise DPAD and deliver mouse activation as Enter/Center; they must not bypass
@@ -985,7 +997,7 @@ object NativeStreamInputRouter {
         androidTvProfile &&
             !streamUiActive &&
             !controllerInputDevice &&
-            !hardwareKeyboardSource &&
+            (!hardwareKeyboardSource || knownTvRemote) &&
             !externalMouseInputDevice &&
             dpadSource &&
             (keyCode == KeyEvent.KEYCODE_ENTER ||
@@ -1406,8 +1418,14 @@ internal object AndroidControllerInput {
             normalized.contains("fingerprint") ||
             normalized.contains("uinput-fpc") ||
             normalized == "virtual-search" ||
-            normalized == "virtual-remote"
+            normalized == "virtual-remote" ||
+            isKnownTvRemoteName(name)
     }
+
+    // These receivers advertise gamepad sources alongside their TV navigation keys.
+    fun isKnownTvRemoteName(name: String?): Boolean =
+        name.equals("MStar Smart TV IR Receiver", ignoreCase = true) ||
+            name.equals("Smart BLE Remote Consumer Control", ignoreCase = true)
 
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =
         device

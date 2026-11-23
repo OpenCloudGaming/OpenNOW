@@ -39,6 +39,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ButtonDefaults
@@ -48,6 +50,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -1181,11 +1184,29 @@ private fun pingColor(pingMs: Long): Color = when {
 }
 
 @Composable
-internal fun ProviderPicker(providers: List<LoginProvider>, selected: LoginProvider, onSelect: (LoginProvider) -> Unit) {
+internal fun ProviderPicker(
+    providers: List<LoginProvider>,
+    selected: LoginProvider,
+    onSelect: (LoginProvider) -> Unit,
+    serviceName: String? = null,
+) {
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     Box {
-        OutlinedButton(onClick = { expanded = true }) { Text(selected.displayName) }
+        if (serviceName == null) {
+            OutlinedButton(onClick = { expanded = true }) { Text(selected.displayName) }
+        } else {
+            val label = if (selected.code.equals("NVIDIA", ignoreCase = true)) serviceName
+                else "$serviceName · ${selected.displayName}"
+            FilterChip(
+                selected = true,
+                onClick = { expanded = true },
+                label = { Text(label) },
+                trailingIcon = {
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+            )
+        }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             providers.forEach { provider ->
                 DropdownMenuItem(

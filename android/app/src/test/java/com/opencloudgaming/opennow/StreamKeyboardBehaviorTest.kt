@@ -11,7 +11,7 @@ class StreamKeyboardBehaviorTest {
     fun softKeyboardSpaceUsesAKeyStrokeInsteadOfUnicodeText() {
         assertEquals(
             listOf(StreamKeyboardInputChunk.SpaceKey),
-            streamKeyboardInputChunks(" "),
+            streamKeyboardInputChunks(" ", "en-US"),
         )
     }
 
@@ -24,7 +24,7 @@ class StreamKeyboardBehaviorTest {
                 StreamKeyboardInputChunk.SpaceKey,
                 StreamKeyboardInputChunk.Text("🙂world"),
             ),
-            streamKeyboardInputChunks("hello  🙂world"),
+            streamKeyboardInputChunks("hello  🙂world", "en-US"),
         )
     }
 
@@ -33,16 +33,12 @@ class StreamKeyboardBehaviorTest {
         assertEquals(
             listOf(
                 StreamKeyboardInputChunk.Text("pass"),
-                StreamKeyboardInputChunk.SymbolKey('*'),
+                StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0x38, 0x0009, shift = true)),
                 StreamKeyboardInputChunk.Text("word"),
-                StreamKeyboardInputChunk.SymbolKey('!'),
+                StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0x31, 0x0002, shift = true)),
             ),
-            streamKeyboardInputChunks("pass*word!", physicalSymbols = true),
+            streamKeyboardInputChunks("pass*word!", "en-US"),
         )
-        val star = InputEncoder.mapTextCharToKeySpec('*')
-        assertEquals(0x38, star?.keycode)
-        assertEquals(0x0009, star?.scancode)
-        assertTrue(star?.shift == true)
     }
 
     @Test
@@ -50,32 +46,64 @@ class StreamKeyboardBehaviorTest {
         assertEquals(
             listOf(
                 StreamKeyboardInputChunk.Text("pass"),
-                StreamKeyboardInputChunk.SymbolKey('.'),
+                StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0xbe, 0x0034)),
                 StreamKeyboardInputChunk.Text("word"),
             ),
-            streamKeyboardInputChunks("pass.word", physicalSymbols = true),
+            streamKeyboardInputChunks("pass.word", "en-US"),
         )
-        val period = InputEncoder.mapTextCharToKeySpec('.')
-        assertEquals(0xbe, period?.keycode)
-        assertEquals(0x0034, period?.scancode)
-        assertFalse(period?.shift ?: true)
     }
 
     @Test
     fun otherLayoutsAndInternationalCharactersStayOnUnicodePath() {
         assertEquals(
             listOf(StreamKeyboardInputChunk.Text("é*")),
-            streamKeyboardInputChunks("é*"),
+            streamKeyboardInputChunks("é*", "fr-FR"),
         )
         assertEquals(
-            listOf(StreamKeyboardInputChunk.Text("é"), StreamKeyboardInputChunk.SymbolKey('*')),
-            streamKeyboardInputChunks("é*", physicalSymbols = true),
+            listOf(
+                StreamKeyboardInputChunk.Text("é"),
+                StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0x38, 0x0009, shift = true)),
+            ),
+            streamKeyboardInputChunks("é*", "en-US"),
         )
     }
 
     @Test
     fun emptySoftKeyboardEditProducesNoInputChunks() {
-        assertEquals(emptyList<StreamKeyboardInputChunk>(), streamKeyboardInputChunks(""))
+        assertEquals(emptyList<StreamKeyboardInputChunk>(), streamKeyboardInputChunks("", "en-US"))
+    }
+
+    @Test
+    fun typingAndPastingVerificationDigitsProduceTheSameOrderedKeys() {
+        val code = "700118"
+        val typed = code.indices.flatMap { index ->
+            val edit = streamKeyboardEdit(code.take(index), code.take(index + 1)) as StreamKeyboardEdit.Append
+            streamKeyboardInputChunks(edit.text, "en-US")
+        }
+        val pasted = streamKeyboardEdit(null, code) as StreamKeyboardEdit.Append
+        val expected = listOf(7, 0, 0, 1, 1, 8).map { digit ->
+            val scanCode = if (digit == 0) 0x0b else digit + 1
+            StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0x30 + digit, scanCode))
+        }
+        assertEquals(expected, typed)
+        assertEquals(expected, streamKeyboardInputChunks(pasted.text, "en-US"))
+    }
+
+    @Test
+    fun frenchLayoutShiftsTheDigitRowAndKeepsInternationalText() {
+        assertEquals(
+            listOf(
+                StreamKeyboardInputChunk.Text("é"),
+                StreamKeyboardInputChunk.PrintableKey(InputEncoder.TextKeySpec(0x31, 0x0002, shift = true)),
+            ),
+            streamKeyboardInputChunks("é1", "fr-FR"),
+        )
+    }
+
+    @Test
+    fun bulkDigitPastesUseUnicodeToLimitQueuedKeystrokes() {
+        val text = "0123456789".repeat(20)
+        assertEquals(listOf(StreamKeyboardInputChunk.Text(text)), streamKeyboardInputChunks(text, "en-US"))
     }
 
     @Test

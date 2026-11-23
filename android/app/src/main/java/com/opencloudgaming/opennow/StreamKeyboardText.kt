@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 
 // Leave a synthetic press visible for more than one 60 Hz game-input poll.
 internal const val STREAM_KEY_PRESS_DURATION_MS = 32L
+private const val MAX_PACED_DIGITS_PER_EDIT = 16
 
 /** Always release an accepted synthetic press, including when its caller is cancelled. */
 internal suspend fun sendStreamKeyboardKeyStroke(send: suspend (pressed: Boolean) -> Boolean): Boolean {
@@ -21,8 +22,8 @@ internal suspend fun sendStreamKeyboardKeyStroke(send: suspend (pressed: Boolean
     return released
 }
 
-/** Hold Shift across a US-layout symbol and release it even if the symbol send is cancelled. */
-internal suspend fun sendStreamKeyboardSymbolKeyStroke(
+/** Hold Shift across a printable key and release it even if the key send is cancelled. */
+internal suspend fun sendStreamKeyboardPrintableKeyStroke(
     spec: InputEncoder.TextKeySpec,
     send: suspend (InputEncoder.KeyboardPayload, Boolean) -> Boolean,
 ): Boolean {
@@ -40,27 +41,39 @@ internal suspend fun sendStreamKeyboardSymbolKeyStroke(
 }
 
 /**
- * Some game fields ignore SendUnicode for Space and US-layout symbols. Keep Unicode text runs
- * intact, but surface those characters as held key strokes when the stream uses the US layout.
+ * Some game fields expect keystrokes for spaces, verification digits, and US-layout symbols.
+ * Keep other text in Unicode runs and pace short digit sequences so repeated keys register.
  */
 internal sealed interface StreamKeyboardInputChunk {
     data class Text(val value: String) : StreamKeyboardInputChunk
     data object SpaceKey : StreamKeyboardInputChunk
-    data class SymbolKey(val char: Char) : StreamKeyboardInputChunk
+    data class PrintableKey(val spec: InputEncoder.TextKeySpec) : StreamKeyboardInputChunk
 }
 
-internal fun streamKeyboardInputChunks(text: String, physicalSymbols: Boolean = false): List<StreamKeyboardInputChunk> {
+internal fun streamKeyboardInputChunks(text: String, keyboardLayout: String): List<StreamKeyboardInputChunk> {
     if (text.isEmpty()) return emptyList()
+    val physicalSymbols = keyboardLayout == "en-US"
+    // Avoid turning large clipboard pastes into seconds of queued keystrokes.
+    val physicalDigits = text.length <= MAX_PACED_DIGITS_PER_EDIT ||
+        text.count { it in '0'..'9' } <= MAX_PACED_DIGITS_PER_EDIT
     val chunks = mutableListOf<StreamKeyboardInputChunk>()
     var textStart = 0
     text.forEachIndexed { index, char ->
         val space = char == ' '
+        val digit = physicalDigits && char in '0'..'9'
         val symbol = physicalSymbols && (char in '!'..'/' || char in ':'..'@' || char in '['..'`' || char in '{'..'~')
-        if (!space && !symbol) return@forEachIndexed
+        val key = if (digit || symbol) InputEncoder.mapTextCharToKeySpec(char) else null
+        val chunk = when {
+            space -> StreamKeyboardInputChunk.SpaceKey
+            key != null -> StreamKeyboardInputChunk.PrintableKey(
+                if (digit && keyboardLayout == "fr-FR") key.copy(shift = true) else key,
+            )
+            else -> return@forEachIndexed
+        }
         if (textStart < index) {
             chunks += StreamKeyboardInputChunk.Text(text.substring(textStart, index))
         }
-        chunks += if (space) StreamKeyboardInputChunk.SpaceKey else StreamKeyboardInputChunk.SymbolKey(char)
+        chunks += chunk
         textStart = index + 1
     }
     if (textStart < text.length) {
