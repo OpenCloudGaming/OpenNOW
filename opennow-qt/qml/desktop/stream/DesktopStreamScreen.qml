@@ -167,11 +167,10 @@ FocusScope {
     }
 
     // Live EN -> VI translation overlay. Same window, above the video (z: 6),
-    // never captures input and never restarts the stream.
+    // never captures input and never touches the stream surface.
     TranslationOverlay {
         anchors.fill: parent
         z: 6
-        videoItem: streamVideo
     }
 
     Timer {

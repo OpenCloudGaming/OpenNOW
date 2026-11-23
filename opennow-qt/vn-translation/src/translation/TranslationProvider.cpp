@@ -8,7 +8,7 @@
 #include <QUrlQuery>
 
 namespace {
-constexpr auto GeminiModel = "gemini-3.5-flash-lite";
+constexpr auto GeminiModel = "gemini-2.5-flash-lite";
 
 // Fixed prompt for WuWa story translation. Proper names stay in English,
 // Rover keeps the player's chosen pronouns (the model is told not to

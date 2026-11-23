@@ -56,25 +56,6 @@ set(OPENNOW_STREAM_PRESENTATION_SOURCES
     src/streaming/rendering/StreamSenderPacer.h
 )
 
-set(OPENNOW_TRANSLATION_SOURCES
-    src/translation/TranslationCache.cpp
-    src/translation/TranslationCache.h
-    src/translation/WuWaDialogueDb.cpp
-    src/translation/WuWaDialogueDb.h
-    src/translation/TranslationHttp.cpp
-    src/translation/TranslationHttp.h
-    src/translation/CustomApi.cpp
-    src/translation/CustomApi.h
-    src/translation/OcrEngine.cpp
-    src/translation/OcrEngine.h
-    src/translation/TranslationProvider.cpp
-    src/translation/TranslationProvider.h
-    src/translation/TranslationWorker.cpp
-    src/translation/TranslationWorker.h
-    src/translation/TranslationEngine.cpp
-    src/translation/TranslationEngine.h
-)
-
 qt_add_executable(opennow-qt
     src/main.cpp
     src/acceptance/AcceptanceProfiler.cpp
@@ -120,6 +101,5 @@ qt_add_executable(opennow-qt
     src/media/ThumbnailGenerator.h
     ${OPENNOW_STREAM_RUNTIME_SOURCES}
     ${OPENNOW_STREAM_PRESENTATION_SOURCES}
-    ${OPENNOW_TRANSLATION_SOURCES}
 )
 target_link_libraries(opennow-qt PRIVATE opennow-generic-hid)

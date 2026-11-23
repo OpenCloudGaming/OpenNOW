@@ -468,6 +468,26 @@ def main():
     check("similarity empty/empty is 1.0", similarity_ratio("", "") == 1.0)
     check("similarity one empty is 0.0", similarity_ratio("a", "") == 0.0)
 
+    # 5. RichText stripping, HUD noise filter, and dynamic template matching.
+    def strip_rich_text(s):
+        return re.sub(r"</?(?:color|size|b|i|u|material|quad)(?:=[^>]*)?>", "", s, flags=re.I)
+
+    def is_hud_noise(s):
+        c = strip_rich_text(s).strip()
+        if not c or len(c) == 1:
+            return True
+        if re.match(r"^[\d\s.,:%+\-/()x×*]+$", c):
+            return True
+        if re.match(r"^(?:uid\s*:?\s*\d+|lv\.?\s*\d+|\d+\s*(?:fps|ms|ping|mb/s|kb/s)|esc|tab|shift|ctrl|alt|space)$", c, flags=re.I):
+            return True
+        return False
+
+    check("strip RichText tags removes <color> and <size>",
+          strip_rich_text("<color=#ffd12f>Base HP</color>: <size=32>100</size>") == "Base HP: 100")
+    check("HUD noise filters FPS, ms, UID, LV, numbers, single hotkeys",
+          all(is_hud_noise(x) for x in ["60 FPS", "28ms", "UID: 900123", "LV.90", "18450/18450", "E", "Q"])
+          and not is_hud_noise("Talk to Shilang"))
+
     print(f"\n{check.failures} failure(s)")
     return 1 if check.failures else 0
 

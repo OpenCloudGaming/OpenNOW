@@ -90,6 +90,11 @@ runs:
     - name: Limit Rust debug info
       shell: bash
       run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+    - name: Setup Python for Qt installer
+      if: runner.os == 'Windows'
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
     - name: Install Qt
       uses: jurplel/install-qt-action@v4
       with:
@@ -125,7 +130,7 @@ runs:
     - name: Check QML syntax
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}
-      run: find opennow-qt/qml -name '*.qml' -print0 | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
+      run: find opennow-qt/qml opennow-qt/vn-translation/qml -name '*.qml' -print0 | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
     - name: Lint Rust
       shell: bash
       working-directory: ${{ env.OPENNOW_CHECKOUT }}

@@ -183,10 +183,21 @@ Run the narrowest relevant Qt test first, then the full suite when
 practical. Do not claim completion if a relevant check fails — report the
 failing command and failure point.
 
-## 5. CI status for this fork
+## 5. Standardized OpenNOW-ORC Build Workflow (`.github/workflows/opennow-orc-windows.yml`)
 
-**Unknown until pushed.** No `vn-translation` push triggers CI (see §1), and
-no PR has been opened yet, so there is no CI result for the VN work at all —
-not green, not red, unknown. The first signal will be the PR
-`vn-translation` → `dev` (contracts + 3 platform check jobs). Package
-builds need a manual dispatch after that.
+For OpenNOW-ORC (`huyzoz/OpenNOW-ORC` and `duyzoz/OpenNOW-ORC`), use the dedicated
+**Build OpenNOW-ORC (Windows x64)** workflow (`.github/workflows/opennow-orc-windows.yml`):
+
+- **Triggers:**
+  - `workflow_dispatch`: Manual run on demand with inputs:
+    - `build_channel`: `nightly` (`1.0.4-nightly.<run>.<attempt>`) or `stable` (`1.0.4`).
+    - `run_tests`: Runs ECC verification, `translation_logic_check.py`, `cargo test` (`opennow-streamer-platform-windows`), and `opennow-translation-tests`.
+    - `publish_release`: Optional `true` to create a GitHub Prerelease with `.zip`, `-setup.exe`, and `SHA256SUMS`.
+  - `push` & `pull_request` on `main`, `gh-runners`, `vn-translation`.
+- **What it produces:**
+  - Artifact `OpenNOW-ORC-Windows-x64-<version>` containing:
+    - `OpenNOW-Qt-<version>-Windows-x64.zip` (portable ZIP verified by `Assert-OpenNowPackagePayload`)
+    - `OpenNOW-Qt-<version>-Windows-x64-setup.exe` (Inno Setup installer)
+    - `SHA256SUMS` & `BUILD-INFO.txt`
+- **Upstream update safety:** All builds pass `-DOPENNOW_UPDATE_ED25519_PUBLIC_KEY=""`, and `ShellStore.qml` sets `vnTranslationBuild: true` so the fork never auto-checks upstream releases.
+- **Qt CI compatibility:** All VN files live under `opennow-qt/vn-translation/` wired via `include(vn-translation/vn-translation.cmake)`. `Tests.cmake` includes `opennow-translation-tests` in `OPENNOW_CI_UNIT_TEST_TARGETS`, `WIN32_EXECUTABLE FALSE`, and `opennow-qt-test-runtime`. `.github/actions/qt-unit-tests/action.yml` and `.github/workflows/qt-build.yml` pin Python `3.12` via `actions/setup-python@v5` before `install-qt-action@v4` on `windows-2025`.

@@ -14,6 +14,35 @@
 #include <QJsonParseError>
 #include <QMetaObject>
 #include <QMutexLocker>
+#include <algorithm>
+
+namespace {
+bool areLinesVerticallyAdjacent(const OcrBlock &upper, const OcrBlock &lower)
+{
+    const double gapY = lower.rect.top() - upper.rect.bottom();
+    const double maxGap = std::max(0.04, upper.rect.height() * 1.65);
+    if (gapY < -upper.rect.height() * 0.40 || gapY > maxGap)
+        return false;
+    const double overlapLeft = std::max(upper.rect.left(), lower.rect.left());
+    const double overlapRight = std::min(upper.rect.right(), lower.rect.right());
+    if (overlapRight <= overlapLeft)
+        return false;
+    if (lower.rect.height() < upper.rect.height() * 0.45
+        || lower.rect.height() > upper.rect.height() * 2.1)
+        return false;
+    return true;
+}
+
+bool endsWithTerminalPunctuation(const QString &s)
+{
+    const QString t = s.trimmed();
+    if (t.isEmpty())
+        return true;
+    const QChar last = t.at(t.size() - 1);
+    return last == QChar(u'.') || last == QChar(u'!') || last == QChar(u'?')
+        || last == QChar(u'"') || last == QChar(u'\'') || last == QChar(u'…');
+}
+} // namespace
 
 // ---------------------------------------------------------------------------
 // TranslationJobQueue
@@ -36,7 +65,7 @@ std::optional<TranslationJob> TranslationJobQueue::takeRunning()
 {
     QMutexLocker locker(&m_mutex);
     if (m_running.has_value())
-        return m_running; // already running; caller is processing it
+        return m_running;
     if (!m_waiting.has_value())
         return std::nullopt;
     m_running = std::move(m_waiting);
@@ -84,6 +113,87 @@ QRectF mapBlockRectToFrame(const QRectF &blockRect, const QRectF &sourceRect)
     return QRectF(x, y, w, h);
 }
 
+QList<OcrBlock> mergeAndFilterOcrBlocks(const QList<OcrBlock> &rawBlocks,
+                                        const WuWaDialogueDb *chunkDb,
+                                        bool chunkEnabled)
+{
+    // 1. Strip HUD / numeric combat noise (FPS, ms, UID, LV, single hotkeys)
+    QList<OcrBlock> filtered;
+    filtered.reserve(rawBlocks.size());
+    for (const OcrBlock &b : rawBlocks) {
+        const QString clean = b.text.trimmed();
+        if (clean.isEmpty() || WuWaDialogueDb::isHudNoise(clean))
+            continue;
+        filtered.append(OcrBlock{clean, b.rect});
+    }
+    if (filtered.size() <= 1)
+        return filtered;
+
+    // 2. Multi-line Paragraph Merger:
+    // Long Wuthering Waves sentences wrap across 2-4 screen lines while the
+    // chunk database stores the complete sentence as one entry. Try merging
+    // adjacent vertical lines (longest span first: 4, 3, 2) and check if the
+    // combined sentence hits the chunk DB.
+    QList<OcrBlock> merged;
+    merged.reserve(filtered.size());
+    int i = 0;
+    const int n = filtered.size();
+    while (i < n) {
+        int maxSpan = 1;
+        while (i + maxSpan < n && maxSpan < 4
+               && areLinesVerticallyAdjacent(filtered.at(i + maxSpan - 1), filtered.at(i + maxSpan))) {
+            ++maxSpan;
+        }
+
+        bool matchedMultiLine = false;
+        if (maxSpan >= 2 && chunkEnabled && chunkDb) {
+            for (int span = maxSpan; span >= 2; --span) {
+                QStringList parts;
+                QRectF united = filtered.at(i).rect;
+                for (int k = 0; k < span; ++k) {
+                    parts.append(filtered.at(i + k).text);
+                    united = united.united(filtered.at(i + k).rect);
+                }
+                const QString spaceJoined = parts.join(QChar(u' '));
+                QString dummyVi;
+                if (chunkDb->lookup(spaceJoined, dummyVi)
+                    || chunkDb->lookupFuzzy(spaceJoined, dummyVi)) {
+                    merged.append(OcrBlock{spaceJoined, united});
+                    i += span;
+                    matchedMultiLine = true;
+                    break;
+                }
+            }
+        }
+
+        // Also merge wrapped subtitle lines in the bottom dialogue area even
+        // when the line is not in the DB yet, if the upper line does not end
+        // with terminal punctuation.
+        if (!matchedMultiLine && maxSpan >= 2
+            && filtered.at(i).rect.top() >= 0.68
+            && !endsWithTerminalPunctuation(filtered.at(i).text)) {
+            QStringList parts;
+            QRectF united = filtered.at(i).rect;
+            int span = 1;
+            parts.append(filtered.at(i).text);
+            while (span < maxSpan && !endsWithTerminalPunctuation(filtered.at(i + span - 1).text)) {
+                parts.append(filtered.at(i + span).text);
+                united = united.united(filtered.at(i + span).rect);
+                ++span;
+            }
+            merged.append(OcrBlock{parts.join(QChar(u' ')), united});
+            i += span;
+            matchedMultiLine = true;
+        }
+
+        if (!matchedMultiLine) {
+            merged.append(filtered.at(i));
+            ++i;
+        }
+    }
+    return merged;
+}
+
 // ---------------------------------------------------------------------------
 // TranslationWorker
 // ---------------------------------------------------------------------------
@@ -95,8 +205,6 @@ TranslationWorker::TranslationWorker(QObject *parent)
     qRegisterMetaType<TranslationJobResult>();
     qRegisterMetaType<TranslatedBlock>();
     qRegisterMetaType<CustomApiConfig>();
-    // Needed for the queued setChunkDb(WuWaDialogueDb*) invoke from the
-    // engine (WuWaDialogueDb is not a QObject).
     qRegisterMetaType<WuWaDialogueDb *>();
 }
 
@@ -109,18 +217,17 @@ void TranslationWorker::start()
 {
     if (m_thread.isRunning())
         return;
+    m_abortRequested.store(false, std::memory_order_release);
     moveToThread(&m_thread);
     m_thread.start();
 }
 
 void TranslationWorker::stop()
 {
+    m_abortRequested.store(true, std::memory_order_release);
     if (!m_thread.isRunning())
         return;
-    // Cancel anything queued, then quit the event loop and wait. A job
-    // already running finishes its current synchronous call first (bounded
-    // by the 8s network timeout), then the thread exits. After the thread
-    // has finished, move back to the calling thread so deletion is safe.
+    m_queue.clearWaiting();
     QMetaObject::invokeMethod(this, "cancelPending", Qt::QueuedConnection);
     m_thread.quit();
     m_thread.wait();
@@ -134,7 +241,8 @@ int TranslationWorker::droppedStaleJobs() const
 
 void TranslationWorker::submitJob(const TranslationJob &job)
 {
-    // Runs in the worker thread (queued invocation from the GUI thread).
+    if (m_abortRequested.load(std::memory_order_acquire))
+        return;
     TranslationJob effective = job;
     if (effective.geminiApiKey.isEmpty())
         effective.geminiApiKey = m_geminiApiKey;
@@ -151,34 +259,28 @@ void TranslationWorker::submitJob(const TranslationJob &job)
 
 void TranslationWorker::setGeminiApiKey(const QString &key)
 {
-    // Runs in the worker thread; the key is never logged.
     m_geminiApiKey = key;
 }
 
 void TranslationWorker::setCustomApiConfig(const CustomApiConfig &config)
 {
-    // Runs in the worker thread; the key is never logged.
     m_customApi = config;
 }
 
 void TranslationWorker::setChunkDb(WuWaDialogueDb *db)
 {
-    // Runs in the worker thread. The DB is owned by the engine; only
-    // const, mutex-guarded lookups happen here.
     m_chunkDb = db;
 }
 
 void TranslationWorker::setChunkEnabled(bool enabled)
 {
-    // Runs in the worker thread.
     m_chunkEnabled = enabled;
 }
 
 void TranslationWorker::startChunkDownload(const QString &manifestUrl, const QString &cacheDir)
 {
-    // Runs in the worker thread. Fetches the manifest, then downloads
-    // each listed file one per event-loop turn (queued self-invocation)
-    // so OCR/translate jobs keep running between downloads.
+    if (m_abortRequested.load(std::memory_order_acquire))
+        return;
     m_chunkManifestUrl = manifestUrl;
     m_chunkBaseUrl = manifestUrl;
     if (m_chunkBaseUrl.endsWith(QStringLiteral("manifest.json")))
@@ -218,10 +320,9 @@ void TranslationWorker::startChunkDownload(const QString &manifestUrl, const QSt
 
 void TranslationWorker::downloadNextChunkFile()
 {
-    // Runs in the worker thread, one file per event-loop turn.
+    if (m_abortRequested.load(std::memory_order_acquire))
+        return;
     if (m_chunkIndex >= m_chunkFiles.size()) {
-        // Save the manifest next to the chunks: the engine reads it for
-        // the version check and the detail card, without re-downloading.
         const QString manifestPath = m_chunkCacheDir + QChar(u'/') + m_chunkVersion
             + QStringLiteral("/manifest.json");
         QDir().mkpath(QFileInfo(manifestPath).path());
@@ -236,26 +337,29 @@ void TranslationWorker::downloadNextChunkFile()
     const QString destPath = m_chunkCacheDir + QChar(u'/') + m_chunkVersion
         + QChar(u'/') + relative;
     QDir().mkpath(QFileInfo(destPath).path());
-    const TranslationHttpResult result = TranslationHttp::get(url);
-    if (result.ok()) {
-        QFile out(destPath);
-        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            out.write(result.body);
-        else if (m_chunkError.isEmpty())
-            m_chunkError = QStringLiteral("Cannot write chunk file: ") + relative;
-    } else if (m_chunkError.isEmpty()) {
-        m_chunkError = result.error;
+
+    // Skip network fetch if this chunk file is already cached on disk
+    QFileInfo existing(destPath);
+    if (!existing.exists() || existing.size() <= 16) {
+        const TranslationHttpResult result = TranslationHttp::get(url);
+        if (result.ok()) {
+            QFile out(destPath);
+            if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                out.write(result.body);
+            else if (m_chunkError.isEmpty())
+                m_chunkError = QStringLiteral("Cannot write chunk file: ") + relative;
+        } else if (m_chunkError.isEmpty()) {
+            m_chunkError = result.error;
+        }
     }
     ++m_chunkIndex;
     emit chunkDownloadProgress(m_chunkIndex, m_chunkFiles.size());
-    QMetaObject::invokeMethod(this, "downloadNextChunkFile", Qt::QueuedConnection);
+    if (!m_abortRequested.load(std::memory_order_acquire))
+        QMetaObject::invokeMethod(this, "downloadNextChunkFile", Qt::QueuedConnection);
 }
 
 void TranslationWorker::fetchCustomApiModels(const QString &base, const QString &apiKey)
 {
-    // Runs in the worker thread. Lists the base's real models
-    // (GET {base}/models, key in the Authorization header); the result
-    // comes back via customApiModelsFetched.
     const QString url = customApiModelsUrl(base);
     if (url.isEmpty()) {
         emit customApiModelsFetched({}, QStringLiteral("Custom API base URL is empty"));
@@ -279,16 +383,12 @@ void TranslationWorker::fetchCustomApiModels(const QString &base, const QString 
 
 void TranslationWorker::cancelPending()
 {
-    // Runs in the worker thread. Drops the waiting job only; a running job
-    // is left to finish (it is bounded by the network/OCR timeouts).
     m_queue.clearWaiting();
 }
 
 void TranslationWorker::processNext()
 {
-    // Runs in the worker thread. m_processing guards re-entrancy; the
-    // queue itself decides running vs waiting.
-    if (m_processing)
+    if (m_processing || m_abortRequested.load(std::memory_order_acquire))
         return;
     std::optional<TranslationJob> job = m_queue.takeRunning();
     if (!job.has_value())
@@ -298,7 +398,7 @@ void TranslationWorker::processNext()
     TranslationJobResult result;
     result.sourceRect = job->sourceRect;
     result.cropHash = job->cropHash;
-    result.testJob = job->testJob; // set once here: every return below keeps it
+    result.testJob = job->testJob;
 
     QString original;
     QList<OcrBlock> ocrBlocks;
@@ -308,35 +408,36 @@ void TranslationWorker::processNext()
     } else {
         QElapsedTimer ocrTimer;
         ocrTimer.start();
-        // Fallback chain: try the selected engine first; if it is
-        // unavailable (no Gemini key, no tesseract binary, stub engine),
-        // try the next engine that reports available(). This is what makes
-        // the default (gemini-vision, no key yet) actually work on a fresh
-        // install when Tesseract is present, instead of failing outright.
-        // A Failed (network/process) result is NOT retried on another
-        // engine — it is a real error, not a missing engine.
-        const QStringList candidates = {job->ocrEngineId, QStringLiteral("tesseract"),
-                                        QStringLiteral("gemini-vision")};
+        // Hybrid Offline-First fallback chain:
+        // Try the user's selected engine first, then Windows Native WinRT OCR
+        // (~15ms offline), then Tesseract, then Gemini Vision, then Custom Vision.
+        // If an online engine fails (e.g. quota/404), fall back to local OCR
+        // instead of dropping the frame.
+        const QStringList candidates = {
+            job->ocrEngineId,
+            QStringLiteral("windows-ocr"),
+            QStringLiteral("tesseract"),
+            QStringLiteral("gemini-vision"),
+            QStringLiteral("custom-vision")
+        };
         QStringList tried;
         OcrResult ocr;
         bool haveOcrResult = false;
         for (const QString &candidateId : candidates) {
-            if (tried.contains(candidateId))
+            if (candidateId.isEmpty() || tried.contains(candidateId))
                 continue;
             tried.append(candidateId);
             auto engine = createOcrEngine(candidateId, job->geminiApiKey, job->customApi);
-            if (!engine)
-                continue;
-            if (!engine->available())
+            if (!engine || !engine->available())
                 continue;
             ocr = engine->recognize(job->crop);
             haveOcrResult = true;
-            break;
+            if (ocr.status == OcrResult::Status::Ok)
+                break;
         }
         ocrMs = ocrTimer.elapsed();
         if (!haveOcrResult) {
-            result.error = QStringLiteral("No OCR engine available (tried: %1). "
-                                          "Set a Gemini key or install Tesseract.")
+            result.error = QStringLiteral("No OCR engine available (tried: %1).")
                                .arg(tried.join(QStringLiteral(", ")));
             result.ocrMs = ocrMs;
             m_queue.finishRunning();
@@ -354,12 +455,16 @@ void TranslationWorker::processNext()
             QMetaObject::invokeMethod(this, "processNext", Qt::QueuedConnection);
             return;
         }
-        original = ocr.text.trimmed();
-        ocrBlocks = ocr.blocks;
+
+        // Filter HUD noise and merge multi-line wrapped dialogue paragraphs
+        ocrBlocks = mergeAndFilterOcrBlocks(ocr.blocks, m_chunkDb, m_chunkEnabled);
+        QStringList joinedLines;
+        joinedLines.reserve(ocrBlocks.size());
+        for (const OcrBlock &b : ocrBlocks)
+            joinedLines.append(b.text);
+        original = joinedLines.join(QChar(u'\n')).trimmed();
+
         if (original.isEmpty()) {
-            // No dialogue text in this crop: not an error, just nothing to
-            // translate. Report success with empty text so the engine can
-            // keep the previous translation instead of showing an error.
             result.ok = true;
             result.original.clear();
             result.translated.clear();
@@ -373,20 +478,30 @@ void TranslationWorker::processNext()
     }
     result.original = original;
 
-    // Chunk DB first (v4): every OCR'd line is looked up (exact, then
-    // fuzzy) before any provider is called. A hit never reaches the
-    // provider; only misses are translated. When every line hits, no
-    // provider is created at all (translateMs = 0, chunkHit = true).
-    QHash<int, QString> dbHits; // ocr block index -> Vietnamese
+    auto makeTranslatedBlock = [&](const OcrBlock &b, const QString &vi) -> TranslatedBlock {
+        QString fg = QStringLiteral("#F4F6FA");
+        QString bg = QStringLiteral("#0B0D14");
+        sampleOcrBlockColors(job->crop, b.rect, fg, bg);
+        return TranslatedBlock{
+            b.text,
+            WuWaDialogueDb::stripRichTextTags(vi),
+            mapBlockRectToFrame(b.rect, job->sourceRect),
+            fg,
+            bg
+        };
+    };
+
+    // Look every OCR'd block up in the WuWa chunk DB first (exact + template + fuzzy)
+    QHash<int, QString> dbHits;
     QList<int> missIndices;
     QStringList missTexts;
     for (int i = 0; i < ocrBlocks.size(); ++i) {
         QString vi;
         if (m_chunkEnabled && m_chunkDb
             && (m_chunkDb->lookup(ocrBlocks.at(i).text, vi)
-                || m_chunkDb->lookupFuzzy(ocrBlocks.at(i).text, vi)))
+                || m_chunkDb->lookupFuzzy(ocrBlocks.at(i).text, vi))) {
             dbHits.insert(i, vi);
-        else {
+        } else {
             missIndices.append(i);
             missTexts.append(ocrBlocks.at(i).text);
         }
@@ -395,7 +510,6 @@ void TranslationWorker::processNext()
     QElapsedTimer translateTimer;
     translateTimer.start();
     if (!ocrBlocks.isEmpty() && missIndices.isEmpty()) {
-        // All lines came from the chunk DB: no provider call at all.
         result.ok = true;
         result.translateMs = 0;
         result.ocrMs = ocrMs;
@@ -405,11 +519,9 @@ void TranslationWorker::processNext()
         for (int i = 0; i < ocrBlocks.size(); ++i) {
             const QString vi = dbHits.value(i);
             if (vi.isEmpty())
-                continue; // cannot happen: missIndices is empty
+                continue;
             allTranslated.append(vi);
-            result.blocks.append(TranslatedBlock{
-                ocrBlocks.at(i).text, vi,
-                mapBlockRectToFrame(ocrBlocks.at(i).rect, job->sourceRect)});
+            result.blocks.append(makeTranslatedBlock(ocrBlocks.at(i), vi));
         }
         result.translated = allTranslated.join(QChar(u'\n'));
     } else {
@@ -423,16 +535,6 @@ void TranslationWorker::processNext()
             QMetaObject::invokeMethod(this, "processNext", Qt::QueuedConnection);
             return;
         }
-        // One network call for the missed lines joined with "\n" (the
-        // free Google endpoint preserves line breaks), then split the
-        // reply back onto the missed blocks. If the reply has a different
-        // number of lines, fall back to one call per block — the position
-        // mapping must never be guessed from a misaligned split.
-        // Streaming providers report partial text through the callback as
-        // it arrives (emitted as jobProgress); the final text still comes
-        // back here and replaces the partial. Partials are suppressed when
-        // some lines already came from the DB: a partial only covers the
-        // misses and must not be shown over the whole crop.
         const QString providerInput = ocrBlocks.isEmpty()
             ? original
             : missTexts.join(QChar(u'\n'));
@@ -445,15 +547,28 @@ void TranslationWorker::processNext()
         result.translateMs = translateTimer.elapsed();
         result.ocrMs = ocrMs;
         if (!translated.ok) {
-            result.error = translated.error;
+            // Even if online provider failed for missed lines, still emit any
+            // blocks that ALREADY hit the local WuWa chunk DB!
+            if (!dbHits.isEmpty()) {
+                result.ok = true;
+                result.chunkHit = true;
+                QStringList partialHits;
+                for (int i = 0; i < ocrBlocks.size(); ++i) {
+                    if (dbHits.contains(i)) {
+                        partialHits.append(dbHits.value(i));
+                        result.blocks.append(makeTranslatedBlock(ocrBlocks.at(i), dbHits.value(i)));
+                    }
+                }
+                result.translated = partialHits.join(QChar(u'\n'));
+            } else {
+                result.error = translated.error;
+            }
         } else if (ocrBlocks.isEmpty()) {
-            // Direct-text job (or an OCR engine that gave flat text only):
-            // one block covering the whole crop.
             result.ok = true;
-            result.translated = translated.text;
-            result.blocks.append(TranslatedBlock{original, translated.text,
-                                                 mapBlockRectToFrame(QRectF(0, 0, 1, 1),
-                                                                     job->sourceRect)});
+            result.translated = WuWaDialogueDb::stripRichTextTags(translated.text);
+            result.blocks.append(TranslatedBlock{
+                original, result.translated,
+                mapBlockRectToFrame(QRectF(0, 0, 1, 1), job->sourceRect)});
         } else {
             QStringList lines = translated.text.split(QChar(u'\n'));
             while (!lines.isEmpty() && lines.last().isEmpty())
@@ -461,45 +576,33 @@ void TranslationWorker::processNext()
             for (QString &line : lines)
                 line = line.trimmed();
             if (lines.size() == missIndices.size()) {
-                // Lines align with the missed blocks: merge DB hits and
-                // provider lines back into reading order.
                 result.ok = true;
                 QStringList allTranslated;
                 int missPos = 0;
                 for (int i = 0; i < ocrBlocks.size(); ++i) {
                     if (dbHits.contains(i)) {
                         allTranslated.append(dbHits.value(i));
-                        result.blocks.append(TranslatedBlock{
-                            ocrBlocks.at(i).text, dbHits.value(i),
-                            mapBlockRectToFrame(ocrBlocks.at(i).rect, job->sourceRect)});
+                        result.blocks.append(makeTranslatedBlock(ocrBlocks.at(i), dbHits.value(i)));
                     } else {
                         const QString line = lines.at(missPos++);
                         if (line.isEmpty())
-                            continue; // never cover a line with an empty box
+                            continue;
                         allTranslated.append(line);
-                        result.blocks.append(TranslatedBlock{
-                            ocrBlocks.at(i).text, line,
-                            mapBlockRectToFrame(ocrBlocks.at(i).rect, job->sourceRect)});
+                        result.blocks.append(makeTranslatedBlock(ocrBlocks.at(i), line));
                     }
                 }
                 result.translated = allTranslated.join(QChar(u'\n'));
                 if (result.blocks.isEmpty()) {
-                    // Every line translated to nothing: report "no text"
-                    // so the engine leaves the current translation alone.
                     result.original.clear();
                     result.translated.clear();
                 }
             } else {
-                // Line count mismatch: translate each missed block on its
-                // own; DB-hit blocks are carried through unchanged.
                 QStringList perBlock;
                 QString lastError;
                 for (int i = 0; i < ocrBlocks.size(); ++i) {
                     if (dbHits.contains(i)) {
                         perBlock.append(dbHits.value(i));
-                        result.blocks.append(TranslatedBlock{
-                            ocrBlocks.at(i).text, dbHits.value(i),
-                            mapBlockRectToFrame(ocrBlocks.at(i).rect, job->sourceRect)});
+                        result.blocks.append(makeTranslatedBlock(ocrBlocks.at(i), dbHits.value(i)));
                         continue;
                     }
                     const OcrBlock &block = ocrBlocks.at(i);
@@ -513,9 +616,7 @@ void TranslationWorker::processNext()
                     if (oneText.isEmpty())
                         continue;
                     perBlock.append(oneText);
-                    result.blocks.append(TranslatedBlock{
-                        block.text, oneText,
-                        mapBlockRectToFrame(block.rect, job->sourceRect)});
+                    result.blocks.append(makeTranslatedBlock(block, oneText));
                 }
                 if (result.blocks.isEmpty()) {
                     result.error = lastError.isEmpty() ? QStringLiteral("Translation failed")
@@ -531,5 +632,6 @@ void TranslationWorker::processNext()
     m_queue.finishRunning();
     m_processing = false;
     emit jobCompleted(result);
-    QMetaObject::invokeMethod(this, "processNext", Qt::QueuedConnection);
+    if (!m_abortRequested.load(std::memory_order_acquire))
+        QMetaObject::invokeMethod(this, "processNext", Qt::QueuedConnection);
 }

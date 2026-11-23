@@ -3,6 +3,7 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QColor>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11,14 +12,20 @@
 #include <QMap>
 #include <QProcess>
 #include <QStandardPaths>
+#include <algorithm>
+
+#if defined(Q_OS_WIN) && __has_include(<winrt/Windows.Media.Ocr.h>)
+#define OPENNOW_HAS_WINRT_OCR 1
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Globalization.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Media.Ocr.h>
+#include <winrt/Windows.Storage.Streams.h>
+#endif
 
 namespace {
-constexpr auto GeminiModel = "gemini-3.5-flash-lite";
-// The model must return one block PER LINE, with the block's position in
-// the image — the overlay draws one Vietnamese box over each English line,
-// so coordinates are the whole point. x/y/w/h are fractions of the image
-// (0.0-1.0). If the model ignores the shape and returns the old {"text"}
-// form, parseGeminiOcrText wraps it as one whole-image block.
+constexpr auto GeminiModel = "gemini-2.5-flash-lite";
 constexpr auto GeminiOcrPrompt =
     "Extract all English text visible in this image (dialogue, subtitles, menus, labels), "
     "one block per line of text, in reading order. "
@@ -33,7 +40,6 @@ QString geminiUrl()
         + QString::fromLatin1(GeminiModel) + QStringLiteral(":generateContent");
 }
 
-// Strips ```json fences if the model added them despite the prompt.
 QString stripCodeFences(QString raw)
 {
     raw = raw.trimmed();
@@ -48,10 +54,6 @@ QString stripCodeFences(QString raw)
     return raw;
 }
 
-// Parses the model's JSON reply ({"blocks": [...], "confidence": n} or
-// the old {"text": ...} shape) into per-line blocks. Shared by Gemini
-// Vision and the custom vision engine: both prompts ask for the same
-// shape, so the envelope is the only thing that differs.
 bool parseOcrBlocksJson(const QString &rawText, QString &text, QList<OcrBlock> &blocks,
                         double &confidence, QString &error)
 {
@@ -79,9 +81,6 @@ bool parseOcrBlocksJson(const QString &rawText, QString &text, QList<OcrBlock> &
         blocks.append(OcrBlock{blockText, QRectF(x, y, w, h)});
     }
     if (blocks.isEmpty()) {
-        // Old shape (or a model that ignored the blocks instruction):
-        // one block covering the whole image, so the overlay still shows
-        // the text instead of dropping the whole OCR result.
         const QString flat = obj.value(QStringLiteral("text")).toString().trimmed();
         if (!flat.isEmpty())
             blocks.append(OcrBlock{flat, QRectF(0, 0, 1, 1)});
@@ -94,10 +93,6 @@ bool parseOcrBlocksJson(const QString &rawText, QString &text, QList<OcrBlock> &
     return true;
 }
 
-// Parses the model's JSON reply out of the Gemini response envelope.
-// Fills text (blocks joined with "\n") and blocks (one per line, rect
-// normalized 0..1 within the image, clamped and empty/zero-area blocks
-// dropped). Accepts the old {"text": ...} shape as one whole-image block.
 bool parseGeminiOcrText(const QByteArray &body, QString &text, QList<OcrBlock> &blocks,
                         double &confidence, QString &error)
 {
@@ -146,7 +141,6 @@ OcrResult GeminiVisionOcrEngine::recognize(const QImage &image)
     {
         QBuffer buffer(&jpeg);
         buffer.open(QIODevice::WriteOnly);
-        // JPEG quality 90: small payload, text stays legible.
         if (!image.convertedTo(QImage::Format_RGB32).save(&buffer, "JPG", 90))
             return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
                              QStringLiteral("Could not encode image for OCR")};
@@ -165,8 +159,6 @@ OcrResult GeminiVisionOcrEngine::recognize(const QImage &image)
     requestBody.insert(QStringLiteral("contents"), QJsonArray{content});
     const QByteArray payload = QJsonDocument(requestBody).toJson(QJsonDocument::Compact);
 
-    // Key travels in the x-goog-api-key header, never in the URL, and is
-    // never logged.
     const TranslationHttpResult result = TranslationHttp::postJson(
         geminiUrl(), payload,
         {{QByteArrayLiteral("x-goog-api-key"), m_apiKey.toUtf8()}});
@@ -205,20 +197,15 @@ OcrResult CustomVisionOcrEngine::recognize(const QImage &image)
     {
         QBuffer buffer(&jpeg);
         buffer.open(QIODevice::WriteOnly);
-        // JPEG quality 90: small payload, text stays legible.
         if (!image.convertedTo(QImage::Format_RGB32).save(&buffer, "JPG", 90))
             return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
                              QStringLiteral("Could not encode image for OCR")};
     }
 
-    // Same blocks-JSON prompt as Gemini Vision, sent as the system
-    // message; the image travels as a base64 data URL in the user message.
     const QByteArray payload = buildChatCompletionPayload(
         m_config.model, QString::fromLatin1(GeminiOcrPrompt),
         QStringLiteral("Read the text in this image."), QString::fromLatin1(jpeg.toBase64()),
         false);
-    // Key travels in the Authorization header, never in the URL, and is
-    // never logged.
     const TranslationHttpResult result = TranslationHttp::postJson(
         customApiChatUrl(m_config.baseUrl), payload,
         {{QByteArrayLiteral("Authorization"),
@@ -260,10 +247,6 @@ OcrResult TesseractOcrEngine::recognize(const QImage &image)
             return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
                              QStringLiteral("Could not encode image for OCR")};
     }
-    // TSV first: one block per text line, with real coordinates — the
-    // overlay needs positions, not just flat text. If TSV yields nothing
-    // (empty image, parse failure), fall back to plain text as one
-    // whole-image block so the result is still usable.
     auto runTesseract = [&png](const QString &mode, QByteArray *out, QString *err) {
         QProcess process;
         process.start(QStringLiteral("tesseract"),
@@ -292,11 +275,9 @@ OcrResult TesseractOcrEngine::recognize(const QImage &image)
     QString tsvError;
     if (runTesseract(QStringLiteral("tsv"), &tsv, &tsvError)) {
         QList<OcrBlock> blocks;
-        // TSV columns: level page block par line word left top width height
-        // conf text. Level 5 rows are words; group by (block, par, line).
         QMap<QPair<int, QPair<int, int>>, QList<QPair<QString, QRectF>>> lines;
         const QList<QByteArray> rows = tsv.split('\n');
-        for (qsizetype i = 1; i < rows.size(); ++i) { // row 0 is the header
+        for (qsizetype i = 1; i < rows.size(); ++i) {
             const QList<QByteArray> cols = rows.at(i).split('\t');
             if (cols.size() < 12)
                 continue;
@@ -323,8 +304,6 @@ OcrResult TesseractOcrEngine::recognize(const QImage &image)
             lines[qMakePair(blockNum, qMakePair(parNum, lineNum))]
                 .append(qMakePair(word, rect));
         }
-        // QMap iterates keys in order: block, then paragraph, then line —
-        // the reading order for a single-column game UI.
         for (auto it = lines.constBegin(); it != lines.constEnd(); ++it) {
             QStringList words;
             QRectF united;
@@ -340,7 +319,6 @@ OcrResult TesseractOcrEngine::recognize(const QImage &image)
             texts.reserve(blocks.size());
             for (const OcrBlock &block : blocks)
                 texts.append(block.text);
-            // Tesseract reports no per-call confidence on stdout; -1 = unknown.
             return OcrResult{OcrResult::Status::Ok, texts.join(QChar(u'\n')), blocks, -1.0, {}};
         }
     }
@@ -359,14 +337,183 @@ OcrResult RapidOcrEngine::recognize(const QImage &)
 {
     return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
                      QStringLiteral("RapidOCR is not available in this build: "
-                                    "ONNX Runtime is not vendored in v1")};
+                                    "ONNX Runtime is not vendored")};
 }
 
-OcrResult WindowsOcrEngine::recognize(const QImage &)
+bool WindowsOcrEngine::available() const
 {
+#if defined(OPENNOW_HAS_WINRT_OCR)
+    // In offscreen unit-test mode we keep WindowsOcrEngine deterministic and
+    // avoid probing OS language packs unless explicitly called.
+    if (qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen"))
+        return false;
+    try {
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        } catch (const winrt::hresult_error &) {
+        }
+        using namespace winrt::Windows::Globalization;
+        using namespace winrt::Windows::Media::Ocr;
+        auto engine = OcrEngine::TryCreateFromLanguage(Language(L"en-US"));
+        if (!engine)
+            engine = OcrEngine::TryCreateFromUserProfileLanguages();
+        return static_cast<bool>(engine);
+    } catch (...) {
+        return false;
+    }
+#else
+    return false;
+#endif
+}
+
+OcrResult WindowsOcrEngine::recognize(const QImage &image)
+{
+#if defined(OPENNOW_HAS_WINRT_OCR)
+    if (qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen")) {
+        return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
+                         QStringLiteral("Windows OCR is disabled in offscreen unit-test mode")};
+    }
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0)
+        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
+                         QStringLiteral("Empty image passed to Windows OCR")};
+    try {
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        } catch (const winrt::hresult_error &) {
+        }
+        using namespace winrt::Windows::Globalization;
+        using namespace winrt::Windows::Graphics::Imaging;
+        using namespace winrt::Windows::Media::Ocr;
+        using namespace winrt::Windows::Storage::Streams;
+
+        auto engine = OcrEngine::TryCreateFromLanguage(Language(L"en-US"));
+        if (!engine)
+            engine = OcrEngine::TryCreateFromUserProfileLanguages();
+        if (!engine)
+            return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
+                             QStringLiteral("Windows English OCR language pack is not installed")};
+
+        const QImage bgra = image.convertedTo(QImage::Format_ARGB32);
+        const int w = bgra.width();
+        const int h = bgra.height();
+        const uint32_t byteCount = static_cast<uint32_t>(bgra.sizeInBytes());
+
+        DataWriter writer;
+        const auto *rawPtr = reinterpret_cast<const uint8_t *>(bgra.constBits());
+        writer.WriteBytes(winrt::array_view<const uint8_t>(rawPtr, rawPtr + byteCount));
+        IBuffer buffer = writer.DetachBuffer();
+
+        SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
+            buffer, BitmapPixelFormat::Bgra8, w, h, BitmapAlphaMode::Ignore);
+
+        auto ocrResult = engine.RecognizeAsync(bitmap).get();
+        QList<OcrBlock> blocks;
+        QStringList lineTexts;
+        const double invW = 1.0 / std::max(1, w);
+        const double invH = 1.0 / std::max(1, h);
+
+        for (const auto &line : ocrResult.Lines()) {
+            const QString lineText = QString::fromWCharArray(line.Text().c_str()).trimmed();
+            if (lineText.isEmpty())
+                continue;
+            QRectF united;
+            for (const auto &word : line.Words()) {
+                const auto r = word.BoundingRect();
+                const double x = qBound(0.0, static_cast<double>(r.X) * invW, 1.0);
+                const double y = qBound(0.0, static_cast<double>(r.Y) * invH, 1.0);
+                const double rw = qBound(0.0, static_cast<double>(r.Width) * invW, 1.0 - x);
+                const double rh = qBound(0.0, static_cast<double>(r.Height) * invH, 1.0 - y);
+                if (rw > 0.0 && rh > 0.0) {
+                    const QRectF wr(x, y, rw, rh);
+                    united = united.isNull() ? wr : united.united(wr);
+                }
+            }
+            if (!united.isNull() && united.width() > 0.0 && united.height() > 0.0) {
+                blocks.append(OcrBlock{lineText, united});
+                lineTexts.append(lineText);
+            }
+        }
+        return OcrResult{OcrResult::Status::Ok, lineTexts.join(QChar(u'\n')), blocks, 1.0, {}};
+    } catch (const winrt::hresult_error &ex) {
+        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
+                         QString::fromWCharArray(ex.message().c_str())};
+    } catch (...) {
+        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
+                         QStringLiteral("Windows OCR failed with an unexpected error")};
+    }
+#else
+    Q_UNUSED(image)
     return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
-                     QStringLiteral("Windows OCR is not available: WinRT OCR requires "
-                                    "package identity, which this Win32 build does not have")};
+                     QStringLiteral("Windows OCR is only available on Windows")};
+#endif
+}
+
+void sampleOcrBlockColors(const QImage &cropImage, const QRectF &normalizedBlockRect,
+                          QString &fgColorOut, QString &bgColorOut)
+{
+    fgColorOut = QStringLiteral("#F4F6FA");
+    bgColorOut = QStringLiteral("#0B0D14");
+    if (cropImage.isNull() || cropImage.width() <= 0 || cropImage.height() <= 0)
+        return;
+
+    const int imgW = cropImage.width();
+    const int imgH = cropImage.height();
+    const int x0 = qBound(0, static_cast<int>(normalizedBlockRect.x() * imgW), imgW - 1);
+    const int y0 = qBound(0, static_cast<int>(normalizedBlockRect.y() * imgH), imgH - 1);
+    const int x1 = qBound(x0 + 1, static_cast<int>((normalizedBlockRect.x() + normalizedBlockRect.width()) * imgW), imgW);
+    const int y1 = qBound(y0 + 1, static_cast<int>((normalizedBlockRect.y() + normalizedBlockRect.height()) * imgH), imgH);
+
+    const int stepX = std::max(1, (x1 - x0) / 32);
+    const int stepY = std::max(1, (y1 - y0) / 10);
+
+    qint64 fgR = 0, fgG = 0, fgB = 0, fgCount = 0;
+    qint64 bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
+
+    for (int y = y0; y < y1; y += stepY) {
+        for (int x = x0; x < x1; x += stepX) {
+            const QRgb px = cropImage.pixel(x, y);
+            const int r = qRed(px);
+            const int g = qGreen(px);
+            const int b = qBlue(px);
+            const int luma = (r * 77 + g * 150 + b * 29) >> 8;
+            if (luma >= 165) {
+                fgR += r;
+                fgG += g;
+                fgB += b;
+                ++fgCount;
+            } else if (luma <= 95) {
+                bgR += r;
+                bgG += g;
+                bgB += b;
+                ++bgCount;
+            }
+        }
+    }
+
+    if (fgCount > 0) {
+        const int r = static_cast<int>(fgR / fgCount);
+        const int g = static_cast<int>(fgG / fgCount);
+        const int b = static_cast<int>(fgB / fgCount);
+        // Detect warm golden / yellow highlights (NPC names, quest titles, key terms)
+        if (r >= 185 && g >= 145 && (r - b) >= 42) {
+            fgColorOut = QStringLiteral("#FFE066");
+        } else if (std::max({r, g, b}) - std::min({r, g, b}) >= 55) {
+            QColor c(r, g, b);
+            c = c.lighter(115);
+            fgColorOut = c.name(QColor::HexRgb);
+        } else {
+            fgColorOut = QStringLiteral("#F4F6FA");
+        }
+    }
+
+    if (bgCount > 0) {
+        // Darken the sampled background so the dark inpaint hides the bright
+        // original English glyphs while keeping the local ambient color cast.
+        const int r = qBound(6, static_cast<int>(bgR / bgCount) / 3, 24);
+        const int g = qBound(7, static_cast<int>(bgG / bgCount) / 3, 26);
+        const int b = qBound(10, static_cast<int>(bgB / bgCount) / 3, 34);
+        bgColorOut = QColor(r, g, b).name(QColor::HexRgb);
+    }
 }
 
 std::unique_ptr<OcrEngine> createOcrEngine(const QString &id, const QString &geminiApiKey,

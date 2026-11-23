@@ -82,6 +82,7 @@ set_target_properties(opennow-qt PROPERTIES
 )
 
 include(cmake/QmlModule.cmake)
+include(vn-translation/vn-translation.cmake)
 
 target_include_directories(opennow-qt PRIVATE src)
 target_link_libraries(opennow-qt PRIVATE
