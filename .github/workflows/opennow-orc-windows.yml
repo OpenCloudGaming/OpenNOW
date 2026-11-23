@@ -300,7 +300,9 @@ jobs:
         shell: bash
         run: |
           cd /o
-          cmake --build build/opennow-qt-release --config Release --parallel 8
+          cmake --build build/opennow-qt-release --config Release \
+            --target opennow-qt opennow-streamer-ffi-deploy opennow-translation-tests opennow-qt-test-runtime \
+            --parallel 8
 
       - name: Run WinRT OCR & WuWa Dialogue DB C++ tests
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}

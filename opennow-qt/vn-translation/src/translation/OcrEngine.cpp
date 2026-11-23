@@ -13,6 +13,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <algorithm>
+#include <cstdint>
 
 #if defined(Q_OS_WIN) && __has_include(<winrt/Windows.Media.Ocr.h>)
 #define OPENNOW_HAS_WINRT_OCR 1
@@ -352,11 +353,11 @@ bool WindowsOcrEngine::available() const
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
         } catch (const winrt::hresult_error &) {
         }
-        using namespace winrt::Windows::Globalization;
-        using namespace winrt::Windows::Media::Ocr;
-        auto engine = OcrEngine::TryCreateFromLanguage(Language(L"en-US"));
+        namespace wgl = winrt::Windows::Globalization;
+        namespace wmo = winrt::Windows::Media::Ocr;
+        auto engine = wmo::OcrEngine::TryCreateFromLanguage(wgl::Language(L"en-US"));
         if (!engine)
-            engine = OcrEngine::TryCreateFromUserProfileLanguages();
+            engine = wmo::OcrEngine::TryCreateFromUserProfileLanguages();
         return static_cast<bool>(engine);
     } catch (...) {
         return false;
@@ -370,43 +371,43 @@ OcrResult WindowsOcrEngine::recognize(const QImage &image)
 {
 #if defined(OPENNOW_HAS_WINRT_OCR)
     if (qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen")) {
-        return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
-                         QStringLiteral("Windows OCR is disabled in offscreen unit-test mode")};
+        return ::OcrResult{::OcrResult::Status::NotAvailable, {}, {}, -1.0,
+                           QStringLiteral("Windows OCR is disabled in offscreen unit-test mode")};
     }
     if (image.isNull() || image.width() <= 0 || image.height() <= 0)
-        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
-                         QStringLiteral("Empty image passed to Windows OCR")};
+        return ::OcrResult{::OcrResult::Status::Failed, {}, {}, -1.0,
+                           QStringLiteral("Empty image passed to Windows OCR")};
     try {
         try {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
         } catch (const winrt::hresult_error &) {
         }
-        using namespace winrt::Windows::Globalization;
-        using namespace winrt::Windows::Graphics::Imaging;
-        using namespace winrt::Windows::Media::Ocr;
-        using namespace winrt::Windows::Storage::Streams;
+        namespace wgl = winrt::Windows::Globalization;
+        namespace wgi = winrt::Windows::Graphics::Imaging;
+        namespace wmo = winrt::Windows::Media::Ocr;
+        namespace wss = winrt::Windows::Storage::Streams;
 
-        auto engine = OcrEngine::TryCreateFromLanguage(Language(L"en-US"));
+        auto engine = wmo::OcrEngine::TryCreateFromLanguage(wgl::Language(L"en-US"));
         if (!engine)
-            engine = OcrEngine::TryCreateFromUserProfileLanguages();
+            engine = wmo::OcrEngine::TryCreateFromUserProfileLanguages();
         if (!engine)
-            return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
-                             QStringLiteral("Windows English OCR language pack is not installed")};
+            return ::OcrResult{::OcrResult::Status::NotAvailable, {}, {}, -1.0,
+                               QStringLiteral("Windows English OCR language pack is not installed")};
 
         const QImage bgra = image.convertedTo(QImage::Format_ARGB32);
         const int w = bgra.width();
         const int h = bgra.height();
         const uint32_t byteCount = static_cast<uint32_t>(bgra.sizeInBytes());
 
-        DataWriter writer;
+        wss::DataWriter writer;
         const auto *rawPtr = reinterpret_cast<const uint8_t *>(bgra.constBits());
         writer.WriteBytes(winrt::array_view<const uint8_t>(rawPtr, rawPtr + byteCount));
-        IBuffer buffer = writer.DetachBuffer();
+        wss::IBuffer buffer = writer.DetachBuffer();
 
-        SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
-            buffer, BitmapPixelFormat::Bgra8, w, h, BitmapAlphaMode::Ignore);
+        wgi::SoftwareBitmap bitmap = wgi::SoftwareBitmap::CreateCopyFromBuffer(
+            buffer, wgi::BitmapPixelFormat::Bgra8, w, h, wgi::BitmapAlphaMode::Ignore);
 
-        auto ocrResult = engine.RecognizeAsync(bitmap).get();
+        wmo::OcrResult ocrResult = engine.RecognizeAsync(bitmap).get();
         QList<OcrBlock> blocks;
         QStringList lineTexts;
         const double invW = 1.0 / std::max(1, w);
@@ -433,18 +434,18 @@ OcrResult WindowsOcrEngine::recognize(const QImage &image)
                 lineTexts.append(lineText);
             }
         }
-        return OcrResult{OcrResult::Status::Ok, lineTexts.join(QChar(u'\n')), blocks, 1.0, {}};
+        return ::OcrResult{::OcrResult::Status::Ok, lineTexts.join(QChar(u'\n')), blocks, 1.0, {}};
     } catch (const winrt::hresult_error &ex) {
-        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
-                         QString::fromWCharArray(ex.message().c_str())};
+        return ::OcrResult{::OcrResult::Status::Failed, {}, {}, -1.0,
+                           QString::fromWCharArray(ex.message().c_str())};
     } catch (...) {
-        return OcrResult{OcrResult::Status::Failed, {}, {}, -1.0,
-                         QStringLiteral("Windows OCR failed with an unexpected error")};
+        return ::OcrResult{::OcrResult::Status::Failed, {}, {}, -1.0,
+                           QStringLiteral("Windows OCR failed with an unexpected error")};
     }
 #else
     Q_UNUSED(image)
-    return OcrResult{OcrResult::Status::NotAvailable, {}, {}, -1.0,
-                     QStringLiteral("Windows OCR is only available on Windows")};
+    return ::OcrResult{::OcrResult::Status::NotAvailable, {}, {}, -1.0,
+                       QStringLiteral("Windows OCR is only available on Windows")};
 #endif
 }
 
