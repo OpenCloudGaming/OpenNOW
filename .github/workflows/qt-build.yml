@@ -30,7 +30,7 @@ permissions:
 jobs:
   metadata:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -69,7 +69,7 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-8vcpu-ubuntu-2404
+            os: ubuntu-24.04
             build-parallel: 8
             qt-host: linux
             qt-arch: linux_gcc_64
@@ -78,7 +78,7 @@ jobs:
             cmake-arch: ""
             linuxdeploy-arch: x86_64
           - label: linux-arm64
-            os: blacksmith-8vcpu-ubuntu-2404-arm
+            os: ubuntu-24.04-arm
             build-parallel: 8
             qt-host: linux_arm64
             qt-arch: linux_gcc_arm64
@@ -87,7 +87,7 @@ jobs:
             cmake-arch: ""
             linuxdeploy-arch: aarch64
           - label: windows-arm64
-            os: blacksmith-8vcpu-windows-2025
+            os: windows-2025
             build-parallel: 8
             qt-host: windows
             qt-arch: win64_msvc2022_arm64_cross_compiled
@@ -95,7 +95,7 @@ jobs:
             rust-target: aarch64-pc-windows-msvc
             cmake-arch: ARM64
           - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
+            os: windows-2025
             build-parallel: 8
             qt-host: windows
             qt-arch: win64_msvc2022_64
@@ -104,7 +104,7 @@ jobs:
             cmake-arch: ""
             linuxdeploy-arch: ""
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
+            os: macos-15
             build-parallel: 3
             qt-host: mac
             qt-arch: clang_64
@@ -114,7 +114,7 @@ jobs:
             macos-arch: arm64
             package-arch: arm64
           - label: macos-x64
-            os: blacksmith-6vcpu-macos-15
+            os: macos-15
             build-parallel: 3
             qt-host: mac
             qt-arch: clang_64
@@ -240,6 +240,12 @@ jobs:
           }
           $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Python for Qt installer
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install Windows host Qt tools
         if: matrix.label == 'windows-arm64'
@@ -612,7 +618,7 @@ jobs:
   artifact-inventory:
     name: Verify complete unsigned artifact set
     needs: [metadata, packages, flatpak]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
       BUILD_CHANNEL: ${{ inputs.channel }}

@@ -34,10 +34,10 @@ class MacOSBuildContractTest(unittest.TestCase):
                 workflow = (QT_SOURCE.parent / ".github/workflows" / filename).read_text()
                 macos = workflow.split("  macos:\n", 1)[1] if filename == "qt-release-candidate.yml" else workflow
                 for arch, native, target, runner in (
-                        ("arm64", "arm64", "aarch64-apple-darwin", "blacksmith-6vcpu-macos-15"),
+                        ("arm64", "arm64", "aarch64-apple-darwin", "macos-15"),
                         ("x64", "x86_64", "x86_64-apple-darwin", "macos-15-intel")):
                     if filename == "qt-build.yml":
-                        runner = "blacksmith-6vcpu-macos-15"
+                        runner = "macos-15"
                     marker = f"          - label: macos-{arch}" if filename == "qt-build.yml" else f"          - arch: {arch}"
                     matrix = macos.split(marker, 1)[1].split("\n          - ", 1)[0].split("\n    env:", 1)[0]
                     for required in (f"os: {runner}", f"macos-arch: {native}", f"rust-target: {target}"):

@@ -24,7 +24,7 @@ permissions:
 jobs:
   plugin:
     name: Decky plugin
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -60,7 +60,7 @@ jobs:
     name: Publish plugin ZIP
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     needs: plugin
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write

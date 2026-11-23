@@ -78,7 +78,7 @@ jobs:
   preflight:
     name: Validate nightly update key
     if: github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,19 +116,19 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-16vcpu-ubuntu-2404
+            os: ubuntu-24.04
             qt-host: linux
             qt-arch: linux_gcc_64
             target-arch: x64
             parallel: "8"
           - label: windows-x64
-            os: blacksmith-16vcpu-windows-2025
+            os: windows-2025
             qt-host: windows
             qt-arch: win64_msvc2022_64
             target-arch: x64
             parallel: "8"
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
+            os: macos-15
             qt-host: mac
             qt-arch: clang_64
             target-arch: arm64
@@ -166,7 +166,7 @@ jobs:
     name: Isolated nightly update signing
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [preflight, contracts, checks, build]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: qt-update-signing
     timeout-minutes: 30
     steps:
@@ -209,7 +209,7 @@ jobs:
     name: Publish update-signed nightly prerelease
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nightly && inputs.linux_arm64_host == 'native'
     needs: [contracts, checks, build, sign-nightly]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:

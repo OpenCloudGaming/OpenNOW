@@ -56,6 +56,52 @@ or switch to the console layout for a controller. Both layouts run in the same a
 > streaming and GPU issues. It has no Chromium/WebRTC fallback. Publishing a build
 > does not mean it has passed every check in the [acceptance checklist](docs/qt-acceptance.md).
 
+## OpenNOW-VN — Translation (`vn-translation` branch)
+
+> [!NOTE]
+> This section describes a fork maintained at
+> [duyzoz/OpenNOW-ORC](https://github.com/duyzoz/OpenNOW-ORC), branch
+> `vn-translation`, based on upstream v1.0.4. It is not part of upstream
+> OpenNOW. Details live in [docs/vn-translation/](docs/vn-translation/).
+
+This fork adds **in-client EN→VI screen OCR translation for Wuthering
+Waves** played through GeForce NOW: it captures the streamed frame, OCRs
+the English text, translates it, and draws Vietnamese in place over the
+video. It does not touch the Rust streamer, the NVST transport, or the FFI
+ABI, and it never modifies game files — it only reads the frames already on
+your screen. Base: upstream v1.0.4.
+
+**The feature is OFF by default.** Enable it in Settings → Translation.
+
+What works / what is unproven (honest status, 2026-11-11):
+
+- Translation code has landed on this branch: `opennow-qt/src/translation/`
+  (engine, worker thread, cache, WuWa DB schema, OCR, providers),
+  `TranslationOverlay.qml` above the stream video, and a full
+  Translation Settings page. OCR default is Gemini Vision (Qt Network
+  only); RapidOCR is a documented stub in this build, Tesseract is the
+  local fallback. The WuWa dialogue DB ships with 0 datamined lines
+  (schema only) — it fills from live play + translation memory.
+- **Unproven:** no Qt compile / ctest run yet (CI on the PR is the first
+  build signal), no live GFN login test, no OCR latency measured on real
+  hardware, no Gemini key tested, no packaged VN build yet. The < 1 s
+  new-line / < 200 ms cache-hit latency figures are targets, not
+  measurements, and 0 ms translation is impossible on a streamed frame.
+- Updater safety: VN builds must not auto-update to upstream builds. Until
+  a dedicated VN signing key exists, VN builds ship with no pinned update
+  key (downloads fail closed) plus a QML guard that disables the automatic
+  update check — see
+  [docs/vn-translation/UPDATER.md](docs/vn-translation/UPDATER.md).
+
+**How Ethan tests it live in the morning:** use his own GeForce NOW login,
+set Wuthering Waves to English, play windowed/borderless, start a story
+quest, then Settings → Translation → enable. A Gemini API key is optional
+(it selects the Gemini Vision OCR engine); without one, only the cache /
+stub path is available.
+
+**The old Electron repo `duyzoz/OpenNow-VN` is abandoned** and is not part
+of this fork — do not use it, merge it, or port from it.
+
 ## Get OpenNOW
 
 Look for packages starting with `OpenNOW-Qt-` in

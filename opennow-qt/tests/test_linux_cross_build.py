@@ -135,12 +135,12 @@ class LinuxCrossBuildTest(unittest.TestCase):
         packages = (ROOT / ".github/actions/linux-package/action.yml").read_text()
         baseline = workflow.split("  packages:\n", 1)[1].split("  flatpak:\n", 1)[0]
         validate = cross.split("  validate:\n", 1)[1]
-        self.assertIn("runs-on: blacksmith-8vcpu-ubuntu-2404\n", cross)
-        self.assertIn("os: blacksmith-8vcpu-ubuntu-2404-arm", baseline)
+        self.assertIn("runs-on: ubuntu-24.04\n", cross)
+        self.assertIn("os: ubuntu-24.04-arm", baseline)
         self.assertIn("    needs: metadata\n", baseline)
         self.assertNotIn("linux_arm64_host", baseline)
         self.assertIn("    needs: compile\n", validate)
-        self.assertIn("runs-on: blacksmith-8vcpu-ubuntu-2404-arm", validate)
+        self.assertIn("runs-on: ubuntu-24.04-arm", validate)
         self.assertNotIn("cmake --build", validate)
         self.assertNotIn("cmake -S", validate)
         self.assertIn("uses: ./.github/actions/linux-package", baseline)

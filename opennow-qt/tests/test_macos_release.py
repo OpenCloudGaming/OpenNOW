@@ -472,7 +472,7 @@ class MacOSCandidateWorkflowTest(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         macos = workflow.split("  macos:\n", 1)[1].split("  inventory:\n", 1)[0]
         self.assertIn("needs: [preflight, linux, windows, macos, flatpak]", workflow)
-        for required in ("blacksmith-6vcpu-macos-15", "environment: qt-production-release",
+        for required in ("macos-15", "environment: qt-production-release",
                          'CMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH"',
                          "OPENNOW_UPDATE_ED25519_PUBLIC_KEY=", "--locked", "ctest --test-dir",
                          'mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"',

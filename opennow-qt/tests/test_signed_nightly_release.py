@@ -196,7 +196,7 @@ class SignedNightlyReleaseTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/qt-ci.yml").read_text()
         signer = workflow.split("  sign-nightly:\n", 1)[1].split("  publish-nightly:\n", 1)[0]
         publisher = workflow.split("  publish-nightly:\n", 1)[1]
-        self.assertIn("runs-on: blacksmith-2vcpu-ubuntu-2404", signer)
+        self.assertIn("runs-on: ubuntu-24.04", signer)
         self.assertIn("timeout-minutes: 30", signer)
         self.assertIn("name: Verify signing tools", signer)
         self.assertNotIn("actions/cache", signer)

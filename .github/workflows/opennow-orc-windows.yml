@@ -1,0 +1,424 @@
+name: Build OpenNOW-ORC (Windows x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_channel:
+        description: Version channel ("nightly" includes run number, "stable" uses base version)
+        type: choice
+        options:
+          - nightly
+          - stable
+        default: nightly
+      run_tests:
+        description: Run OCR, WuWa DB, Rust Windows, and QML checks before packaging
+        type: boolean
+        default: true
+      publish_release:
+        description: Publish a GitHub prerelease with portable ZIP, setup.exe, and SHA256SUMS
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/opennow-orc-windows.yml"
+      - ".github/workflows/qt-checks.yml"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "opennow-qt/**"
+      - "native/opennow-core/**"
+      - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - ".agents/**"
+  pull_request:
+    branches:
+      - main
+      - gh-runners
+      - vn-translation
+    paths:
+      - ".github/workflows/opennow-orc-windows.yml"
+      - ".github/workflows/qt-checks.yml"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - "opennow-qt/**"
+      - "native/opennow-core/**"
+      - "native/opennow-streamer/**"
+      - "locales/**"
+      - "scripts/**"
+      - ".agents/**"
+
+concurrency:
+  group: opennow-orc-win64-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify ECC, contracts, and localization
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint GitHub workflows
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color=false \
+            .github/workflows/qt-ci.yml .github/workflows/qt-checks.yml \
+            .github/workflows/qt-build.yml .github/workflows/qt-release-candidate.yml \
+            .github/workflows/qt-flatpak.yml .github/workflows/qt-stable-release.yml \
+            .github/workflows/qt-linux-arm64-cross.yml \
+            .github/workflows/opennow-orc-windows.yml
+
+      - name: Verify OpenNOW-ORC translation module and ECC gates
+        shell: bash
+        run: |
+          python3 .agents/skills/opennow-vn-translation/scripts/verify_ecc.py
+          python3 opennow-qt/vn-translation/tests/translation_logic_check.py
+
+      - name: Validate localization
+        shell: bash
+        run: |
+          npm run locales:check
+          node --test scripts/check-translations.test.mjs scripts/check-keyboard-layouts.test.mjs
+
+      - name: Test CI and Windows packaging contracts
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qt-contracts"
+          "$RUNNER_TEMP/qt-contracts/bin/python" -m pip install -r opennow-qt/packaging/icon-requirements.txt
+          PYTHONPATH=opennow-qt/tests "$RUNNER_TEMP/qt-contracts/bin/python" -m unittest \
+            test_ci_workflow \
+            test_ci_release_trust \
+            test_windows_setup \
+            test_windows_test_bundle \
+            test_nightly_release \
+            test_stable_release \
+            test_supporter_build \
+            test_release_metadata \
+            test_release_tag \
+            test_native_checks_runner \
+            test_nightly_stable_base_guard
+
+      - name: Resolve immutable build version
+        id: version
+        shell: bash
+        env:
+          INPUT_CHANNEL: ${{ inputs.build_channel }}
+        run: |
+          channel="${INPUT_CHANNEL:-nightly}"
+          case "$channel" in
+            nightly|stable) ;;
+            *) echo "Invalid build_channel: $channel" >&2; exit 1 ;;
+          esac
+          version=$(python3 opennow-qt/packaging/nightly_release.py version \
+            --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --channel "$channel")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+  build-windows-x64:
+    name: Build Windows x64 (ZIP + setup.exe)
+    needs: verify
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      SDL_VERSION: release-3.2.20
+      OPENNOW_BUILD_VERSION: ${{ needs.verify.outputs.version }}
+      OPENNOW_UPDATE_PUBLIC_KEY: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Start Windows Media Foundation installation
+        shell: pwsh
+        run: .github/scripts/windows-media-foundation-background.ps1 Start
+
+      - name: Map stable Windows workspace
+        shell: pwsh
+        run: .github/scripts/map-windows-workspace.ps1
+
+      - name: Test Windows release and helper dependency contracts
+        shell: pwsh
+        run: |
+          opennow-qt/tests/test_windows_release.ps1
+          opennow-qt/tests/test_windows_helper_dependencies.ps1
+
+      - name: Setup Python for Qt installer
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check Rust formatting
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        shell: bash
+        run: |
+          cargo fmt --manifest-path native/opennow-core/Cargo.toml -- --check
+          cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
+
+      - name: Setup Windows build tools
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bound Windows Rust compilation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "CARGO_BUILD_JOBS=4" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+          if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Windows LLVM
+        shell: pwsh
+        run: .github/scripts/ensure-windows-llvm.ps1
+
+      - name: Cache Windows NASM
+        id: windows-nasm
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\NASM
+          key: windows-nasm-3.2.0
+
+      - name: Install Windows NASM
+        shell: pwsh
+        env:
+          NASM_CACHE_HIT: ${{ steps.windows-nasm.outputs.cache-hit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:NASM_CACHE_HIT -ne "true") {
+            choco install nasm --version=3.2.0 -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "NASM installation failed with exit code $LASTEXITCODE" }
+          }
+          $nasmBin = Join-Path $env:ProgramFiles "NASM"
+          $nasm = Join-Path $nasmBin "nasm.exe"
+          if (-not (Test-Path $nasm)) { throw "NASM installation is missing nasm.exe" }
+          $nasmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtmultimedia qtshadertools
+          cache: true
+          cache-key-prefix: qt-target-windows-x64
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: qt-ci-windows-2025-windows-x64
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/gh-runners' || github.ref == 'refs/heads/vn-translation') }}
+          workspaces: |
+            native/opennow-core -> target
+            native/opennow-streamer -> target
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: qt-ci-windows-2025-windows-x64
+          restore-keys: qt-ci-windows-2025-windows-x64
+          max-size: 1G
+          evict-old-files: job
+          save: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/gh-runners' || github.ref == 'refs/heads/vn-translation') }}
+          verbose: 1
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: x64
+          parallel: 8
+
+      - name: Check QML syntax (main shell and vn-translation)
+        shell: bash
+        run: |
+          cd /o
+          find opennow-qt/qml opennow-qt/vn-translation/qml -name '*.qml' -print0 \
+            | xargs -0 -n1 "$QT_ROOT_DIR/bin/qmlformat" > /dev/null
+
+      - name: Finish Windows Media Foundation installation
+        shell: pwsh
+        run: |
+          .github/scripts/windows-media-foundation-background.ps1 Wait
+          .github/scripts/ensure-windows-media-foundation.ps1
+
+      - name: Run Windows decoder unit tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        shell: bash
+        run: cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows --lib
+
+      - name: Configure OpenNOW-ORC Release
+        shell: bash
+        run: |
+          cd /o
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
+
+      - name: Build OpenNOW-ORC Release
+        shell: bash
+        run: |
+          cd /o
+          cmake --build build/opennow-qt-release --config Release \
+            --target opennow-qt opennow-streamer-ffi-deploy opennow-translation-tests opennow-qt-test-runtime \
+            --parallel 8
+
+      - name: Run WinRT OCR & WuWa Dialogue DB C++ tests
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        shell: bash
+        run: |
+          cd /o
+          ctest --test-dir build/opennow-qt-release -C Release \
+            -R '^opennow-translation-tests$' --output-on-failure --no-tests=error
+
+      - name: Create portable Windows ZIP
+        shell: bash
+        run: |
+          cd /o
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -C Release -G ZIP -B build/qt-packages
+
+      - name: Verify Windows portable ZIP payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one ZIP package, found $($zip.Count)" }
+          $zipExpanded = Join-Path $env:RUNNER_TEMP "orc-zip-expanded"
+          if (Test-Path $zipExpanded) { Remove-Item $zipExpanded -Recurse -Force }
+          Expand-Archive $zip[0].FullName $zipExpanded
+          Assert-OpenNowPackagePayload -Root $zipExpanded -DeploymentRoot build/opennow-qt-release/Release
+
+      - name: Build Windows setup.exe installer
+        shell: pwsh
+        env:
+          SETUP_VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
+          $payload = Join-Path $env:RUNNER_TEMP "orc-setup-payload"
+          if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
+          Expand-Archive $zip[0].FullName $payload
+          $setup = Join-Path (Resolve-Path build/qt-packages) ([IO.Path]::GetFileNameWithoutExtension($zip[0].Name) + "-setup.exe")
+          ./opennow-qt/packaging/windows/build-setup.ps1 -Payload $payload -Version $env:SETUP_VERSION -Arch x64 -OutputFile $setup
+
+      - name: Generate SHA256SUMS and build metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pkgDir = Resolve-Path build/qt-packages
+          $files = @(Get-ChildItem $pkgDir -File | Where-Object { $_.Extension -in ".zip", ".exe" } | Sort-Object Name)
+          if ($files.Count -lt 2) { throw "Expected both portable ZIP and setup.exe in build/qt-packages" }
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($f.Name)"
+          }
+          [IO.File]::WriteAllText((Join-Path $pkgDir "SHA256SUMS"), ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          $info = @(
+            "OpenNOW-ORC Windows x64 Build"
+            "Version: $($env:OPENNOW_BUILD_VERSION)"
+            "Channel: ${{ needs.verify.outputs.channel }}"
+            "Commit: $($env:GITHUB_SHA)"
+            "Ref: $($env:GITHUB_REF_NAME)"
+            "WorkflowRun: $($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+          ) -join "`n"
+          [IO.File]::WriteAllText((Join-Path $pkgDir "BUILD-INFO.txt"), $info + "`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Upload Windows OpenNOW-ORC artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNOW-ORC-Windows-x64-${{ needs.verify.outputs.version }}
+          path: |
+            build/qt-packages/*.zip
+            build/qt-packages/*-setup.exe
+            build/qt-packages/SHA256SUMS
+            build/qt-packages/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [verify, build-windows-x64]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+      BUILD_CHANNEL: ${{ needs.verify.outputs.channel }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenNOW-ORC-Windows-x64-${{ needs.verify.outputs.version }}
+          path: release-assets
+
+      - name: Verify package checksums
+        shell: bash
+        run: |
+          (cd release-assets && sha256sum --check --strict SHA256SUMS)
+          ls -lh release-assets
+
+      - name: Create GitHub Prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_CHANNEL" == "stable" ]]; then
+            tag="v${RELEASE_VERSION}-orc.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          else
+            tag="v${RELEASE_VERSION}-orc"
+          fi
+          gh release create "$tag" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "OpenNOW-ORC v${RELEASE_VERSION} (Windows x64)" \
+            --notes-file release-assets/BUILD-INFO.txt \
+            --prerelease \
+            --latest=false

@@ -40,7 +40,7 @@ env:
 jobs:
   preflight:
     name: release-preflight
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
@@ -97,7 +97,7 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: blacksmith-8vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             build-parallel: 8
             qt_host: linux
             qt_arch: linux_gcc_64
@@ -105,7 +105,7 @@ jobs:
             linuxdeploy_sha256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
             qt_plugin_sha256: 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
           - arch: arm64
-            runner: blacksmith-8vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             build-parallel: 8
             qt_host: linux_arm64
             qt_arch: linux_gcc_arm64
@@ -288,7 +288,7 @@ jobs:
   windows:
     name: windows-${{ matrix.arch }}
     needs: preflight
-    runs-on: blacksmith-8vcpu-windows-2025
+    runs-on: windows-2025
     environment: qt-production-release
     env:
       CARGO_BUILD_JOBS: 4
@@ -395,7 +395,7 @@ jobs:
       - name: Cache Rust dependencies and build artifacts
         uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: qt-ci-blacksmith-8vcpu-windows-2025-windows-${{ matrix.arch }}
+          shared-key: qt-ci-windows-2025-windows-${{ matrix.arch }}
           workspaces: |
             native/opennow-core -> target
             native/opennow-streamer -> target
@@ -407,8 +407,8 @@ jobs:
       - name: Cache Qt C++ compilation
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
         with:
-          key: qt-ci-blacksmith-8vcpu-windows-2025-windows-${{ matrix.arch }}
-          restore-keys: qt-ci-blacksmith-8vcpu-windows-2025-windows-${{ matrix.arch }}
+          key: qt-ci-windows-2025-windows-${{ matrix.arch }}
+          restore-keys: qt-ci-windows-2025-windows-${{ matrix.arch }}
           max-size: 1G
           evict-old-files: job
           verbose: 1
@@ -554,7 +554,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            os: blacksmith-6vcpu-macos-15
+            os: macos-15
             macos-arch: arm64
             rust-target: aarch64-apple-darwin
           - arch: x64
@@ -808,7 +808,7 @@ jobs:
 
   inventory:
     name: isolated-update-signing-and-inventory
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: qt-update-signing
     needs: [preflight, linux, windows, macos, flatpak]
     timeout-minutes: 30

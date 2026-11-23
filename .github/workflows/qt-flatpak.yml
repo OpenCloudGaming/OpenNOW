@@ -31,7 +31,7 @@ permissions:
 jobs:
   flatpak:
     name: Flatpak ${{ inputs.arch }}
-    runs-on: ${{ inputs.arch == 'aarch64' && 'blacksmith-8vcpu-ubuntu-2404-arm' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 90
     env:
       FLATPAK_USER_DIR: ${{ github.workspace }}/build/flatpak/user

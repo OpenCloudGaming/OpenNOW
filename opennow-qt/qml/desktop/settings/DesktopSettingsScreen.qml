@@ -45,14 +45,15 @@ FocusScope {
         {label: qsTr("Audio"), detail: qsTr("Output and stream audio"), icon: "wave", page: 4, keywords: "sound audio volume output microphone mute focus"},
         {label: qsTr("Controls"), detail: qsTr("Pads, mouse, shortcuts"), icon: "controller", page: 5, keywords: "controller gyroscope steam sensitivity keyboard language shortcuts"},
         {label: qsTr("Recording"), detail: qsTr("Capture, replay, shortcuts"), icon: "image", page: 12, keywords: "recording capture clip replay buffer memory duration folder resolution fps quality shortcuts F12"},
+        {label: qsTr("Translation"), detail: qsTr("Screen OCR EN to Vietnamese"), icon: "globe", page: 14, keywords: "translation translate vietnamese ocr wuthering waves dialogue subtitle"},
         {label: qsTr("Appearance"), detail: qsTr("Theme, accent, layout"), icon: "palette", page: 8, keywords: "theme accent interface language scale motion console sidebar tiles quit exit close confirm"},
         {label: qsTr("Console mode"), detail: qsTr("Gamepad-first interface"), icon: "controller", page: 9, keywords: "console fullscreen gamepad startup"},
         {label: qsTr("Account"), detail: qsTr("NVIDIA, stores, privacy"), icon: "person", page: 0, keywords: "profile subscription stores steam epic xbox ubisoft battle gaijin privacy"},
         {label: qsTr("Updates"), detail: qsTr("Version, channel, notes"), icon: "reset", page: updatesSection, keywords: "update updates version release notes changelog channel stable nightly download install restart"},
         {label: qsTr("About & support"), detail: qsTr("Diagnostics, legal"), icon: "info", page: 11, keywords: "version diagnostics legal onboarding introduction replay setup restart reset"}
     ]
-    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Appearance"), qsTr("Appearance"), qsTr("Console mode"), qsTr("Controls"), qsTr("About & support"), qsTr("Recording"), qsTr("Updates")]
-    readonly property var pageComponents: [accountGroup, accountGroup, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage, updatesPage]
+    readonly property var pageTitles: [qsTr("Account"), qsTr("Account"), qsTr("Account"), qsTr("Stream"), qsTr("Audio"), qsTr("Controls"), qsTr("Network"), qsTr("Appearance"), qsTr("Appearance"), qsTr("Console mode"), qsTr("Controls"), qsTr("About & support"), qsTr("Recording"), qsTr("Updates"), qsTr("Translation")]
+    readonly property var pageComponents: [accountGroup, accountGroup, accountGroup, streamPage, audioPage, controlsGroup, networkPage, lookGroup, lookGroup, consolePage, controlsGroup, aboutPage, recordingPage, updatesPage, translationPage]
 
     function matchesSection(section) {
         const query = searchQuery.trim().toLowerCase()
@@ -722,6 +723,14 @@ FocusScope {
     Component {
         id: updatesPage
         DesktopSettingsUpdatesPage {
+            availableWidth: contentFlick.width
+            settingsScreen: root
+        }
+    }
+
+    Component {
+        id: translationPage
+        DesktopSettingsTranslationPage {
             availableWidth: contentFlick.width
             settingsScreen: root
         }

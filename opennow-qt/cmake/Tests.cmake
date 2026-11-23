@@ -1553,6 +1553,7 @@ if(BUILD_TESTING)
         opennow-controllertuning-tests
         opennow-controllersources-tests
         opennow-controllermetadata-tests
+        opennow-translation-tests
     )
     if(TARGET opennow-nativeframegeneration-tests)
         list(APPEND OPENNOW_CI_UNIT_TEST_TARGETS opennow-nativeframegeneration-tests)
@@ -1612,6 +1613,7 @@ if(BUILD_TESTING)
             opennow-controllernavigation-tests
             opennow-controllersources-tests
             opennow-controllermetadata-tests
+            opennow-translation-tests
             PROPERTIES WIN32_EXECUTABLE FALSE)
 
         # windeployqt follows the application graph and therefore does not copy
@@ -1680,7 +1682,8 @@ if(BUILD_TESTING)
                 opennow-generichidinput-tests
                 opennow-controllernavigation-tests
                 opennow-controllersources-tests
-                opennow-controllermetadata-tests)
+                opennow-controllermetadata-tests
+                opennow-translation-tests)
             add_dependencies(${test_target} opennow-qt-test-runtime)
         endforeach()
     endif()

@@ -73,7 +73,7 @@ class MacOSCrossHostTest(unittest.TestCase):
             self.assertNotIn("macos_intel_host", workflow)
         self.assertNotIn("macos-15-intel", build)
         intel_matrix = build.split("          - label: macos-x64\n", 1)[1].split("\n    env:", 1)[0]
-        self.assertIn("os: blacksmith-6vcpu-macos-15", intel_matrix)
+        self.assertIn("os: macos-15", intel_matrix)
         self.assertIn("macos-arch: x86_64", intel_matrix)
         self.assertIn("rust-target: x86_64-apple-darwin", intel_matrix)
         self.assertIn("OPENNOW_MACOS_HOST_ARCH: ${{ startsWith(matrix.label, 'macos-') && 'arm64' || '' }}", build)

@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   preflight:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.source.outputs.version }}
     steps:
@@ -57,19 +57,19 @@ jobs:
       matrix:
         include:
           - label: linux-x64
-            os: blacksmith-8vcpu-ubuntu-2404
+            os: ubuntu-24.04
             qt-host: linux
             qt-arch: linux_gcc_64
             target-arch: x64
             parallel: "8"
           - label: windows-x64
-            os: blacksmith-8vcpu-windows-2025
+            os: windows-2025
             qt-host: windows
             qt-arch: win64_msvc2022_64
             target-arch: x64
             parallel: "8"
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
+            os: macos-15
             qt-host: mac
             qt-arch: clang_64
             target-arch: arm64
@@ -90,7 +90,7 @@ jobs:
 
   publish:
     needs: [preflight, contracts, checks]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: qt-production-release
     permissions:
       actions: read
