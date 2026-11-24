@@ -61,6 +61,7 @@ internal fun OnScreenControlsSettings(
     modifier: Modifier = Modifier,
     livePreview: Boolean = false,
     controlsVisible: Boolean = touch.enabled,
+    gamepadLayoutActive: Boolean = !touch.keyboardModeEnabled,
     onVisibilityChange: (Boolean) -> Unit = { onChange(touch.copy(enabled = it)) },
     onModeChange: (Boolean) -> Unit = { onChange(touch.copy(keyboardModeEnabled = it)) },
     onEditLayout: (() -> Unit)? = null,
@@ -146,7 +147,7 @@ internal fun OnScreenControlsSettings(
                                     ControlSection(stringResource(R.string.controls_section_input)) {
                                         ControlNavigationRow(
                                             stringResource(R.string.controls_gamepad),
-                                            value = stringResource(if (touch.keyboardModeEnabled) R.string.controls_gamepad_hint else R.string.controls_selected),
+                                            value = stringResource(if (gamepadLayoutActive) R.string.controls_selected else R.string.controls_gamepad_hint),
                                             leadingIcon = Icons.Outlined.SportsEsports,
                                             onClick = { page = TouchSettingsPage.Gamepad },
                                         )
@@ -210,7 +211,7 @@ internal fun OnScreenControlsSettings(
                                 }
                             }
                             TouchSettingsPage.Gamepad -> {
-                                item { TouchLayoutSelection(!touch.keyboardModeEnabled) { onModeChange(false) } }
+                                item { TouchLayoutSelection(gamepadLayoutActive) { onModeChange(false) } }
                                 item { notice() }
                                 if (onEditLayout != null) item {
                                     ControlActionRow(

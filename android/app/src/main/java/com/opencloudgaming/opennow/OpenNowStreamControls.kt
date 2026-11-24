@@ -889,6 +889,7 @@ internal fun StreamControlsPanel(
                 onBack = { page = StreamControlsPage.Main },
                 livePreview = true,
                 controlsVisible = touchControlsVisible,
+                gamepadLayoutActive = touchControlsVisible && !keyboardOverlayActive && !controllerMouseEmulationEnabled,
                 onVisibilityChange = { onButtonTone(); onTouchControlsToggle() },
                 onModeChange = { onButtonTone(); onKeyboardModeToggle(it) },
                 onEditLayout = {
@@ -1019,7 +1020,9 @@ internal fun StreamControlsPanel(
                             page = StreamControlsPage.TouchControls
                         },
                         value = when {
-                            touchControlsVisible -> stringResource(if (keyboardOverlayActive) R.string.controls_keyboard else R.string.controls_gamepad)
+                            touchControlsVisible && keyboardOverlayActive -> stringResource(R.string.controls_keyboard)
+                            touchControlsVisible && controllerMouseEmulationEnabled -> stringResource(R.string.stream_panel_mouse_mode)
+                            touchControlsVisible -> stringResource(R.string.controls_gamepad)
                             nativeTouchActive -> stringResource(R.string.stream_touch_builtin_active)
                             else -> stringResource(R.string.common_hidden)
                         },

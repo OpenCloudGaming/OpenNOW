@@ -835,6 +835,14 @@ internal fun StreamScreen(
             client.setControllerMouseEmulationActive(controllerMouseEmulationEnabled)
         }
     }
+    fun setControllerMouseEmulation(enabled: Boolean) {
+        controllerMouseEmulationEnabled = enabled
+        if (enabled && controllerMouseAssistEnabled) {
+            client.setControllerMouseAssistEnabled(false)
+            viewModel.updateSettings(state.settings.copy(controllerMouseAutoArmOnTv = false))
+        }
+        client.setControllerMouseEmulationActive(enabled)
+    }
     LaunchedEffect(client, state.settings.physicalInput) {
         client.updatePhysicalInputSettings(state.settings.physicalInput)
     }
@@ -1326,19 +1334,21 @@ internal fun StreamScreen(
                         client.setControllerMouseAssistEnabled(enabled)
                     },
                     onControllerMouseEmulationToggle = {
-                        val newState = !controllerMouseEmulationEnabled
-                        controllerMouseEmulationEnabled = newState
-                        if (newState && controllerMouseAssistEnabled) {
-                            client.setControllerMouseAssistEnabled(false)
-                            viewModel.updateSettings(state.settings.copy(controllerMouseAutoArmOnTv = false))
-                        }
-                        client.setControllerMouseEmulationActive(newState)
+                        setControllerMouseEmulation(!controllerMouseEmulationEnabled)
                     },
                     onExit = {
                         controlsOpen = false
                         exitConfirmOpen = true
                     },
                     onKeyboardModeToggle = { enabled ->
+                        val selectingGamepad = !enabled && !nativeTouchProvisionedForSession
+                        if (selectingGamepad) {
+                            // Explicitly choosing the gamepad must restore its buttons and sticks
+                            // even if the same layout was being used to drive the mouse.
+                            setControllerMouseEmulation(false)
+                            if (physicalControllerConnected) showTouchControlsWithPhysicalController = true
+                            if (physicalMouseConnected) showTouchControlsWithPhysicalMouse = true
+                        }
                         streamInputMode = when {
                             enabled -> StreamInputMode.KeyboardMouse
                             nativeTouchProvisionedForSession -> StreamInputMode.NativeTouch
@@ -1347,7 +1357,7 @@ internal fun StreamScreen(
                         viewModel.updateSettings(
                             state.settings.copy(
                                 androidTouch = state.settings.androidTouch.copy(
-                                    enabled = if (enabled) true else state.settings.androidTouch.enabled,
+                                    enabled = enabled || selectingGamepad || state.settings.androidTouch.enabled,
                                     keyboardModeEnabled = enabled,
                                 ),
                             ),

@@ -193,6 +193,8 @@ class OnScreenControlsSettingsInstrumentedTest {
     @Test fun compactStreamMenuKeepsControlsAudioAndStatusBarVisible() {
         var settings by mutableStateOf(AppSettings())
         var screenshotBusy by mutableStateOf(false)
+        var controllerMouseEmulation by mutableStateOf(false)
+        val layoutSelections = mutableListOf<Boolean>()
         compose.setContent {
             OpenNowTheme(AppSettings(), physicalControllerConnected = false) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -207,7 +209,7 @@ class OnScreenControlsSettingsInstrumentedTest {
                         keyboardOverlayActive = settings.androidTouch.keyboardModeEnabled,
                         gyroscopeAvailable = false,
                         controllerMouseAssistEnabled = false,
-                        controllerMouseEmulationEnabled = false,
+                        controllerMouseEmulationEnabled = controllerMouseEmulation,
                         showSessionTimer = true,
                         sessionTimerLimit = SmartSessionLimit("Free", 1, SessionTimerMode.Countdown),
                         sessionStartedAtMs = 0L,
@@ -249,7 +251,7 @@ class OnScreenControlsSettingsInstrumentedTest {
                         onControllerMouseAssistToggle = { },
                         onControllerMouseEmulationToggle = { },
                         onExit = { },
-                        onKeyboardModeToggle = { enabled -> settings = settings.copy(androidTouch = settings.androidTouch.copy(keyboardModeEnabled = enabled)) },
+                        onKeyboardModeToggle = { enabled -> layoutSelections += enabled },
                         onTouchControlsToggle = { },
                         onMousePadToggle = { },
                         onMouseDirectClickToggle = { },
@@ -290,9 +292,17 @@ class OnScreenControlsSettingsInstrumentedTest {
         scrollToRow("More controls").performClick()
         scrollToRow("Stretch to fit").assertIsDisplayed()
         scrollToRow("Fewer controls").performClick()
+        compose.runOnIdle { controllerMouseEmulation = true }
         scrollToRow("On-screen controls").performClick()
         compose.onNodeWithText("Keyboard & mouse buttons").assertIsDisplayed().performClick()
         compose.onNodeWithText("Add button").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithText("Gamepad buttons").performScrollTo().performClick()
+        compose.onNodeWithText("Selected").assertDoesNotExist()
+        compose.onNodeWithText("Use this layout").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(listOf(false), layoutSelections) }
+        compose.runOnIdle { controllerMouseEmulation = false }
+        compose.onNodeWithText("Selected").assertIsDisplayed()
     }
 
     @Test fun streamRowTextKeepsReadableContrastUnderALightHostTheme() {
