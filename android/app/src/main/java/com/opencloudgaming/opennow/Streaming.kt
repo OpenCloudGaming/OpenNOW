@@ -5,6 +5,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.input.InputManager
 import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -3741,25 +3742,37 @@ class NativeStreamClient(
     private fun startGamepadKeepalive() {
         gamepadKeepaliveJob?.cancel()
         gamepadKeepaliveJob = scope.launch {
-            var connectedScanCountdown = 0
-            primeConnectedGamepadState(reason = "keepalive start")
-            while (true) {
-                delay(100L)
-                connectedScanCountdown -= 1
-                if (connectedScanCountdown <= 0) {
-                    connectedScanCountdown = 10
-                    refreshConnectedPhysicalControllers()
+            val inputManager = appContext.getSystemService(InputManager::class.java)
+            val listener = object : InputManager.InputDeviceListener {
+                override fun onInputDeviceAdded(deviceId: Int) = refreshConnectedPhysicalControllers()
+                override fun onInputDeviceRemoved(deviceId: Int) = refreshConnectedPhysicalControllers()
+                override fun onInputDeviceChanged(deviceId: Int) = refreshConnectedPhysicalControllers()
+            }
+            // This coroutine runs on Main, so connection changes and input dispatch share a thread.
+            inputManager?.registerInputDeviceListener(listener, null)
+            try {
+                primeConnectedGamepadState(reason = "keepalive start")
+                var connectedScanCountdown = 10
+                while (true) {
+                    delay(100L)
+                    connectedScanCountdown -= 1
+                    if (connectedScanCountdown <= 0) {
+                        connectedScanCountdown = 10
+                        refreshConnectedPhysicalControllers()
+                    }
+                    if (
+                        shouldSendGamepadKeepalive(
+                            hasControllerState = hasAnyControllerState(),
+                            hasActiveControllerInput = hasActiveControllerInput(),
+                            touchMouseEnabled = touchMouseEnabled,
+                        )
+                    ) {
+                        sendCurrentGamepadState()
+                    }
+                    updateHapticsAdvertisement()
                 }
-                if (
-                    shouldSendGamepadKeepalive(
-                        hasControllerState = hasAnyControllerState(),
-                        hasActiveControllerInput = hasActiveControllerInput(),
-                        touchMouseEnabled = touchMouseEnabled,
-                    )
-                ) {
-                    sendCurrentGamepadState()
-                }
-                updateHapticsAdvertisement()
+            } finally {
+                inputManager?.unregisterInputDeviceListener(listener)
             }
         }
     }
@@ -5214,6 +5227,9 @@ class NativeStreamClient(
     private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
 
     private fun controllerIdFor(deviceId: Int): Int {
+        // Device callbacks and the keepalive scan reconcile slots. Avoid enumerating every
+        // Android input device from the UI thread for each event from an established controller.
+        if (deviceId >= 0) controllerSlots[deviceId]?.let { return it }
         val connectedDevices = connectedControllerDevices()
         val connectedDeviceIds = connectedDevices.mapTo(mutableSetOf()) { it.id }
         val assignment = AndroidControllerSlotRegistry.assign(
