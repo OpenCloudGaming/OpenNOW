@@ -599,9 +599,10 @@ impl AudioSink for AlsaSink {
                     std::thread::sleep(std::time::Duration::from_millis(2));
                     continue;
                 }
-                // ESTRPIPE is Linux-specific; alsa-lib reports "suspended" as -86 elsewhere.
+                // ESTRPIPE is Linux-specific. alsa-lib's non-Linux compatibility header defines
+                // it as ESPIPE, so that is what a suspended PCM returns on FreeBSD.
                 #[cfg(target_os = "freebsd")]
-                const ESTRPIPE: c_int = 86;
+                const ESTRPIPE: c_int = libc::ESPIPE;
                 #[cfg(not(target_os = "freebsd"))]
                 const ESTRPIPE: c_int = libc::ESTRPIPE;
                 if written as c_int == -ESTRPIPE {

@@ -470,7 +470,9 @@ pub(crate) struct LinuxHardwareOutput {
     raw_input: Option<LinuxXInputController>,
     window: sdl2::video::Window,
     video: sdl2::VideoSubsystem,
-    event_pump: sdl2::EventPump,
+    // SDL allows one EventPump per process; release_event_pump hands it back so a fallback
+    // output can create its own while this one is still alive.
+    event_pump: Option<sdl2::EventPump>,
     audio: AudioDevice<StreamAudioCallback>,
     output: Arc<OutputBuffers>,
     external_renderer: bool,
@@ -562,10 +564,14 @@ impl LinuxHardwareOutput {
             None
         };
         let external_relative_motion = raw_input.is_some();
+        // The XInput2 thread also delivers buttons and the wheel, but only while relative mouse
+        // mode is on (see SdlInputCapture::external_mouse_buttons_active). If it failed to
+        // start, SDL keeps every event.
+        let external_mouse_buttons = raw_input.is_some();
         let mut input_capture = SdlInputCapture::new(
             capture_input,
             external_relative_motion,
-            false,
+            external_mouse_buttons,
             stream.shortcuts,
         );
         input_capture.enable_gamepads(&sdl);
@@ -576,7 +582,7 @@ impl LinuxHardwareOutput {
             raw_input,
             window,
             video,
-            event_pump,
+            event_pump: Some(event_pump),
             audio,
             output,
             external_renderer,
@@ -617,6 +623,10 @@ impl LinuxHardwareOutput {
                 .set_input_paused(false, &self._sdl, &mut self.window);
             self.audio.resume();
         }
+    }
+
+    fn release_event_pump(&mut self) {
+        self.event_pump = None;
     }
 
     fn stop(&mut self) {
@@ -728,7 +738,12 @@ impl LinuxHardwareOutput {
         {
             surface.refresh_ordering()?;
         }
-        for event in self.event_pump.poll_iter().collect::<Vec<_>>() {
+        let events = self
+            .event_pump
+            .as_mut()
+            .map(|pump| pump.poll_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for event in events {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
                 self.input_capture.release(&self._sdl, &mut self.window);
                 if let Ok(surface) = self.native_surface.as_mut() {
@@ -1024,6 +1039,15 @@ impl SdlInputCapture {
         }
     }
 
+    /// Whether an external raw-input thread currently owns mouse buttons and the wheel, so SDL
+    /// must not report them too. The Windows raw input controller always does. The Linux
+    /// XInput2 thread only captures while relative mouse mode is on, so SDL keeps ownership in
+    /// absolute mode and whenever that thread did not start.
+    fn external_mouse_buttons_active(&self) -> bool {
+        self.external_mouse_buttons
+            && (!cfg!(any(target_os = "linux", target_os = "freebsd")) || self.relative_mouse)
+    }
+
     pub(crate) fn enable_gamepads(&mut self, sdl: &sdl2::Sdl) {
         let Ok(subsystem) = sdl.game_controller() else {
             return;
@@ -1288,7 +1312,7 @@ impl SdlInputCapture {
                 if self.cursor_state == RemoteCursorState::Hidden {
                     self.enable_relative_mouse(sdl, window);
                 }
-                if !self.external_mouse_buttons
+                if !self.external_mouse_buttons_active()
                     && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.insert(button)
                 {
@@ -1299,8 +1323,9 @@ impl SdlInputCapture {
                 }
             }
             Event::MouseButtonUp { mouse_btn, .. } => {
-                if !self.external_mouse_buttons
-                    && let Some(button) = sdl_mouse_button(mouse_btn)
+                // A press SDL reported is always released by SDL, even if the external thread
+                // took ownership while the button was held.
+                if let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.remove(&button)
                 {
                     self.captured.push(CapturedInput::MouseButton {
@@ -1311,7 +1336,7 @@ impl SdlInputCapture {
             }
             Event::MouseWheel {
                 x, y, direction, ..
-            } if !self.external_mouse_buttons && (x != 0 || y != 0) => {
+            } if !self.external_mouse_buttons_active() && (x != 0 || y != 0) => {
                 let direction = if direction == sdl2::mouse::MouseWheelDirection::Flipped {
                     -1
                 } else {
@@ -1644,10 +1669,11 @@ impl SoftwareOutput {
         let external_relative_motion = raw_input.is_some();
         #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
         let external_relative_motion = false;
+        let external_mouse_buttons = external_relative_motion;
         let mut input_capture = SdlInputCapture::new(
             capture_input,
             external_relative_motion,
-            false,
+            external_mouse_buttons,
             stream.shortcuts,
         );
         input_capture.enable_gamepads(&sdl);
@@ -2345,6 +2371,15 @@ impl ActiveOutput {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     pub(crate) fn is_linux_hardware(&self) -> bool {
         matches!(self, Self::LinuxHardware(_))
+    }
+
+    /// Gives back the SDL event pump of an output that is about to be replaced. SDL allows only
+    /// one per process, so a replacement created while this output is alive could not get its own.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub(crate) fn release_event_pump(&mut self) {
+        if let Self::LinuxHardware(output) = self {
+            output.release_event_pump();
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -3450,6 +3485,25 @@ mod tests {
         assert!(!capture.focused);
         assert!(!capture.relative_mouse);
         assert_eq!(capture.cursor_state, RemoteCursorState::Unknown);
+    }
+
+    #[test]
+    fn external_mouse_buttons_follow_the_raw_input_owner() {
+        let mut capture =
+            SdlInputCapture::new(true, true, true, StreamShortcutBindings::default());
+        // Windows raw input always owns buttons; the Linux XInput2 thread only in relative mode.
+        capture.relative_mouse = false;
+        assert_eq!(
+            capture.external_mouse_buttons_active(),
+            !cfg!(any(target_os = "linux", target_os = "freebsd"))
+        );
+        capture.relative_mouse = true;
+        assert!(capture.external_mouse_buttons_active());
+        // Without an external owner SDL keeps the buttons in every mode.
+        let mut capture =
+            SdlInputCapture::new(true, false, false, StreamShortcutBindings::default());
+        capture.relative_mouse = true;
+        assert!(!capture.external_mouse_buttons_active());
     }
 
     #[test]

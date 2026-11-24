@@ -25,9 +25,16 @@ opennow-streamer-platform-windows = { path = "../opennow-streamer-platform-windo
 oxideav-core.workspace = true
 oxideav-mkv.workspace = true
 opus.workspace = true
-sdl2.workspace = true
 scuffle-av1.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(not(target_os = "freebsd"))'.dependencies]
+# Windows, macOS and Linux keep the bundled, statically linked SDL2.
+sdl2 = { workspace = true, features = ["bundled", "static-link"] }
+
+[target.'cfg(target_os = "freebsd")'.dependencies]
+# FreeBSD links the system SDL2 (devel/sdl20) found through pkg-config.
+sdl2 = { workspace = true, features = ["use-pkgconfig"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "0.6"

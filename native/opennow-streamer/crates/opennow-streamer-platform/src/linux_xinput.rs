@@ -146,6 +146,10 @@ fn run_xinput_thread(
     // reconcile_pressed_buttons).
     let mut drag_last_position: Option<(f64, f64)> = None;
     let mut drag_motion_seen = false;
+    // Pointer-position deltas are in screen pixels, raw motion in device counts; keep their
+    // sub-pixel remainders apart.
+    let mut drag_residual_x = 0.0_f64;
+    let mut drag_residual_y = 0.0_f64;
     // Some X servers (seen on FreeBSD) deliver RawButtonPress but not every
     // RawButtonRelease, which leaves a button stuck in the stream. Check the real
     // button state of the master pointer and synthesize any missing release.
@@ -211,8 +215,8 @@ fn run_xinput_thread(
                     pointer_id,
                     &mut drag_last_position,
                     &mut drag_motion_seen,
-                    &mut residual_x,
-                    &mut residual_y,
+                    &mut drag_residual_x,
+                    &mut drag_residual_y,
                 )
             };
             continue;
@@ -227,13 +231,30 @@ fn run_xinput_thread(
             if cookie.extension != opcode || unsafe { (xlib.XGetEventData)(display, cookie) } == 0 {
                 continue;
             }
+            let mut button_event = None;
             if !cookie.data.is_null() {
                 let raw = unsafe { &*(cookie.data.cast::<xinput2::XIRawEvent>()) };
-                if process_raw_event(&state, raw, &mut residual_x, &mut residual_y) {
-                    drag_motion_seen = true;
+                match raw.evtype {
+                    xinput2::XI_RawButtonPress => button_event = Some((raw.detail, true)),
+                    xinput2::XI_RawButtonRelease => button_event = Some((raw.detail, false)),
+                    _ => {
+                        if process_raw_event(&state, raw, &mut residual_x, &mut residual_y) {
+                            drag_motion_seen = true;
+                        }
+                    }
                 }
             }
             unsafe { (xlib.XFreeEventData)(display, cookie) };
+            if let Some((detail, pressed)) = button_event {
+                // Raw events carry the physical button while XIQueryPointer reports logical
+                // buttons, so both go through the pointer button map before they are compared.
+                // Reading the map is a round trip, which is why it happens after the event
+                // data has been released.
+                let map = unsafe { pointer_button_map(&xlib, display) };
+                if state.enabled.load(Ordering::Acquire) {
+                    process_button(&state, logical_button(&map, detail), pressed);
+                }
+            }
         }
         unsafe {
             reconcile_pressed_buttons(
@@ -245,8 +266,8 @@ fn run_xinput_thread(
                 pointer_id,
                 &mut drag_last_position,
                 &mut drag_motion_seen,
-                &mut residual_x,
-                &mut residual_y,
+                &mut drag_residual_x,
+                &mut drag_residual_y,
             )
         };
         if x_revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
@@ -322,8 +343,7 @@ fn process_raw_event(
             push_mouse_delta(&state.captured_input, delta_x, delta_y);
             return true;
         }
-        xinput2::XI_RawButtonPress => process_button(state, raw.detail, true),
-        xinput2::XI_RawButtonRelease => process_button(state, raw.detail, false),
+        // Button events are handled by the event loop (see run_xinput_thread).
         _ => {}
     }
     false
@@ -402,8 +422,27 @@ fn process_button(state: &XInputState, detail: libc::c_int, pressed: bool) {
     }
 }
 
-/// Reads the master pointer's physically pressed buttons (mapped to the stream's button
-/// numbers) and its root-window position.
+/// The core pointer's button map: entry `physical - 1` holds the logical button number.
+unsafe fn pointer_button_map(xlib: &xlib::Xlib, display: *mut xlib::Display) -> Vec<u8> {
+    let mut map = [0_u8; 256];
+    let count =
+        unsafe { (xlib.XGetPointerMapping)(display, map.as_mut_ptr(), map.len() as libc::c_int) };
+    map[..count.clamp(0, map.len() as libc::c_int) as usize].to_vec()
+}
+
+/// Converts the physical button of a raw event to the logical button the server reports in
+/// XIQueryPointer. Identity maps and buttons outside the map are unchanged; 0 marks a
+/// disabled button.
+fn logical_button(map: &[u8], detail: libc::c_int) -> libc::c_int {
+    usize::try_from(detail)
+        .ok()
+        .and_then(|detail| detail.checked_sub(1))
+        .and_then(|index| map.get(index))
+        .map_or(detail, |logical| libc::c_int::from(*logical))
+}
+
+/// Reads the master pointer's pressed buttons (logical button numbers mapped to the stream's
+/// button numbers) and its root-window position.
 unsafe fn query_pointer(
     xlib: &xlib::Xlib,
     xi: &xinput2::XInput2,
@@ -437,6 +476,9 @@ unsafe fn query_pointer(
         )
     } == 0
     {
+        if !buttons.mask.is_null() {
+            unsafe { (xlib.XFree)(buttons.mask.cast()) };
+        }
         return None;
     }
     let mut down = HashSet::new();
@@ -497,10 +539,19 @@ unsafe fn reconcile_pressed_buttons(
     if !state.enabled.load(Ordering::Acquire) {
         return;
     }
-    // Movement first, so it stays ordered before any button change sent below.
+    // The query above is a round trip, so raw motion for the movement it sampled may be sitting
+    // unprocessed in Xlib's queue. Leave that movement to those events: they will set
+    // motion_seen, and otherwise the next sample sends it.
+    let raw_pending = unsafe { (xlib.XPending)(display) } > 0;
+    // Movement first, so it stays ordered before any button change sent below. The position
+    // delta is pointer-accelerated; it is only a stand-in while raw motion is not delivered.
     if *motion_seen {
         *motion_seen = false;
         *last_position = Some((x, y));
+    } else if raw_pending {
+        if last_position.is_none() {
+            *last_position = Some((x, y));
+        }
     } else if let Some((last_x, last_y)) = *last_position {
         *residual_x += x - last_x;
         *residual_y += y - last_y;
@@ -582,8 +633,21 @@ fn push_mouse_delta(queue: &CapturedInputQueue, mut delta_x: i32, mut delta_y: i
 
 #[cfg(test)]
 mod tests {
-    use super::push_mouse_delta;
+    use super::{logical_button, push_mouse_delta};
     use crate::media::{CapturedInput, CapturedInputQueue};
+
+    #[test]
+    fn raw_buttons_are_converted_to_the_servers_logical_buttons() {
+        // Identity map, swapped primary/secondary buttons, a disabled button, and buttons
+        // outside the map.
+        assert_eq!(logical_button(&[1, 2, 3], 2), 2);
+        assert_eq!(logical_button(&[3, 2, 1], 1), 3);
+        assert_eq!(logical_button(&[3, 2, 1], 3), 1);
+        assert_eq!(logical_button(&[1, 0, 3], 2), 0);
+        assert_eq!(logical_button(&[1, 2, 3], 9), 9);
+        assert_eq!(logical_button(&[], 1), 1);
+        assert_eq!(logical_button(&[1, 2, 3], 0), 0);
+    }
 
     #[test]
     fn large_xinput_deltas_are_split_without_loss() {

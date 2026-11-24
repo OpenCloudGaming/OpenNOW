@@ -734,6 +734,11 @@ impl MainThreadHost {
                     if linux_hardware && let Err(reason) = &result {
                         let replacement =
                             retry_software_output(crate::HARDWARE_ONLY, reason.clone(), || {
+                                // SDL allows one event pump per process: release the failed
+                                // output's before the replacement asks for its own.
+                                if let Some(current) = active.as_mut() {
+                                    current.release_event_pump();
+                                }
                                 initialize_output(
                                     Arc::clone(&self.output),
                                     Some(&new_surface),
@@ -878,6 +883,11 @@ impl MainThreadHost {
                     let replacement =
                         retry_software_output(crate::HARDWARE_ONLY, reason.clone(), || {
                             self.linux_software_fallback.store(true, Ordering::Release);
+                            // SDL allows one event pump per process: release the failed
+                            // output's before the replacement asks for its own.
+                            if let Some(current) = active.as_mut() {
+                                current.release_event_pump();
+                            }
                             initialize_output(
                                 Arc::clone(&self.output),
                                 surface.as_ref(),
@@ -1121,6 +1131,9 @@ impl MainThreadHost {
                                 message.clone(),
                                 || {
                                     output.stop();
+                                    // SDL allows one event pump per process: release the failed
+                                    // output's before the replacement asks for its own.
+                                    output.release_event_pump();
                                     initialize_output(
                                         Arc::clone(&self.output),
                                         surface.as_ref(),
