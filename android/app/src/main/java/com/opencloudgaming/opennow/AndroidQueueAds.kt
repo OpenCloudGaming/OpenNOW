@@ -6,6 +6,15 @@ internal fun isSessionAdsRequired(adState: SessionAdState?): Boolean =
 internal fun sessionAdItems(adState: SessionAdState?): List<SessionAdInfo> =
     adState?.sessionAds?.takeIf { it.isNotEmpty() } ?: adState?.ads.orEmpty()
 
+internal fun sessionAdMediaUrls(ad: SessionAdInfo?): List<String> {
+    if (ad == null) return emptyList()
+    return buildList {
+        ad.adMediaFiles.forEach { add(it.mediaFileUrl) }
+        add(ad.adUrl)
+        add(ad.mediaUrl)
+    }.mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }.distinct()
+}
+
 internal fun shouldWaitForQueueAdPlayback(adState: SessionAdState?): Boolean =
     isSessionAdsRequired(adState) && sessionAdItems(adState).isNotEmpty()
 

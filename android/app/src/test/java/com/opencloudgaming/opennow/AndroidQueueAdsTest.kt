@@ -8,6 +8,27 @@ import org.junit.Test
 
 class AndroidQueueAdsTest {
     @Test
+    fun mediaSourcesKeepServerOrderAndFallBackToLegacyUrls() {
+        val primary = "https://example.com/primary.mp4"
+        val alternative = "https://example.com/alternative.mp4"
+        val legacy = "https://example.com/legacy.mp4"
+        val ad = SessionAdInfo(
+            adId = "sponsor",
+            adMediaFiles = listOf(
+                SessionAdMediaFile(mediaFileUrl = " "),
+                SessionAdMediaFile(mediaFileUrl = primary),
+                SessionAdMediaFile(mediaFileUrl = alternative),
+            ),
+            adUrl = " $primary ",
+            mediaUrl = legacy,
+        )
+
+        assertEquals(listOf(primary, alternative, legacy), sessionAdMediaUrls(ad))
+        assertEquals(listOf(legacy), sessionAdMediaUrls(ad.copy(adMediaFiles = emptyList(), adUrl = "")))
+        assertEquals(emptyList<String>(), sessionAdMediaUrls(SessionAdInfo(adId = "missing")))
+    }
+
+    @Test
     fun mergeQueueSessionStatePreservesAdsWhenServerTemporarilyOmitsThem() {
         val previous = session(
             adState = SessionAdState(

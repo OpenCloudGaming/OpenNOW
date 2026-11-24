@@ -170,7 +170,8 @@ internal fun SpaceUiScreen(
     val ads = rememberCatalogNativeAds(
         adsAccess.takeIf { state.page == AppPage.Library || discoverCatalog }, games.size, gridState,
     )
-    val hasAdSlots by rememberUpdatedState(ads != null)
+    val adInterval by rememberUpdatedState(ads?.interval)
+    val hasLibraryTopAdSlot by rememberUpdatedState(adsAccess?.canShowAds == true && state.page == AppPage.Library)
     val windowFocused = LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(state.page, games.isNotEmpty(), inputEnabled, windowFocused, portraitLayout, keyboardNavigation, discoverCatalog) {
         if (inputEnabled && windowFocused && (!portraitLayout || keyboardNavigation)) {
@@ -181,8 +182,9 @@ internal fun SpaceUiScreen(
                     val keepLibraryStart = state.page == AppPage.Library && selectedIndex == 0 && !gridState.canScrollBackward
                     if (keepLibraryStart) gridState.scrollToItem(0)
                     if (!keepLibraryStart || gridState.layoutInfo.visibleItemsInfo.none { it.key == game?.id }) {
-                        val headerCount = if (state.page == AppPage.Library && portraitLayout) 1 else 0
-                        gridState.scrollToItem(catalogGameGridIndex(selectedIndex, hasAdSlots, headerCount))
+                        val portraitHeader = if (state.page == AppPage.Library && portraitLayout) 1 else 0
+                        val adHeader = if (hasLibraryTopAdSlot) 1 else 0
+                        gridState.scrollToItem(catalogGameGridIndex(selectedIndex, adInterval, portraitHeader + adHeader))
                     }
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.any { it.key == game?.id } }.first { it }
                 } else {
@@ -277,7 +279,7 @@ internal fun SpaceUiScreen(
                         if (state.page == AppPage.Library) librarySelectedId = id else storeSelectedId = id
                     }, onSelectGame = onSelectGame, onRefresh = onRefresh,
                     catalogControls = catalogControls, libraryContent = libraryContent,
-                    onResumeSession = onResumeSession, ads = ads)
+                    onResumeSession = onResumeSession, ads = ads, catalogAdAccess = adsAccess)
             } else if (state.page == AppPage.Library) {
                 if (searchVisible) {
                     NativeSearchField(query, onSearchChange, stringResource(R.string.nav_search),
@@ -289,7 +291,7 @@ internal fun SpaceUiScreen(
                         compact = compact, portrait = portrait,
                         onFocused = { librarySelectedId = it }, onSelectGame = onSelectGame,
                         onRefresh = onRefresh, catalogControls = catalogControls, libraryContent = libraryContent,
-                        ads = ads)
+                        ads = ads, catalogAdAccess = adsAccess)
                 }
             } else if (discoverCatalog) {
                 if (searchVisible) NativeSearchField(query, onSearchChange, stringResource(R.string.nav_search),
@@ -448,6 +450,7 @@ private fun SpaceLibraryBody(
     catalogControls: @Composable () -> Unit,
     libraryContent: @Composable () -> Unit,
     ads: CatalogAdSlots?,
+    catalogAdAccess: CatalogAdAccess?,
 ) {
     val reduceMotion = LocalReduceForegroundMotion.current
     val overview: @Composable () -> Unit = {
@@ -473,12 +476,14 @@ private fun SpaceLibraryBody(
             }
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis) }
             if (games.isEmpty()) {
+                CatalogTopAdRow(catalogAdAccess, AppPage.Library)
                 Text(stringResource(R.string.no_games_loaded), color = SpaceWhite, fontSize = 20.sp)
                 Text(stringResource(R.string.space_ui_empty), color = SpaceMuted, fontSize = 13.sp)
                 SpaceControl(stringResource(R.string.space_ui_refresh), onClick = onRefresh)
             } else LazyVerticalGrid(columns = GridCells.Fixed(4), state = gridState,
                 contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp), modifier = Modifier.weight(1f).testTag("space-library-grid")) {
+                catalogTopAdItem(catalogAdAccess, AppPage.Library)
                 catalogGameItems(games, ads, "space-library-game") { game ->
                     SpaceGameTile(game, selectedGame?.id == game.id, compact, reduceMotion,
                         showPremiumMarker = state.settings.showPremiumMarker,

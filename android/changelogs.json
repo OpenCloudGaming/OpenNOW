@@ -1,6 +1,6 @@
 {
-  "207": {
-    "version": "2.5.1",
+  "209": {
+    "version": "2.5.3",
     "notes": [
       "KB & Mouse passthrough (externally) there was some issues with it before",
       "Number and special character input for some languages",

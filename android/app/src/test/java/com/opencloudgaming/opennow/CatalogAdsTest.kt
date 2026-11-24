@@ -51,27 +51,30 @@ class CatalogAdsTest {
     }
 
     @Test
-    fun slotsArePlacedAfterEveryThirtyGames() {
-        assertEquals(emptyList<Int>(), CatalogAdSlots(29).stops.toList())
-        assertEquals(listOf(30, 60, 90), CatalogAdSlots(99).stops.toList())
+    fun slotsArePlacedAfterACompleteRowAtLeastThirtyGamesApart() {
+        val threeColumnInterval = catalogAdInterval(3)
+        val fourColumnInterval = catalogAdInterval(4)
+        assertEquals(emptyList<Int>(), CatalogAdSlots(29, threeColumnInterval).stops.toList())
+        assertEquals(listOf(30, 60, 90), CatalogAdSlots(99, threeColumnInterval).stops.toList())
+        assertEquals(listOf(32, 64, 96), CatalogAdSlots(99, fourColumnInterval).stops.toList())
     }
 
     @Test
     fun prefetchStartsWithTwoSlotsAndFollowsForwardJumps() {
-        assertEquals(listOf(30, 60), catalogAdPrefetchStops(250, 1..8).toList())
-        assertEquals(listOf(30, 60, 90), catalogAdPrefetchStops(250, 24..30).toList())
-        assertEquals(listOf(150, 180), catalogAdPrefetchStops(250, 131..139).toList())
-        assertEquals(listOf(240), catalogAdPrefetchStops(250, 230..238).toList())
-        assertEquals(emptyList<Int>(), catalogAdPrefetchStops(250, 241..250).toList())
+        assertEquals(listOf(32, 64), catalogAdPrefetchStops(250, 1..8, 32).toList())
+        assertEquals(listOf(32, 64, 96), catalogAdPrefetchStops(250, 24..32, 32).toList())
+        assertEquals(listOf(160, 192), catalogAdPrefetchStops(250, 131..139, 32).toList())
+        assertEquals(listOf(224), catalogAdPrefetchStops(250, 222..230, 32).toList())
+        assertEquals(emptyList<Int>(), catalogAdPrefetchStops(250, 225..250, 32).toList())
     }
 
     @Test
     fun focusIndexAccountsForAdSlotsWhetherTheCreativeHasLoadedOrNot() {
-        assertEquals(29, catalogGameGridIndex(29, hasAdSlots = true))
-        assertEquals(31, catalogGameGridIndex(30, hasAdSlots = true))
-        assertEquals(62, catalogGameGridIndex(60, hasAdSlots = true))
-        assertEquals(2, catalogGameGridIndex(0, hasAdSlots = true, headerCount = 2))
-        assertEquals(33, catalogGameGridIndex(30, hasAdSlots = true, headerCount = 2))
-        assertEquals(32, catalogGameGridIndex(30, hasAdSlots = false, headerCount = 2))
+        assertEquals(31, catalogGameGridIndex(31, adInterval = 32, headerCount = 0))
+        assertEquals(33, catalogGameGridIndex(32, adInterval = 32, headerCount = 0))
+        assertEquals(66, catalogGameGridIndex(64, adInterval = 32, headerCount = 0))
+        assertEquals(2, catalogGameGridIndex(0, adInterval = 32, headerCount = 2))
+        assertEquals(35, catalogGameGridIndex(32, adInterval = 32, headerCount = 2))
+        assertEquals(34, catalogGameGridIndex(32, adInterval = null, headerCount = 2))
     }
 }

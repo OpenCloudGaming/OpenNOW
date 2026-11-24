@@ -44,6 +44,7 @@ internal fun SpacePortraitCatalog(
     libraryContent: @Composable () -> Unit,
     onResumeSession: () -> Unit,
     ads: CatalogAdSlots? = null,
+    catalogAdAccess: CatalogAdAccess? = null,
 ) {
     val reduceMotion = LocalReduceForegroundMotion.current
     val library = state.page == AppPage.Library
@@ -74,6 +75,7 @@ internal fun SpacePortraitCatalog(
                 }
             }
         }
+        if (library) catalogTopAdItem(catalogAdAccess, AppPage.Library)
         catalogGameItems(games, ads, "space-portrait-game") { game ->
             SpaceGameTile(game, selectedGame?.id == game.id, compact = false, reduceMotion = reduceMotion,
                 showPremiumMarker = state.settings.showPremiumMarker,

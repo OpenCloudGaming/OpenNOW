@@ -1023,12 +1023,23 @@ private fun MainShell(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !inStream)
     val spaceUi = shouldUseSpaceUi(state.settings.experimentalSpaceUi, state.page)
     val spaceUiStateHolder = rememberSaveableStateHolder()
+    var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
+    val topAdPage = when (state.page) {
+        AppPage.Home -> AppPage.Home.takeIf {
+            !spaceUi && visibleSearchTarget != SearchTarget.Store &&
+                state.catalogSearch.isBlank() && state.catalogFilterIds.isEmpty()
+        }
+        AppPage.Library -> AppPage.Library.takeIf {
+            visibleSearchTarget != SearchTarget.Library && state.librarySearch.isBlank() &&
+                state.libraryFilterIds.isEmpty()
+        }
+        else -> null
+    }
     val catalogAdAccess = rememberCatalogAdAccess(
         enabled = canShowCatalogAds(state) && !tvProfile && (BuildConfig.DEBUG || !state.settings.demoMode),
-        preloadTopAds = !spaceUi,
+        topPage = topAdPage,
     )
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
-    var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
     var settingsDetailRouteOpen by remember { mutableStateOf(false) }
     var settingsBackRequestToken by remember { mutableStateOf(0) }

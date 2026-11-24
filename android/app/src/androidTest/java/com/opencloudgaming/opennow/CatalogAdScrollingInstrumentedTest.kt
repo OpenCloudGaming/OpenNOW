@@ -12,7 +12,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performScrollToKey
@@ -26,7 +25,7 @@ class CatalogAdScrollingInstrumentedTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun unfilledTopAdLeavesNoGapAndInlineSlotKeepsItsSpace() {
+    fun unfilledTopAndInlineAdsLeaveNoPlaceholder() {
         compose.setContent {
             Column {
                 CatalogAdRow(null, compact = true, modifier = Modifier.testTag("top-ad"))
@@ -35,13 +34,14 @@ class CatalogAdScrollingInstrumentedTest {
         }
 
         compose.onNodeWithTag("top-ad", useUnmergedTree = true).assertDoesNotExist()
-        compose.onNodeWithTag("inline-ad", useUnmergedTree = true).assertHeightIsAtLeast(136.dp)
+        compose.onNodeWithTag("inline-ad", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test
-    fun aFourColumnCatalogHasStableSlotsAtThirtyAndSixtyBeforeAdsLoad() {
+    fun aFourColumnCatalogPlacesUnfilledSlotsAfterCompleteRows() {
         val games = List(65) { GameInfo(id = "game-$it", title = "Game $it") }
-        val ads = CatalogAdSlots(games.size)
+        val interval = catalogAdInterval(4)
+        val ads = CatalogAdSlots(games.size, interval)
         lateinit var grid: LazyGridState
         compose.setContent {
             grid = rememberLazyGridState()
@@ -58,14 +58,16 @@ class CatalogAdScrollingInstrumentedTest {
         }
 
         val catalog = compose.onNodeWithTag("ad-catalog")
-        for ((stop, index) in listOf(30 to 31, 60 to 62)) {
+        for ((stop, index) in listOf(32 to 33, 64 to 66)) {
             val adKey = "catalog-ad-after-$stop"
-            catalog.performScrollToKey(adKey)
+            catalog.performScrollToKey("game-${stop - 4}")
             compose.runOnIdle {
                 val ad = grid.layoutInfo.visibleItemsInfo.first { it.key == adKey }
                 assertEquals(index, ad.index)
                 assertEquals(grid.layoutInfo.viewportSize.width, ad.size.width)
-                assertTrue(ad.size.height > 0)
+                assertEquals(0, ad.size.height)
+                val previousGame = grid.layoutInfo.visibleItemsInfo.first { it.key == "game-${stop - 1}" }
+                assertEquals(3, previousGame.column)
                 assertEquals(68, grid.layoutInfo.totalItemsCount)
                 val visibleGameCounts = grid.layoutInfo.visibleItemsInfo.mapNotNull { item ->
                     val key = item.key as String
@@ -77,7 +79,7 @@ class CatalogAdScrollingInstrumentedTest {
                 }
                 assertEquals(
                     visibleGameCounts.min()..visibleGameCounts.max(),
-                    visibleCatalogGameCounts(grid.layoutInfo, games.size),
+                    visibleCatalogGameCounts(grid.layoutInfo, games.size, interval),
                 )
             }
         }

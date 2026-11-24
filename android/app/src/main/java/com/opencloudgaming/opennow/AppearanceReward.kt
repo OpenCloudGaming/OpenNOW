@@ -20,16 +20,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import com.google.android.gms.ads.AdError
-import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.FullScreenContentCallback
 import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import kotlin.coroutines.resume
-import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 
 private const val REWARD_TAG = "AppearanceReward"
 
@@ -62,18 +61,24 @@ internal fun AppearanceUnlockOffer(onEarned: () -> Unit, isCurrentDestination: (
                 if (offer.busy || consent.refreshing || consent.showingForm) return@FilledTonalButton
                 if (!consent.canRequestAds) {
                     offer = RewardOfferState.Unavailable
-                    consent.refresh(activity, retryFailure = true)
+                    consent.refresh(activity)
                     return@FilledTonalButton
                 }
                 offer = RewardOfferState.Loading
                 scope.launch {
-                    val ad = withTimeoutOrNull(25.seconds) {
-                        val app = activity.applicationContext
-                        if (initializeGoogleAds(app) && consent.canRequestAds && !consent.showingForm) {
-                            loadAppearanceReward(app)
-                        } else {
+                    val app = activity.applicationContext
+                    val ad = if (initializeGoogleAds(app) && stillOnDestination() &&
+                        activity.lifecycle.currentState == Lifecycle.State.RESUMED &&
+                        !activity.isFinishing && consent.canRequestAds && !consent.showingForm
+                    ) {
+                        try {
+                            withTimeout(GOOGLE_AD_LOAD_TIMEOUT) { loadAppearanceReward(app) }
+                        } catch (_: TimeoutCancellationException) {
+                            Log.d(REWARD_TAG, "Rewarded ad request timed out")
                             null
                         }
+                    } else {
+                        null
                     }
                     if (ad == null) {
                         offer = RewardOfferState.Unavailable
@@ -128,7 +133,7 @@ private suspend fun loadAppearanceReward(app: Context): RewardedAd? = suspendCan
         RewardedAd.load(
             app,
             BuildConfig.COLOURS_REWARDED_AD_UNIT_ID,
-            AdRequest.Builder().build(),
+            googleAdRequest(),
             object : RewardedAdLoadCallback() {
                 override fun onAdLoaded(ad: RewardedAd) = result.resume(ad)
 

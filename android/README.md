@@ -23,10 +23,10 @@ For custom bundle tasks, pass `-Pdistribution=play-store`.
 
 ## Ads and appearance customization
 
-The regular handset and tablet Store and Library preload a compact Native Advanced ad for the
-top of each tab and show the row when an ad is ready. In Space UI, Discover and Library use only
-inline catalog ads. The game grids reserve a full-width slot after every 30 games and preload the
-upcoming slots. Ads use the catalog's normal margins and scroll with the content.
+The handset and tablet Store and Library request a compact Native Advanced ad when the tab is
+visible. Space UI has a top Library ad and inline ads in the Library and expanded Discover grid.
+Inline slots fall after complete rows at least 30 games apart and stay collapsed until filled.
+Catalog requests are limited to two concurrent loads and ads scroll with the content.
 Set the shared **Store** ad unit's media type to **Image** in AdMob. Release builds request OpenNOW's
 live units after Google's consent SDK allows it. Debug builds default to Google's sample units.
 Use `./gradlew :app:assembleDebug -PadMobLive=true` when a debug APK needs the live units.

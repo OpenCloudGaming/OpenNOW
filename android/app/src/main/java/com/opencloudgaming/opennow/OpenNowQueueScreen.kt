@@ -109,9 +109,16 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
     val game = state.streamGame
     val ads = sessionAdItems(session?.adState)
     val ad = ads.firstOrNull { it.adId == state.queueAdActiveId } ?: ads.firstOrNull()
-    val mediaUrl = ad?.adMediaFiles?.firstOrNull { !it.mediaFileUrl.isNullOrBlank() }?.mediaFileUrl
-        ?: ad?.adUrl
-        ?: ad?.mediaUrl
+    val mediaUrls = remember(ad?.adMediaFiles, ad?.adUrl, ad?.mediaUrl) { sessionAdMediaUrls(ad) }
+    val hasPlayableAd = ad != null && mediaUrls.isNotEmpty()
+    val missingRequiredAdMedia = !hasPlayableAd && isSessionAdsRequired(session?.adState)
+    LaunchedEffect(session?.sessionId, ad?.adId, missingRequiredAdMedia) {
+        if (ad != null && missingRequiredAdMedia) {
+            viewModel.reportQueueAd(
+                ad.adId, "cancel", watchedTimeInMs = 0L, cancelReason = "error", errorInfo = "Missing ad media URL",
+            )
+        }
+    }
     val queuePosition = activeQueuePosition(state)
     val visibleQueuePosition = rememberStableQueuePosition(session?.sessionId, queuePosition)
     val launchStatus = queueLaunchStatus(state, visibleQueuePosition)
@@ -134,7 +141,7 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
             setupProgress.snapTo(0f)
         }
     }
-    if (state.settings.experimentalSpaceUi && (ad == null || mediaUrl == null)) {
+    if (state.settings.experimentalSpaceUi && !hasPlayableAd) {
         SpaceLaunchScreen(state, queueCopy,
             queuePosition = visibleQueuePosition.takeIf { launchStatus.kind == QueueLaunchStatusKind.QueuePosition },
             connectingProgress = setupProgressProvider.takeIf { isSettingUp },
@@ -142,7 +149,6 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
             onCancel = { viewModel.stopStream(StreamStopOrigin.QueueCancel) })
         return
     }
-    val hasPlayableAd = ad != null && mediaUrl != null
     val reduceMotion = LocalReduceMotion.current
     val entranceState = remember(game?.id) {
         MutableTransitionState(false).apply { targetState = true }
@@ -186,10 +192,10 @@ internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMod
                     ),
                 ),
             ) {
-                if (ad != null && mediaUrl != null) {
+                if (ad != null && hasPlayableAd) {
                     QueueAdPanel(
                         ad = ad,
-                        mediaUrl = mediaUrl,
+                        mediaUrls = mediaUrls,
                         viewModel = viewModel,
                         game = game,
                         queueCopy = queueCopy,
@@ -904,7 +910,7 @@ private fun LandscapeQueuePositionDock(queuePosition: Int, modifier: Modifier = 
 @Composable
 private fun QueueAdPanel(
     ad: SessionAdInfo,
-    mediaUrl: String,
+    mediaUrls: List<String>,
     viewModel: OpenNowViewModel,
     game: GameInfo?,
     queueCopy: String,
@@ -931,7 +937,7 @@ private fun QueueAdPanel(
             ) {
                 QueueAdPlayback(
                     ad = ad,
-                    mediaUrl = mediaUrl,
+                    mediaUrls = mediaUrls,
                     playbackKey = playbackKey,
                     viewModel = viewModel,
                     modifier = Modifier
@@ -966,7 +972,7 @@ private fun QueueAdPanel(
                 QueueAdHeading(game = game, compact = false)
                 QueueAdPlayback(
                     ad = ad,
-                    mediaUrl = mediaUrl,
+                    mediaUrls = mediaUrls,
                     playbackKey = playbackKey,
                     viewModel = viewModel,
                     modifier = Modifier
@@ -993,14 +999,14 @@ private fun QueueAdPanel(
 @Composable
 private fun QueueAdPlayback(
     ad: SessionAdInfo,
-    mediaUrl: String,
+    mediaUrls: List<String>,
     playbackKey: String,
     viewModel: OpenNowViewModel,
     modifier: Modifier = Modifier,
 ) {
     QueueAdPlayer(
         adId = ad.adId,
-        url = mediaUrl,
+        mediaUrls = mediaUrls,
         playbackKey = playbackKey,
         modifier = modifier,
         onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
@@ -1187,13 +1193,14 @@ private const val QUEUE_AD_FORCE_PLAY_TIMEOUT_MS = 10_000L
 private const val QUEUE_SETUP_PROGRESS_DURATION_MS = 12_000
 private const val QUEUE_SETUP_PROGRESS_LIMIT = 0.9f
 private const val QUEUE_AD_START_TIMEOUT_MS = 30_000L
+private const val QUEUE_AD_SOURCE_TIMEOUT_MS = 10_000L
 private const val QUEUE_AD_STUCK_TIMEOUT_MS = 30_000L
 private const val QUEUE_AD_PROGRESS_CHECK_INTERVAL_MS = 1_000L
 
 @Composable
 private fun QueueAdPlayer(
     adId: String,
-    url: String,
+    mediaUrls: List<String>,
     playbackKey: String,
     modifier: Modifier = Modifier,
     onStarted: () -> Unit,
@@ -1204,21 +1211,34 @@ private fun QueueAdPlayer(
 ) {
     val context = LocalContext.current
     var muted by remember { mutableStateOf(false) }
-    val player = remember(adId, url, playbackKey) {
+    val player = remember(adId, mediaUrls, playbackKey) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(url))
+            setMediaItem(MediaItem.fromUri(mediaUrls.first()))
             volume = if (muted) 0f else 1f
-            prepare()
             playWhenReady = true
         }
     }
-    var reportedStart by remember(adId, url, playbackKey) { mutableStateOf(false) }
-    var reportedFinish by remember(adId, url, playbackKey) { mutableStateOf(false) }
-    var reportedPause by remember(adId, url, playbackKey) { mutableStateOf(false) }
-    var playing by remember(adId, url, playbackKey) { mutableStateOf(player.playWhenReady) }
-    var controlsVisible by remember(adId, url, playbackKey) { mutableStateOf(false) }
+    var reportedStart by remember(player) { mutableStateOf(false) }
+    var reportedFinish by remember(player) { mutableStateOf(false) }
+    var reportedPause by remember(player) { mutableStateOf(false) }
+    var playing by remember(player) { mutableStateOf(player.playWhenReady) }
+    var controlsVisible by remember(player) { mutableStateOf(false) }
+    val loadStartedAtMs = remember(player) { SystemClock.elapsedRealtime() }
+    var sourceStartedAtMs by remember(player) { mutableStateOf(loadStartedAtMs) }
+    var sourceIndex by remember(player) { mutableStateOf(0) }
+
+    fun tryNextSource(nowMs: Long): Boolean {
+        if (reportedStart || nowMs - loadStartedAtMs >= QUEUE_AD_START_TIMEOUT_MS) return false
+        val next = mediaUrls.getOrNull(sourceIndex + 1) ?: return false
+        sourceIndex++
+        sourceStartedAtMs = nowMs
+        player.setMediaItem(MediaItem.fromUri(next))
+        player.prepare()
+        player.play()
+        return true
+    }
+
     LaunchedEffect(player) {
-        val loadStartedAtMs = SystemClock.elapsedRealtime()
         var forcePlayAttempted = false
         var playbackObserved = false
         var lastPositionMs = player.currentPosition.coerceAtLeast(0L)
@@ -1227,6 +1247,7 @@ private fun QueueAdPlayer(
             delay(QUEUE_AD_PROGRESS_CHECK_INTERVAL_MS)
             val nowMs = SystemClock.elapsedRealtime()
             if (!reportedStart) {
+                if (nowMs - sourceStartedAtMs >= QUEUE_AD_SOURCE_TIMEOUT_MS && tryNextSource(nowMs)) continue
                 if (!forcePlayAttempted && nowMs - loadStartedAtMs >= QUEUE_AD_FORCE_PLAY_TIMEOUT_MS) {
                     forcePlayAttempted = true
                     player.play()
@@ -1298,14 +1319,14 @@ private fun QueueAdPlayer(
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 if (!reportedFinish) {
+                    if (tryNextSource(SystemClock.elapsedRealtime())) return
                     reportedFinish = true
-                    onError(player.currentPosition.coerceAtLeast(0L), "Error loading url")
+                    onError(player.currentPosition.coerceAtLeast(0L), "Ad playback failed (${error.errorCodeName})")
                 }
             }
         }
         player.addListener(listener)
-        listener.onIsPlayingChanged(player.isPlaying)
-        listener.onPlaybackStateChanged(player.playbackState)
+        player.prepare()
         onDispose {
             player.removeListener(listener)
             player.release()

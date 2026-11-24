@@ -336,6 +336,7 @@ internal fun HomeScreen(
                         },
                     )
                 }
+                CatalogAdPrivacyOptions(catalogAdAccess)
                 Box(
                     Modifier
                         .weight(1f)
@@ -1822,7 +1823,6 @@ private fun StoreGameGrid(
                     if (games.isNotEmpty()) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Column {
-                                CatalogAdPrivacyOptions(catalogAdAccess)
                                 SectionHeader(
                                     title = stringResource(
                                         if (showDiscoverySections) R.string.store_recommendations else R.string.store_results,

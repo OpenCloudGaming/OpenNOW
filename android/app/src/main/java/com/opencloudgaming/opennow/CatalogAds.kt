@@ -8,7 +8,6 @@ import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -19,14 +18,15 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -39,7 +39,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.withResumed
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdLoader
-import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.nativead.MediaView
 import com.google.android.gms.ads.nativead.NativeAd
@@ -50,12 +49,18 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -64,8 +69,7 @@ private const val CATALOG_AD_KEY_PREFIX = "catalog-ad-after-"
 private const val CATALOG_TOP_AD_KEY = "catalog-top-ad"
 internal const val CATALOG_AD_CONTENT_TYPE = "catalog-native-ad"
 private const val TARGET_GAMES_BETWEEN_ADS = 30
-private const val CATALOG_AD_LOOK_AHEAD = TARGET_GAMES_BETWEEN_ADS * 2
-private const val MAX_INLINE_AD_REQUESTS = 2
+private val catalogAdRequests = Semaphore(2)
 private val CATALOG_AD_LIFETIME = 55.minutes
 private val CATALOG_AD_RETRY_DELAY = 30.seconds
 
@@ -77,8 +81,8 @@ internal class CatalogAdAccess(val activity: ComponentActivity, val consent: AdC
 }
 
 @Stable
-internal class CatalogAdSlots(gameCount: Int) {
-    val stops = TARGET_GAMES_BETWEEN_ADS..gameCount step TARGET_GAMES_BETWEEN_ADS
+internal class CatalogAdSlots(gameCount: Int, val interval: Int) {
+    val stops = interval..gameCount step interval
     private val ads = stops.associateWith { mutableStateOf<NativeAd?>(null) }
 
     operator fun get(stop: Int): NativeAd? = ads[stop]?.value
@@ -101,16 +105,16 @@ internal fun canShowCatalogAds(state: OpenNowUiState): Boolean {
 }
 
 @Composable
-internal fun rememberCatalogAdAccess(enabled: Boolean, preloadTopAds: Boolean): CatalogAdAccess? {
+internal fun rememberCatalogAdAccess(enabled: Boolean, topPage: AppPage?): CatalogAdAccess? {
     if (!enabled) return null
     val activity = LocalActivity.current as? ComponentActivity ?: return null
     val consent = rememberAdConsent(activity)
     val access = remember(activity, consent) { CatalogAdAccess(activity, consent) }
-    if (preloadTopAds && access.canShowAds) {
-        // Keep a separate creative ready for each tab, even before that tab composes its grid.
+    val visibleTopPage by rememberUpdatedState(topPage)
+    if (access.canShowAds) {
         LaunchedEffect(access) {
-            launch { keepTopCatalogAdLoaded(activity, access.storeTopAd) }
-            launch { keepTopCatalogAdLoaded(activity, access.libraryTopAd) }
+            launch { keepTopCatalogAdLoaded(access, access.storeTopAd) { visibleTopPage == AppPage.Home } }
+            launch { keepTopCatalogAdLoaded(access, access.libraryTopAd) { visibleTopPage == AppPage.Library } }
         }
     }
     return access
@@ -121,17 +125,25 @@ internal fun CatalogAdPrivacyOptions(access: CatalogAdAccess?) {
     if (access != null) AdPrivacyChoices(access.activity, access.consent)
 }
 
-internal fun catalogAdPrefetchStops(gameCount: Int, visible: IntRange): IntProgression {
-    val firstStop = ((visible.first - 1) / TARGET_GAMES_BETWEEN_ADS + 1) * TARGET_GAMES_BETWEEN_ADS
-    return firstStop..minOf(gameCount, visible.last + CATALOG_AD_LOOK_AHEAD) step TARGET_GAMES_BETWEEN_ADS
+internal fun catalogAdInterval(columns: Int): Int =
+    ((TARGET_GAMES_BETWEEN_ADS + columns - 1) / columns) * columns
+
+internal fun catalogAdPrefetchStops(gameCount: Int, visible: IntRange, interval: Int): IntProgression {
+    val firstStop = ((visible.first - 1) / interval + 1) * interval
+    return firstStop..minOf(gameCount, visible.last + interval * 2) step interval
 }
 
-internal fun catalogGameGridIndex(gameIndex: Int, hasAdSlots: Boolean, headerCount: Int = 0): Int =
-    headerCount + gameIndex + if (hasAdSlots) gameIndex / TARGET_GAMES_BETWEEN_ADS else 0
+internal fun catalogGameGridIndex(gameIndex: Int, adInterval: Int?, headerCount: Int): Int =
+    headerCount + gameIndex + (adInterval?.let { gameIndex / it } ?: 0)
 
-private suspend fun keepTopCatalogAdLoaded(activity: ComponentActivity, slot: MutableState<NativeAd?>) {
+private suspend fun keepTopCatalogAdLoaded(
+    access: CatalogAdAccess,
+    slot: MutableState<NativeAd?>,
+    isVisiblePage: () -> Boolean,
+) {
     while (true) {
-        val ad = requestCatalogNativeAd(activity)
+        snapshotFlow(isVisiblePage).first { it }
+        val ad = requestCatalogNativeAd(access, isVisiblePage)
         if (ad == null) {
             delay(CATALOG_AD_RETRY_DELAY)
             continue
@@ -153,12 +165,14 @@ internal fun rememberCatalogNativeAds(
     grid: LazyGridState,
 ): CatalogAdSlots? {
     if (access?.canShowAds != true || gameCount < TARGET_GAMES_BETWEEN_ADS) return null
-    val activity = access.activity
-    val slots = remember(access, grid, gameCount) { CatalogAdSlots(gameCount) }
+    val interval by remember(grid) {
+        derivedStateOf { grid.layoutInfo.maxSpan.takeIf { it > 0 }?.let(::catalogAdInterval) }
+    }
+    val adInterval = interval?.takeIf { gameCount >= it } ?: return null
+    val slots = remember(access, grid, gameCount, adInterval) { CatalogAdSlots(gameCount, adInterval) }
 
     LaunchedEffect(slots) {
-        var wanted by mutableStateOf(catalogAdPrefetchStops(gameCount, 1..1))
-        var loading by mutableIntStateOf(0)
+        var wanted by mutableStateOf(catalogAdPrefetchStops(gameCount, 1..1, adInterval))
         val expirations = mutableMapOf<Int, Job>()
 
         fun evict(stop: Int) {
@@ -172,44 +186,33 @@ internal fun rememberCatalogNativeAds(
             coroutineScope {
                 launch {
                     snapshotFlow {
-                        val visible = visibleCatalogGameCounts(grid.layoutInfo, gameCount) ?: (1..1)
-                        catalogAdPrefetchStops(gameCount, visible)
+                        val visible = visibleCatalogGameCounts(grid.layoutInfo, gameCount, adInterval) ?: (1..1)
+                        catalogAdPrefetchStops(gameCount, visible, adInterval)
                     }.collect { window ->
                         wanted = window
-                        val firstRetained = window.first - TARGET_GAMES_BETWEEN_ADS
+                        val firstRetained = window.first - adInterval
                         expirations.keys.filter { it !in firstRetained..window.last }.forEach(::evict)
                     }
                 }
-                repeat(MAX_INLINE_AD_REQUESTS) {
-                    launch {
-                        while (true) {
-                            snapshotFlow { wanted.count { slots[it] == null } > loading }.first { it }
-                            if (wanted.count { slots[it] == null } <= loading) continue
-                            loading++
-                            val ad = try {
-                                requestCatalogNativeAd(activity)
-                            } finally {
-                                loading--
-                            }
-                            if (ad == null) {
-                                delay(CATALOG_AD_RETRY_DELAY)
-                                continue
-                            }
-                            // A fling can cross several slots during one request. Fill the next
-                            // slot the player can see with the result.
-                            val stop = wanted.firstOrNull { slots[it] == null }
-                            if (stop == null) {
-                                ad.destroy()
-                                continue
-                            }
-                            slots.set(stop, ad)
-                            expirations[stop] = launch {
-                                delay(CATALOG_AD_LIFETIME)
-                                expirations.remove(stop)
-                                slots.set(stop, null)
-                                ad.destroy()
-                            }
-                        }
+                while (true) {
+                    snapshotFlow { wanted.any { slots[it] == null } }.first { it }
+                    val ad = requestCatalogNativeAd(access) { wanted.any { slots[it] == null } }
+                    if (ad == null) {
+                        delay(CATALOG_AD_RETRY_DELAY)
+                        continue
+                    }
+                    // A fling can cross several slots during one request. Fill the next visible slot.
+                    val stop = wanted.firstOrNull { slots[it] == null }
+                    if (stop == null) {
+                        ad.destroy()
+                        continue
+                    }
+                    slots.set(stop, ad)
+                    expirations[stop] = launch {
+                        delay(CATALOG_AD_LIFETIME)
+                        expirations.remove(stop)
+                        slots.set(stop, null)
+                        ad.destroy()
                     }
                 }
             }
@@ -220,16 +223,16 @@ internal fun rememberCatalogNativeAds(
     return slots
 }
 
-internal fun visibleCatalogGameCounts(layout: LazyGridLayoutInfo, gameCount: Int): IntRange? {
+internal fun visibleCatalogGameCounts(layout: LazyGridLayoutInfo, gameCount: Int, interval: Int): IntRange? {
     // catalogGameItems places all games and inline ads after the headers.
-    val headerCount = layout.totalItemsCount - gameCount - gameCount / TARGET_GAMES_BETWEEN_ADS
+    val headerCount = layout.totalItemsCount - gameCount - gameCount / interval
     if (headerCount < 0) return null
     var first = Int.MAX_VALUE
     var last = 0
     for (item in layout.visibleItemsInfo) {
         val itemCount = item.index - headerCount + 1
         if (itemCount <= 0) continue
-        val position = itemCount - itemCount / (TARGET_GAMES_BETWEEN_ADS + 1)
+        val position = itemCount - itemCount / (interval + 1)
         first = minOf(first, position)
         last = maxOf(last, position)
     }
@@ -275,48 +278,58 @@ internal fun LazyGridScope.catalogGameItems(
 
 @Composable
 internal fun CatalogAdRow(ad: NativeAd?, compact: Boolean, modifier: Modifier = Modifier) {
-    if (compact && ad == null) return
+    if (ad == null) return
     val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val height = if (compact) 84.dp else 136.dp
     val row = modifier.fillMaxWidth().height(height * fontScale)
-    if (ad == null) {
-        Spacer(row)
-    } else {
-        CatalogNativeAdCard(ad, compact, row)
-    }
+    CatalogNativeAdCard(ad, compact, row)
 }
 
-private suspend fun requestCatalogNativeAd(activity: ComponentActivity): NativeAd? {
+private suspend fun requestCatalogNativeAd(access: CatalogAdAccess, isWanted: () -> Boolean): NativeAd? {
+    val activity = access.activity
     val lifecycle = activity.lifecycle
     lifecycle.withResumed {}
+    if (!access.canShowAds || !isWanted()) return null
     val app = activity.applicationContext
-    if (withTimeoutOrNull(25.seconds) { initializeGoogleAds(app) } != true) return null
-    var loaded: NativeAd? = null
-    var completed = false
-    try {
-        completed = withTimeoutOrNull(25.seconds) {
-            loaded = loadCatalogNativeAd(app, lifecycle)
-            true
-        } == true
-        return loaded.takeIf { completed }
-    } finally {
-        if (!completed) loaded?.destroy()
+    if (!initializeGoogleAds(app)) return null
+    return catalogAdRequests.withPermit {
+        val requestContext = currentCoroutineContext()
+        var loaded: NativeAd? = null
+        var delivered = false
+        try {
+            requestContext.ensureActive()
+            // The SDK cannot cancel an issued load. Hold the permit through its callback or deadline,
+            // even if the placement disappears, so rapid navigation cannot pile up requests.
+            val completed = withContext(NonCancellable) {
+                withTimeoutOrNull(GOOGLE_AD_LOAD_TIMEOUT) {
+                    loaded = loadCatalogNativeAd(app) {
+                        requestContext.isActive && lifecycle.currentState == Lifecycle.State.RESUMED &&
+                            access.canShowAds && isWanted()
+                    }
+                    true
+                } == true
+            }
+            if (!completed) Log.d(CATALOG_ADS_TAG, "Native ad request timed out")
+            requestContext.ensureActive()
+            delivered = completed && access.canShowAds
+            loaded.takeIf { delivered }
+        } finally {
+            if (!delivered) loaded?.destroy()
+        }
     }
 }
 
 private suspend fun loadCatalogNativeAd(
     app: Context,
-    lifecycle: Lifecycle,
+    canRequest: () -> Boolean,
 ): NativeAd? = suspendCancellableCoroutine { result ->
     CoroutineScope(result.context).launch(Dispatchers.IO) {
         try {
             val loader = AdLoader.Builder(app, BuildConfig.STORE_NATIVE_AD_UNIT_ID)
                 .forNativeAd { ad ->
-                    // This compact placement renders static assets only.
-                    if (ad.mediaContent?.hasVideoContent() == true ||
-                        ad.headline.isNullOrBlank() || ad.callToAction.isNullOrBlank()
-                    ) {
-                        if (BuildConfig.DEBUG) Log.d(CATALOG_ADS_TAG, "Native creative does not fit the image placement")
+                    // Catalog placements use the image-only unit to avoid video work while browsing.
+                    if (ad.mediaContent?.hasVideoContent() == true || ad.headline.isNullOrBlank()) {
+                        Log.d(CATALOG_ADS_TAG, "Native creative does not fit the image placement")
                         ad.destroy()
                         result.resume(null)
                     } else {
@@ -331,9 +344,8 @@ private suspend fun loadCatalogNativeAd(
                 })
                 .build()
             withContext(Dispatchers.Main.immediate) {
-                lifecycle.withResumed {
-                    loader.loadAd(AdRequest.Builder().build())
-                }
+                if (canRequest()) loader.loadAd(googleAdRequest())
+                else result.resume(null)
             }
         } catch (error: CancellationException) {
             throw error
@@ -362,13 +374,14 @@ private fun CatalogNativeAdCard(ad: NativeAd, compact: Boolean, modifier: Modifi
             media.isVisible = ad.mediaContent?.mainImage != null
             media.setImageScaleType(ImageView.ScaleType.FIT_CENTER)
             action.text = ad.callToAction
+            action.isVisible = !ad.callToAction.isNullOrBlank()
             card.headlineView = headline
             if (icon.isVisible) card.iconView = icon
             if (media.isVisible) {
                 card.mediaView = media
                 media.mediaContent = ad.mediaContent
             }
-            card.callToActionView = action
+            if (action.isVisible) card.callToActionView = action
             card.setNativeAd(ad)
             card
         },
