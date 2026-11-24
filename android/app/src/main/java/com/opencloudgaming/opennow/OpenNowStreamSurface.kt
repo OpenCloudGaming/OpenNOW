@@ -1453,15 +1453,7 @@ internal fun StreamScreen(
                             settings.copy(streamSharpeningAmount = value)
                         }
                     },
-                    onStretchToFitToggle = {
-                        val next = !state.settings.stretchStreamToFit
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                legacyCropStreamToFill = false,
-                                stretchStreamToFit = next,
-                            ),
-                        )
-                    },
+                    onStretchToFitToggle = viewModel::setStretchStreamToFit,
                     onMaxBitrateChange = { value ->
                         viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = value) }
                         // Preserve the active WSS/ICE transport. The new b=AS ceiling is queued for
@@ -1734,12 +1726,6 @@ private fun StreamVideoSurface(
             serverFinalSelectedResolution = serverFinalSelectedResolution,
         )
     }
-    val stretchContentAspectRatio = remember(decodedResolution, streamAspectRatio) {
-        streamStretchContentAspectRatio(
-            selectedAspectRatio = streamAspectRatio,
-            decodedResolution = decodedResolution,
-        )
-    }
     val viewportAspectRatio = remember(viewportSize) {
         if (viewportSize.width > 0 && viewportSize.height > 0) {
             viewportSize.width.toFloat() / viewportSize.height.toFloat()
@@ -1747,31 +1733,18 @@ private fun StreamVideoSurface(
             0f
         }
     }
-    val rendererModifier = if (viewportAspectRatio <= 0f) {
+    val rendererModifier = if (stretchToFit || viewportAspectRatio <= 0f) {
         Modifier.fillMaxSize()
     } else if (viewportAspectRatio > streamAspectRatio) {
-        // Screen is wider than stream (e.g. 2400×1080 screen, 1920×1080 stream).
-        // Fit by height so the renderer has no black bars internally; horizontal
-        // stretch (if enabled) is applied later via View.scaleX.
         Modifier
             .fillMaxHeight()
             .aspectRatio(streamAspectRatio)
     } else {
-        // Screen is taller than stream — fit by width; vertical stretch via scaleY.
         Modifier
             .fillMaxWidth()
             .aspectRatio(streamAspectRatio)
     }
 
-    // SCALE_ASPECT_FIT preserves every decoded pixel. Stretching the View on only
-    // the mismatching axis removes the bars without cropping HUD or edge content.
-    val stretchScale = remember(stretchToFit, viewportAspectRatio, stretchContentAspectRatio) {
-        streamStretchScale(
-            enabled = stretchToFit,
-            viewportAspectRatio = viewportAspectRatio,
-            streamAspectRatio = stretchContentAspectRatio,
-        )
-    }
     LaunchedEffect(
         viewportSettings.resolution,
         viewportSettings.aspectRatio,
@@ -1786,9 +1759,6 @@ private fun StreamVideoSurface(
     ) {
         zoomScale = 1f
         zoomOffset = Offset.Zero
-    }
-    LaunchedEffect(stretchToFit) {
-        NativeStreamInputRouter.setStretchToFit(stretchToFit)
     }
     LaunchedEffect(zoomScale, zoomOffset) {
         NativeStreamInputRouter.setPresentationTransform(
@@ -1875,12 +1845,12 @@ private fun StreamVideoSurface(
                         isFocusable = false
                         isFocusableInTouchMode = false
                         if (hideExternalMousePointer) hideAndroidPointerTree()
-                        setPresentationScale(stretchScale.first, stretchScale.second)
+                        updateStretchToFit(stretchToFit)
                     }
                 },
                 update = { renderer ->
                     client.applyLiveSettings(settings, vibrationEnabled, hapticsOutput, stretchToFit)
-                    renderer.setPresentationScale(stretchScale.first, stretchScale.second)
+                    renderer.updateStretchToFit(stretchToFit)
                     renderer.isFocusable = false
                     renderer.isFocusableInTouchMode = false
                     pointerRootView.configureAndroidMousePointerCapture(captureExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
@@ -1946,30 +1916,6 @@ internal fun streamRendererAspectRatio(
         .mapNotNull(::parseResolutionPixelsOrNull)
     if (decodedPixels !in authoritativeServerPixels) return selectedAspectRatio
     return streamAspectRatioForPixels(decodedPixels)
-}
-
-internal fun streamStretchContentAspectRatio(
-    selectedAspectRatio: Float,
-    decodedResolution: String?,
-): Float {
-    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution) ?: return selectedAspectRatio
-    val decodedAspectRatio = decodedPixels.first.toFloat() / decodedPixels.second.toFloat()
-    return decodedAspectRatio.takeIf { it.isFinite() && it > 0f } ?: selectedAspectRatio
-}
-
-internal fun streamStretchScale(
-    enabled: Boolean,
-    viewportAspectRatio: Float,
-    streamAspectRatio: Float,
-): Pair<Float, Float> {
-    if (!enabled || viewportAspectRatio <= 0f || streamAspectRatio <= 0f) return 1f to 1f
-    return when {
-        viewportAspectRatio > streamAspectRatio ->
-            (viewportAspectRatio / streamAspectRatio).coerceIn(1f, 3f) to 1f
-        viewportAspectRatio < streamAspectRatio ->
-            1f to (streamAspectRatio / viewportAspectRatio).coerceIn(1f, 3f)
-        else -> 1f to 1f
-    }
 }
 
 internal fun streamPinchZoomEnabled(

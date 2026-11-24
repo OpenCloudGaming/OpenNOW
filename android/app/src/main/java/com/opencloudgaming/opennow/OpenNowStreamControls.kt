@@ -798,7 +798,7 @@ internal fun StreamControlsPanel(
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
     onMaxBitrateChange: (Int) -> Unit,
-    onStretchToFitToggle: () -> Unit,
+    onStretchToFitToggle: (Boolean) -> Unit,
     onMouseSensitivityChange: (Float) -> Unit,
     onTouchMouseSensitivityChange: (Float) -> Unit,
     onMouseScrollSensitivityChange: (Int) -> Unit,
@@ -1055,7 +1055,7 @@ internal fun StreamControlsPanel(
                             checked = settings.stretchStreamToFit,
                             onCheckedChange = {
                                 onButtonTone()
-                                onStretchToFitToggle()
+                                onStretchToFitToggle(it)
                             },
                             value = onOffLabel(settings.stretchStreamToFit),
                         )

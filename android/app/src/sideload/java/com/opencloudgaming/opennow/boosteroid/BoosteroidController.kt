@@ -424,6 +424,7 @@ internal class BoosteroidController(
                 session = session,
                 tv = state.androidTvProfile,
                 touchSettings = state.settings.androidTouch,
+                stretchToFit = state.settings.stretchStreamToFit,
                 model = this,
                 onFirstFrame = {
                     _state.update { if (it.launch?.session === session) it.copy(connected = true) else it }

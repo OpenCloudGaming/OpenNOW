@@ -2213,6 +2213,7 @@ class GfnCatalogRepository(
         filterIds: List<String> = emptyList(),
         maxPages: Int = MAX_CATALOG_PAGES,
         includeSupplementalPublicVariants: Boolean = true,
+        onFirstPage: ((CatalogBrowseResult) -> Unit)? = null,
     ): CatalogBrowseResult {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val definitions = fetchFilterAndSortDefinitions(token)
@@ -2223,6 +2224,22 @@ class GfnCatalogRepository(
                 acc.putAll(obj)
                 acc
             }
+        fun browseResult(page: CatalogAppsPage, games: List<GameInfo>): CatalogBrowseResult {
+            val ordered = applyCatalogSortGuarantees(games, selectedSort.id)
+            return CatalogBrowseResult(
+                games = ordered,
+                numberReturned = page.numberReturned,
+                numberSupported = max(page.numberSupported, ordered.size),
+                totalCount = max(page.totalCount, ordered.size),
+                hasNextPage = page.hasNextPage,
+                endCursor = page.endCursor?.takeIf { it.isNotBlank() },
+                searchQuery = searchQuery,
+                selectedSortId = selectedSort.id,
+                selectedFilterIds = selectedFilters,
+                filterGroups = definitions.filterGroups,
+                sortOptions = definitions.sortOptions,
+            )
+        }
         val page = fetchCatalogAppsPages(
             token = token,
             vpcId = vpcId,
@@ -2231,29 +2248,19 @@ class GfnCatalogRepository(
             fetchCount = DEFAULT_CATALOG_FETCH_COUNT,
             filters = JsonObject(filters),
             maxPages = maxPages,
+            onFirstPage = onFirstPage?.let { publish ->
+                { firstPage -> publish(browseResult(firstPage, dedupeGames(firstPage.games))) }
+            },
         )
         val publicGames = if (includeSupplementalPublicVariants) fetchPublicGames() else emptyList()
-        val games = dedupeGames(page.apps.map(::appToGame))
+        val games = dedupeGames(page.games)
         val withSearchFallbacks = if (searchQuery.isBlank() || publicGames.isEmpty()) {
             games
         } else {
             dedupeGames(games + publicGames.filter { it.matchesSearch(searchQuery) })
         }
         val merged = if (publicGames.isEmpty()) withSearchFallbacks else mergePublicGameVariants(withSearchFallbacks, publicGames)
-        val ordered = applyCatalogSortGuarantees(merged, selectedSort.id)
-        return CatalogBrowseResult(
-            games = ordered,
-            numberReturned = page.numberReturned,
-            numberSupported = max(page.numberSupported, ordered.size),
-            totalCount = max(page.totalCount, ordered.size),
-            hasNextPage = page.hasNextPage,
-            endCursor = page.endCursor?.takeIf { it.isNotBlank() },
-            searchQuery = searchQuery,
-            selectedSortId = selectedSort.id,
-            selectedFilterIds = selectedFilters,
-            filterGroups = definitions.filterGroups,
-            sortOptions = definitions.sortOptions,
-        )
+        return browseResult(page, merged)
     }
 
     private suspend fun fetchCatalogAppsPages(
@@ -2264,14 +2271,18 @@ class GfnCatalogRepository(
         fetchCount: Int,
         filters: JsonObject,
         maxPages: Int,
+        onFirstPage: ((CatalogAppsPage) -> Unit)?,
     ): CatalogAppsPage {
-        val collectedApps = mutableListOf<JsonObject>()
+        val games = mutableListOf<GameInfo>()
         var numberReturned = 0
         var numberSupported = 0
         var totalCount = 0
         var hasNextPage = false
         var endCursor: String? = null
         var cursor = ""
+        fun result(games: List<GameInfo>) = CatalogAppsPage(
+            games, numberReturned, numberSupported, totalCount, hasNextPage, endCursor,
+        )
         for (page in 0 until maxPages.coerceIn(1, MAX_CATALOG_REQUEST_PAGES)) {
             val payload = postGraphQlWithAppStoreFallback(
                 query = { includeAppStore -> catalogQuery(searchQuery.isNotBlank(), includeAppStore) },
@@ -2287,24 +2298,18 @@ class GfnCatalogRepository(
                 token = token,
             )
             val apps = payload.obj("data")?.obj("apps")
-            val items = apps?.arr("items")?.mapNotNull { it.asObject() }.orEmpty()
-            collectedApps += items
+            val items = apps?.arr("items")?.mapNotNull { it.asObject()?.let(::appToGame) }.orEmpty()
+            games += items
             numberReturned += apps?.int("numberReturned") ?: items.size
             numberSupported = apps?.int("numberSupported") ?: numberSupported
             totalCount = apps?.obj("pageInfo")?.int("totalCount") ?: totalCount
             hasNextPage = apps?.obj("pageInfo")?.boolean("hasNextPage") ?: false
             endCursor = apps?.obj("pageInfo")?.string("endCursor")
+            if (page == 0 && items.isNotEmpty()) onFirstPage?.invoke(result(items))
             if (!hasNextPage || endCursor.isNullOrBlank()) break
             cursor = endCursor.orEmpty()
         }
-        return CatalogAppsPage(
-            apps = collectedApps,
-            numberReturned = numberReturned,
-            numberSupported = numberSupported,
-            totalCount = totalCount,
-            hasNextPage = hasNextPage,
-            endCursor = endCursor,
-        )
+        return result(games)
     }
 
     suspend fun fetchPublicGames(): List<GameInfo> = publicGamesMutex.withLock {
@@ -2753,7 +2758,7 @@ class GfnCatalogRepository(
     )
 
     private data class CatalogAppsPage(
-        val apps: List<JsonObject>,
+        val games: List<GameInfo>,
         val numberReturned: Int,
         val numberSupported: Int,
         val totalCount: Int,

@@ -229,7 +229,7 @@ internal fun HomeScreen(
         filterCatalogGamesForLocalControls(catalogGames, state.catalogFilterIds)
     }
     val filterActive = state.catalogFilterIds.isNotEmpty()
-    val searchingCatalog = state.loadingGames && state.catalogSearch.isNotBlank()
+    val searchingCatalog = state.catalogQueryLoading && state.catalogSearch.isNotBlank()
     // A 120 Hz panel has only 8.3 ms per frame. Keep its speculative composition window leaner
     // than 60/90 Hz instead of spending that tighter frame budget on a full extra viewport.
     val refreshRateHz = LocalView.current.display?.refreshRate ?: 60f
@@ -263,7 +263,9 @@ internal fun HomeScreen(
     val showScrollActions by remember(gridState) {
         derivedStateOf {
             (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80) &&
-                gridState.layoutInfo.visibleItemsInfo.none { it.contentType == CATALOG_AD_CONTENT_TYPE }
+                gridState.layoutInfo.visibleItemsInfo.none {
+                    it.contentType == CATALOG_AD_CONTENT_TYPE && it.size.height > 0
+                }
         }
     }
     val scrolledAwayFromTop by remember(gridState) {
@@ -290,12 +292,9 @@ internal fun HomeScreen(
         }
     }
     SwipeToRefreshContainer(
-        refreshing = shouldShowCatalogRefreshIndicator(
-            loadingGames = state.loadingGames,
-            hasVisibleGames = visibleGames.isNotEmpty(),
-        ),
+        refreshing = state.loadingGames,
         enabled = !tvProfile,
-        showRefreshIndicator = !searchingCatalog,
+        showRefreshIndicator = !state.loadingGames && !searchingCatalog,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -336,7 +335,6 @@ internal fun HomeScreen(
                         },
                     )
                 }
-                CatalogAdPrivacyOptions(catalogAdAccess)
                 Box(
                     Modifier
                         .weight(1f)
@@ -362,6 +360,7 @@ internal fun HomeScreen(
                                     onSortChange = viewModel::setCatalogSort,
                                     onFilterToggle = viewModel::toggleCatalogFilter,
                                     showToolbar = !controlsInTopBar,
+                                    catalogAdAccess = catalogAdAccess,
                                 )
                             }
                             if (resultsOnly) {
@@ -398,6 +397,7 @@ internal fun HomeScreen(
                                             dismissedContinuePlaying = state.dismissedContinuePlaying,
                                         ).visibleGroupCount.coerceAtLeast(1)
                                     },
+                                    animate = false,
                                     modifier = Modifier.weight(1f),
                                 )
                             }
@@ -452,6 +452,7 @@ private fun StoreScrollableControls(
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
     showToolbar: Boolean = true,
+    catalogAdAccess: CatalogAdAccess? = null,
 ) {
     val filterOptions = rememberCatalogFilterOptions(
         remember(state.catalogResult.filterGroups) {
@@ -460,7 +461,7 @@ private fun StoreScrollableControls(
     )
     val hasSelectedFilters = state.catalogFilterIds.isNotEmpty()
     val hasError = !state.error.isNullOrBlank()
-    if (!showToolbar && !hasSelectedFilters && !hasError) return
+    if (!showToolbar && !hasSelectedFilters && !hasError && catalogAdAccess?.consent?.showPrivacyChoices != true) return
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (showToolbar) {
             StoreCatalogToolbar(
@@ -472,6 +473,7 @@ private fun StoreScrollableControls(
         }
         SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
         InlineErrorNotice(error = state.error)
+        CatalogAdPrivacyOptions(catalogAdAccess)
     }
 }
 
@@ -1064,6 +1066,7 @@ private fun RefreshingGamesPlaceholder(
     storeLayout: Boolean = false,
     storeRailCount: Int = 0,
     topContentPadding: Dp? = null,
+    animate: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     GameGridSkeleton(
@@ -1072,6 +1075,7 @@ private fun RefreshingGamesPlaceholder(
         storeLayout = storeLayout,
         storeRailCount = storeRailCount,
         topContentPadding = topContentPadding,
+        animate = animate,
         modifier = modifier,
     )
 }
@@ -1149,6 +1153,7 @@ private fun GameGridSkeleton(
     storeLayout: Boolean,
     storeRailCount: Int,
     topContentPadding: Dp?,
+    animate: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val compact = settings.compactGameCards
@@ -1164,7 +1169,7 @@ private fun GameGridSkeleton(
     val tvPulse: State<Float>?
     // Under reduced motion the skeletons still show — they just stop animating. A never-ending
     // sweep is exactly the kind of movement the setting exists to stop.
-    if (LocalReduceMotion.current) {
+    if (!animate || LocalReduceMotion.current) {
         shimmerOffset = null
         tvPulse = null
     } else if (tvProfile) {
@@ -1195,6 +1200,7 @@ private fun GameGridSkeleton(
     }
 
     CompositionLocalProvider(
+        LocalImageLoadingAnimationsEnabled provides animate,
         LocalShimmerOffset provides shimmerOffset,
         LocalTvLoadingPulse provides tvPulse,
     ) {
@@ -1714,7 +1720,7 @@ private fun StoreGameGrid(
 ) {
     if (games.isEmpty()) {
         Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+            StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar, catalogAdAccess)
             if (!resultsOnly) {
                 CatalogTopAdRow(catalogAdAccess, AppPage.Home, Modifier.padding(horizontal = OpenNowSpacing.ScreenEdge))
             }
@@ -1750,7 +1756,8 @@ private fun StoreGameGrid(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile || landscapeLayout)
     val controllerActionMode = catalogControllerActionMode(tvProfile, landscapeLayout, physicalControllerConnected)
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
-    val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
+    val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank() ||
+        catalogAdAccess?.consent?.showPrivacyChoices == true
     val showDiscoverySections = shouldShowStoreDiscoverySections(
         searchActive = state.catalogSearch.isNotBlank(),
         filterActive = state.catalogFilterIds.isNotEmpty(),
@@ -1793,7 +1800,7 @@ private fun StoreGameGrid(
                 ) {
                     if (showControlsHeader) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
-                            StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+                            StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar, catalogAdAccess)
                         }
                     }
                     catalogTopAdItem(adsAccess, AppPage.Home)
@@ -1984,10 +1991,6 @@ internal fun shouldShowCatalogLoadingPlaceholder(
     loadingGames: Boolean,
     hasVisibleGames: Boolean,
 ): Boolean = queryLoading || (loadingGames && !hasVisibleGames)
-
-/** Background cache/network refreshes stay silent once the Store already has usable cards. */
-internal fun shouldShowCatalogRefreshIndicator(loadingGames: Boolean, hasVisibleGames: Boolean): Boolean =
-    loadingGames && !hasVisibleGames
 
 internal fun shouldHideStoreChromeOnScroll(
     hideChromeWhenScrolled: Boolean,

@@ -28,7 +28,6 @@ import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SportsEsports
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -329,8 +328,7 @@ internal fun SpaceUiScreen(
                             if (game != null) {
                                 if (showHero) SpaceDiscoveryHero(game, compact, portrait, showDescription = showHeroDescription)
                             }
-                            else if (state.loadingGames) CircularProgressIndicator(color = SpaceIce, modifier = Modifier.size(28.dp))
-                            else {
+                            else if (!state.loadingGames && !state.catalogQueryLoading) {
                                 Text(stringResource(R.string.no_games_loaded), color = SpaceWhite, fontSize = 26.sp)
                                 Text(stringResource(R.string.space_ui_empty), color = SpaceMuted, modifier = Modifier.padding(top = 12.dp))
                                 SpaceControl(label = stringResource(R.string.space_ui_refresh), onClick = onRefresh)

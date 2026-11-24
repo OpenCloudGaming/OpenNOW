@@ -22,6 +22,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -2403,6 +2404,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         } else {
             settingsStore.replace(allowed)
         }
+    }
+
+    internal fun setStretchStreamToFit(enabled: Boolean) {
+        settingsStore.update { it.copy(stretchStreamToFit = enabled) }
     }
 
     private fun keepLockedAppearance(next: AppSettings, current: AppSettings): AppSettings =
@@ -4800,6 +4805,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         sortId = initialCatalogSortId,
                         filterIds = initialCatalogFilterIds,
                     )
+                    fun publishStoreCatalog(catalog: CatalogBrowseResult, onlyWhenEmpty: Boolean = false) {
+                        if (catalog.games.isEmpty()) return
+                        _state.update { current ->
+                            if (
+                                libraryScopeIsCurrent() &&
+                                current.catalogSearch == initialCatalogSearch &&
+                                current.catalogSortId == initialCatalogSortId &&
+                                current.catalogFilterIds == initialCatalogFilterIds &&
+                                (!onlyWhenEmpty || (current.games.isEmpty() && current.catalogResult.games.isEmpty()))
+                            ) {
+                                current.copy(games = catalog.games, catalogResult = catalog, catalogQueryLoading = false)
+                            } else {
+                                current
+                            }
+                        }
+                    }
+                    val previewFirstPage = !initialNewlyAddedQuery && !androidTvProfile &&
+                        state.value.let { it.games.isEmpty() && it.catalogResult.games.isEmpty() }
                     val catalogDeferred = async(Dispatchers.IO) {
                         catalogRepository.browseCatalog(
                             token = token,
@@ -4813,23 +4836,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 searchQuery = initialCatalogSearch,
                             ),
                             includeSupplementalPublicVariants = includeSupplementalPublicVariants,
+                            onFirstPage = if (previewFirstPage) {
+                                { firstPage -> if (isActive) publishStoreCatalog(firstPage, onlyWhenEmpty = true) }
+                            } else {
+                                null
+                            },
                         ).also { catalog ->
-                            _state.update { current ->
-                                if (
-                                    !initialNewlyAddedQuery &&
-                                    current.authSession?.user?.userId == session.user.userId &&
-                                    current.catalogSearch == initialCatalogSearch &&
-                                    current.catalogSortId == initialCatalogSortId &&
-                                    current.catalogFilterIds == initialCatalogFilterIds
-                                ) {
-                                    current.copy(
-                                        catalogResult = catalog,
-                                        games = if (androidTvProfile) catalog.games else current.games,
-                                    )
-                                } else {
-                                    current
-                                }
-                            }
+                            if (isActive && !initialNewlyAddedQuery) publishStoreCatalog(catalog)
                         }
                     }
                     // MainV2 is a ~600KB personalized panel response. Keep the normal TV path
@@ -4896,6 +4909,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     } else {
                         providerCatalog
                     }
+                    if (initialNewlyAddedQuery) publishStoreCatalog(catalog)
                     newlyAddedCatalog?.let { newest ->
                         _state.update { current ->
                             if (current.authSession?.user?.userId == session.user.userId) {
@@ -5017,12 +5031,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 unboundedCachedCatalog
             }
+            fun matchesQuery(current: OpenNowUiState): Boolean =
+                current.authSession?.let { session ->
+                    session.user.userId == auth.user.userId && session.provider == auth.provider &&
+                        effectiveStreamingBaseUrl(session) == baseUrl
+                } == true && current.catalogSearch == searchQuery &&
+                    current.catalogSortId == sortId && current.catalogFilterIds == filterIds
+
             _state.update { current ->
-                if (
-                    current.catalogSearch == searchQuery &&
-                    current.catalogSortId == sortId &&
-                    current.catalogFilterIds == filterIds
-                ) {
+                if (matchesQuery(current)) {
                     // A cached result that exists but holds no games still leaves the grid blank.
                     val hasGamesToShow = cachedCatalog?.games?.isNotEmpty() == true
                     current.copy(
@@ -5038,6 +5055,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             // Cache hits remain immediate. Wait for typing to pause before starting provider work.
             if (debounceSearch && searchQuery.isNotBlank()) delay(CATALOG_SEARCH_DEBOUNCE_MS)
+            val previewFirstPage = cachedCatalog?.games.isNullOrEmpty() && !newlyAddedQuery &&
+                CATALOG_FILTER_TOUCHSCREEN !in filterIds
             runCatching {
                 withContext(Dispatchers.IO) {
                     coroutineScope {
@@ -5055,6 +5074,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                     searchQuery = searchQuery,
                                 ),
                                 includeSupplementalPublicVariants = !androidTvProfile,
+                                onFirstPage = if (previewFirstPage) {
+                                    { firstPage ->
+                                        if (isActive) _state.update { current ->
+                                            if (matchesQuery(current) && current.games.isEmpty()) {
+                                                current.copy(
+                                                    catalogResult = firstPage,
+                                                    catalogQueryLoading = false,
+                                                    games = firstPage.games,
+                                                )
+                                            } else current
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
                             )
                         }
                         val gfnThursdayDeferred: Deferred<Result<List<GameInfo>>>? = if (newlyAddedQuery) {
@@ -5085,6 +5119,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             }.onSuccess { result ->
+                _state.update {
+                    if (matchesQuery(it)) {
+                        it.copy(
+                            catalogResult = result,
+                            newlyAddedGames = if (newlyAddedQuery) result.games else it.newlyAddedGames,
+                            loadingGames = false,
+                            catalogQueryLoading = false,
+                            games = result.games,
+                        )
+                    } else {
+                        it
+                    }
+                }
                 withContext(Dispatchers.IO) {
                     catalogCacheStore.saveCatalog(
                         userId = auth.user.userId,
@@ -5105,31 +5152,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         )
                     }
                 }
-                _state.update {
-                    if (
-                        it.catalogSearch == searchQuery &&
-                        it.catalogSortId == sortId &&
-                        it.catalogFilterIds == filterIds
-                    ) {
-                        it.copy(
-                            catalogResult = result,
-                            newlyAddedGames = if (newlyAddedQuery) result.games else it.newlyAddedGames,
-                            loadingGames = false,
-                            catalogQueryLoading = false,
-                            games = result.games,
-                        )
-                    } else {
-                        it
-                    }
-                }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
                 _state.update { current ->
-                    if (
-                        current.catalogSearch == searchQuery &&
-                        current.catalogSortId == sortId &&
-                        current.catalogFilterIds == filterIds
-                    ) {
+                    if (matchesQuery(current)) {
                         current.copy(
                             error = if (cachedCatalog != null) null else error.message ?: "Catalog refresh failed",
                             loadingGames = false,

@@ -918,14 +918,8 @@ private fun SettingsContent(
                 SettingSwitch(
                     label = stringResource(R.string.settings_stretch_stream_to_fit),
                     checked = settings.stretchStreamToFit,
-                ) { enabled ->
-                    viewModel.updateSettings(
-                        settings.copy(
-                            legacyCropStreamToFill = false,
-                            stretchStreamToFit = enabled,
-                        ),
-                    )
-                }
+                    onCheckedChange = viewModel::setStretchStreamToFit,
+                )
                 val maxFps = if (boosteroidActive) 120 else maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
                 val minFps = if (boosteroidActive) 60 else 30
                 NumberSlider(

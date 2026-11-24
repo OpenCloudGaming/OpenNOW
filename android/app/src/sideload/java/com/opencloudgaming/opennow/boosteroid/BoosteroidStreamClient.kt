@@ -14,7 +14,6 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
-import android.view.View
 import com.opencloudgaming.opennow.AbsoluteMousePosition
 import com.opencloudgaming.opennow.AndroidControllerInput
 import com.opencloudgaming.opennow.AndroidControllerMouseAssist
@@ -32,6 +31,7 @@ import com.opencloudgaming.opennow.SteamOverlayChordState
 import com.opencloudgaming.opennow.StreamLivenessAction
 import com.opencloudgaming.opennow.StreamRuntimeStats
 import com.opencloudgaming.opennow.StreamSettings
+import com.opencloudgaming.opennow.StreamVideoSurface
 import com.opencloudgaming.opennow.TouchMouseOutput
 import com.opencloudgaming.opennow.TouchOverlayInput
 import com.opencloudgaming.opennow.VideoCodec
@@ -44,6 +44,7 @@ import com.opencloudgaming.opennow.newStreamLivenessWatchdog
 import com.opencloudgaming.opennow.openNowCodecName
 import com.opencloudgaming.opennow.preferenceKey
 import com.opencloudgaming.opennow.streamDiagnosticId
+import com.opencloudgaming.opennow.streamPointForTouch
 import com.opencloudgaming.opennow.streamResolutionPixels
 import com.opencloudgaming.opennow.webRtcCodecName
 import java.nio.ByteBuffer
@@ -70,6 +71,7 @@ import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
+import org.webrtc.GlRectDrawer
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
@@ -83,7 +85,6 @@ import org.webrtc.RtpCapabilities
 import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
@@ -144,7 +145,7 @@ internal class BoosteroidStreamClient(
     private var boosteroidInputChannel: DataChannel? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
-    private var renderer: SurfaceViewRenderer? = null
+    private var renderer: StreamVideoSurface? = null
     private var rendererSurfaceCallback: SurfaceHolder.Callback? = null
     private var rendererSinkAttached = false
     private var gamepadKeepaliveJob: Job? = null
@@ -294,8 +295,8 @@ internal class BoosteroidStreamClient(
             .createPeerConnectionFactory()
     }
 
-    fun createRenderer(context: Context): SurfaceViewRenderer =
-        SurfaceViewRenderer(context).also {
+    fun createRenderer(context: Context): StreamVideoSurface =
+        StreamVideoSurface(context, hdr = false).also {
             renderer?.let(::releaseRendererInternal)
             val events = object : RendererCommon.RendererEvents {
                 override fun onFirstFrameRendered() {
@@ -304,7 +305,7 @@ internal class BoosteroidStreamClient(
 
                 override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) = Unit
             }
-            it.init(eglBase.eglBaseContext, events)
+            it.init(eglBase.eglBaseContext, events, EglBase.CONFIG_PLAIN, GlRectDrawer())
             it.setEnableHardwareScaler(true)
             it.setMirror(false)
             it.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
@@ -325,13 +326,13 @@ internal class BoosteroidStreamClient(
             attachRendererSinkIfAvailable(it)
         }
 
-    fun releaseRenderer(candidate: SurfaceViewRenderer) {
+    fun releaseRenderer(candidate: StreamVideoSurface) {
         if (renderer !== candidate) return
         releaseRendererInternal(candidate)
         renderer = null
     }
 
-    private fun attachRendererSinkIfAvailable(candidate: SurfaceViewRenderer) {
+    private fun attachRendererSinkIfAvailable(candidate: StreamVideoSurface) {
         if (renderer !== candidate || rendererSinkAttached || candidate.holder.surface?.isValid != true) return
         val track = videoTrack ?: return
         track.addSink(candidate)
@@ -339,19 +340,18 @@ internal class BoosteroidStreamClient(
         recordStreamDiagnostic("video renderer sink attached")
     }
 
-    private fun detachRendererSink(candidate: SurfaceViewRenderer) {
+    private fun detachRendererSink(candidate: StreamVideoSurface) {
         if (renderer !== candidate || !rendererSinkAttached) return
         videoTrack?.removeSink(candidate)
         rendererSinkAttached = false
         recordStreamDiagnostic("video renderer sink detached surface=${candidate.holder.surface?.isValid == true}")
     }
 
-    private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
+    private fun releaseRendererInternal(candidate: StreamVideoSurface) {
         detachRendererSink(candidate)
         rendererSurfaceCallback?.let(candidate.holder::removeCallback)
         rendererSurfaceCallback = null
-        candidate.alpha = 0f
-        candidate.visibility = View.GONE
+        candidate.prepareForRelease()
         candidate.release()
     }
 
@@ -620,7 +620,19 @@ internal class BoosteroidStreamClient(
                         activeRenderer.getLocationOnScreen(location)
                         val rendererX = event.rawX - location[0]
                         val rendererY = event.rawY - location[1]
-                        val sent = sendBoosteroidAbsoluteMouseMove(rendererX, rendererY, surfaceWidth, surfaceHeight)
+                        val (streamWidth, streamHeight) = streamResolutionPixels(settings)
+                        val (decodedWidth, decodedHeight) = activeRenderer.currentDecodedSize() ?: (streamWidth to streamHeight)
+                        val point = streamPointForTouch(
+                            touchX = rendererX,
+                            touchY = rendererY,
+                            viewWidth = surfaceWidth,
+                            viewHeight = surfaceHeight,
+                            streamWidth = streamWidth,
+                            streamHeight = streamHeight,
+                            stretchToFit = activeRenderer.stretchToFit,
+                            renderingAspectRatio = decodedWidth.toFloat() / decodedHeight,
+                        )
+                        val sent = sendBoosteroidAbsoluteMouseMove(point.x, point.y, streamWidth, streamHeight)
                         if (sent && !externalMouseMoveSentLogged) {
                             externalMouseMoveSentLogged = true
                             recordBoosteroidInputDiagnostic("external mouse move sent source=${event.source} device=${event.deviceId} mode=absolute")

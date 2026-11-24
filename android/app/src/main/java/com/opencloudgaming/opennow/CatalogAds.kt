@@ -55,6 +55,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -186,33 +187,40 @@ internal fun rememberCatalogNativeAds(
             coroutineScope {
                 launch {
                     snapshotFlow {
+                        if (grid.isScrollInProgress) return@snapshotFlow null
                         val visible = visibleCatalogGameCounts(grid.layoutInfo, gameCount, adInterval) ?: (1..1)
                         catalogAdPrefetchStops(gameCount, visible, adInterval)
-                    }.collect { window ->
+                    }.filterNotNull().collect { window ->
                         wanted = window
                         val firstRetained = window.first - adInterval
                         expirations.keys.filter { it !in firstRetained..window.last }.forEach(::evict)
                     }
                 }
                 while (true) {
-                    snapshotFlow { wanted.any { slots[it] == null } }.first { it }
+                    snapshotFlow { !grid.isScrollInProgress && wanted.any { slots[it] == null } }.first { it }
                     val ad = requestCatalogNativeAd(access) { wanted.any { slots[it] == null } }
                     if (ad == null) {
                         delay(CATALOG_AD_RETRY_DELAY)
                         continue
                     }
-                    // A fling can cross several slots during one request. Fill the next visible slot.
-                    val stop = wanted.firstOrNull { slots[it] == null }
-                    if (stop == null) {
-                        ad.destroy()
-                        continue
-                    }
-                    slots.set(stop, ad)
-                    expirations[stop] = launch {
-                        delay(CATALOG_AD_LIFETIME)
-                        expirations.remove(stop)
-                        slots.set(stop, null)
-                        ad.destroy()
+                    var assigned = false
+                    try {
+                        snapshotFlow { grid.isScrollInProgress }.first { !it }
+                        // The viewport can move during a load. Use the idle viewport, before
+                        // inserting the creative, so a fling never has to inflate a native ad.
+                        val visible = visibleCatalogGameCounts(grid.layoutInfo, gameCount, adInterval) ?: (1..1)
+                        val stop = catalogAdPrefetchStops(gameCount, visible, adInterval)
+                            .firstOrNull { slots[it] == null } ?: continue
+                        slots.set(stop, ad)
+                        assigned = true
+                        expirations[stop] = launch {
+                            delay(CATALOG_AD_LIFETIME)
+                            expirations.remove(stop)
+                            slots.set(stop, null)
+                            ad.destroy()
+                        }
+                    } finally {
+                        if (!assigned) ad.destroy()
                     }
                 }
             }

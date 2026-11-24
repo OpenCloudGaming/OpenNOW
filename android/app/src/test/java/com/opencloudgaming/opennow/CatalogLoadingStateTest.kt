@@ -51,29 +51,4 @@ class CatalogLoadingStateTest {
         )
     }
 
-    @Test
-    fun backgroundRefreshDoesNotCoverVisibleStoreContentWithAnIndicator() {
-        assertFalse(
-            shouldShowCatalogRefreshIndicator(
-                loadingGames = true,
-                hasVisibleGames = true,
-            ),
-        )
-    }
-
-    @Test
-    fun initialStoreLoadStillShowsTheRefreshIndicator() {
-        assertTrue(
-            shouldShowCatalogRefreshIndicator(
-                loadingGames = true,
-                hasVisibleGames = false,
-            ),
-        )
-        assertFalse(
-            shouldShowCatalogRefreshIndicator(
-                loadingGames = false,
-                hasVisibleGames = false,
-            ),
-        )
-    }
 }

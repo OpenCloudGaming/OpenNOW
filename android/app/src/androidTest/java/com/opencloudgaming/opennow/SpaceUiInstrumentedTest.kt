@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.InputModeManager
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.activity.ComponentActivity
@@ -50,6 +51,21 @@ class SpaceUiInstrumentedTest {
         GameInfo(id = "7", title = "Aurora"),
         GameInfo(id = "8", title = "Solstice"),
     )
+
+    @Test fun storeShowsFirstGamesWithoutAnAutomaticSpinner() {
+        var state by mutableStateOf(OpenNowUiState(loadingGames = true, catalogQueryLoading = true))
+        compose.setContent {
+            MaterialTheme {
+                SpaceUiScreen(state, onNavigate = {}, onSelectGame = {}, onRefresh = {},
+                    onSearchChange = {}, onResumeSession = {}, inputEnabled = true, settingsContent = {})
+            }
+        }
+        val progress = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo))
+        progress.assertDoesNotExist()
+        compose.runOnIdle { state = state.copy(games = games, catalogQueryLoading = false) }
+        compose.onNodeWithTag("space-game-1").assertIsDisplayed()
+        progress.assertDoesNotExist()
+    }
 
     @Test fun controllerFocusLaunchCallbackAndBumpersWork() {
         var state by mutableStateOf(OpenNowUiState(games = games, libraryGames = games))

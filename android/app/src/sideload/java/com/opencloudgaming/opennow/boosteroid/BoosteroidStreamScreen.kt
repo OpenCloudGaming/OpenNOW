@@ -48,6 +48,7 @@ import com.opencloudgaming.opennow.StreamKeyboardBar
 import com.opencloudgaming.opennow.StreamRuntimeStats
 import com.opencloudgaming.opennow.TouchMouseState
 import com.opencloudgaming.opennow.TouchOverlay
+import com.opencloudgaming.opennow.parseResolutionPixelsOrNull
 import com.opencloudgaming.opennow.rememberPhysicalControllerConnected
 import com.opencloudgaming.opennow.streamResolutionPixels
 
@@ -57,6 +58,7 @@ internal fun BoosteroidStreamScreen(
     session: BoosteroidSession,
     tv: Boolean,
     touchSettings: AndroidTouchSettings,
+    stretchToFit: Boolean,
     model: BoosteroidController,
     onFirstFrame: () -> Unit,
     onInputChanged: (BoosteroidStreamClient?, Boolean) -> Unit,
@@ -87,6 +89,7 @@ internal fun BoosteroidStreamScreen(
         }.getOrNull()
     }
     val touchMouse = remember(client) { TouchMouseState() }
+    LaunchedEffect(stretchToFit) { touchMouse.reset(client) }
     val menuVisible = menuOpen || keyboardOpen
     BackHandler {
         when {
@@ -119,17 +122,14 @@ internal fun BoosteroidStreamScreen(
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (client != null) {
-            val remoteResolution = stats.resolution?.let { resolution ->
-                val pieces = resolution.split('x', limit = 2)
-                val width = pieces.getOrNull(0)?.toIntOrNull()?.takeIf { it > 0 }
-                val height = pieces.getOrNull(1)?.toIntOrNull()?.takeIf { it > 0 }
-                if (width != null && height != null) width to height else null
-            } ?: streamResolutionPixels(launch.settings)
+            val remoteResolution = parseResolutionPixelsOrNull(stats.resolution)
+                ?: streamResolutionPixels(launch.settings)
             val aspect = remoteResolution.first.toFloat() / remoteResolution.second
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                factory = { client.createRenderer(it) },
+                factory = { client.createRenderer(it).apply { updateStretchToFit(stretchToFit) } },
                 update = { renderer ->
+                    renderer.updateStretchToFit(stretchToFit)
                     renderer.setOnTouchListener { view, event ->
                         if (menuVisible) {
                             false
@@ -143,6 +143,7 @@ internal fun BoosteroidStreamScreen(
                                 ignoredPointerIds = emptySet(),
                                 width = view.width,
                                 height = view.height,
+                                stretchToFit = stretchToFit,
                                 renderingAspectRatio = aspect,
                             )
                         }
@@ -151,7 +152,7 @@ internal fun BoosteroidStreamScreen(
                 onRelease = client::releaseRenderer,
             )
             cursor?.takeIf { firstFrame && it.absolute && it.visible && !menuVisible }?.let {
-                BoosteroidCursor(it, aspect)
+                BoosteroidCursor(it, aspect, stretchToFit)
             }
             if (firstFrame && touchControls && !menuVisible) {
                 TouchOverlay(
@@ -239,12 +240,12 @@ internal fun BoosteroidStreamScreen(
 }
 
 @Composable
-private fun BoosteroidCursor(cursor: StreamRemoteCursorState, aspect: Float) {
+private fun BoosteroidCursor(cursor: StreamRemoteCursorState, aspect: Float, stretchToFit: Boolean) {
     val bitmap = cursor.bitmap
     val image = remember(bitmap) { bitmap?.asImageBitmap() }
     Canvas(Modifier.fillMaxSize()) {
-        val width = size.width.coerceAtMost(size.height * aspect)
-        val height = width / aspect
+        val width = if (stretchToFit) size.width else size.width.coerceAtMost(size.height * aspect)
+        val height = if (stretchToFit) size.height else width / aspect
         val position = Offset(
             (size.width - width) / 2f + width * cursor.normalizedX,
             (size.height - height) / 2f + height * cursor.normalizedY,

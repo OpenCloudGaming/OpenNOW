@@ -45,6 +45,8 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
     private var events: RendererCommon.RendererEvents? = null
     @Volatile private var frameWidth = 0
     @Volatile private var frameHeight = 0
+    internal var stretchToFit = false
+        private set
     private var firstFrame = true
     @Volatile private var recordingSink: VideoSink? = null
 
@@ -152,26 +154,32 @@ class StreamVideoSurface(context: Context, private val hdr: Boolean, preferDirec
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        if (frameWidth <= 0 || frameHeight <= 0) {
-            super.onLayout(changed, left, top, right, bottom)
-            return
-        }
         val (videoWidth, videoHeight) = aspectFitStreamSurfaceSize(frameWidth, frameHeight, width, height)
         val x = (width - videoWidth) / 2
         val y = (height - videoHeight) / 2
-        surfaces.forEach { it.layout(x, y, x + videoWidth, y + videoHeight) }
+        surfaces.forEach { surface ->
+            surface.layout(x, y, x + videoWidth, y + videoHeight)
+            updatePresentationScale(surface)
+        }
     }
 
     fun setEnableHardwareScaler(enabled: Boolean) { sdr?.setEnableHardwareScaler(enabled) }
     fun setMirror(mirror: Boolean) { sdr?.setMirror(mirror) }
     fun setScalingType(type: RendererCommon.ScalingType) { sdr?.setScalingType(type) }
 
-    /** Apply transforms to both native layers so a texture fallback preserves stretch-to-fit. */
-    fun setPresentationScale(scaleX: Float, scaleY: Float) {
-        surfaces.forEach {
-            it.scaleX = scaleX
-            it.scaleY = scaleY
-        }
+    fun updateStretchToFit(enabled: Boolean) {
+        if (stretchToFit == enabled) return
+        stretchToFit = enabled
+        surfaces.forEach(::updatePresentationScale)
+    }
+
+    private fun updatePresentationScale(surface: SurfaceView) {
+        // Keep the actual surface aspect-fitted so EGL and MediaCodec show the full frame.
+        // Scale from the laid-out bounds, which update as soon as the decoded size changes.
+        surface.scaleX = if (stretchToFit && surface.width > 0) width.toFloat() / surface.width else 1f
+        surface.scaleY = if (stretchToFit && surface.height > 0) height.toFloat() / surface.height else 1f
+        surface.translationX = if (stretchToFit) (width - surface.width) / 2f - surface.left else 0f
+        surface.translationY = if (stretchToFit) (height - surface.height) / 2f - surface.top else 0f
     }
 
     /** Called on Main before the native worker tears down the renderer. */
