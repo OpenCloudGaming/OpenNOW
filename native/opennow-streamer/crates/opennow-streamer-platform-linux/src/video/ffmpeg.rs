@@ -243,6 +243,13 @@ impl FfmpegDecoder {
         let device_path = vaapi_device
             .as_ref()
             .map_or(ptr::null(), |path| path.as_ptr());
+        #[cfg(feature = "vulkan")]
+        if mode == FfmpegMode::Vulkan && !crate::vulkan_device::any_video_decode_queue() {
+            return Err(Error::unavailable(
+                Subsystem::Vulkan,
+                "no Vulkan device exposes a video decode queue",
+            ));
+        }
         if let Some(device_type) = mode.device_type() {
             let pixel_format =
                 hardware_pixel_format(decoder_definition, device_type).ok_or_else(|| {
@@ -468,6 +475,15 @@ impl FfmpegDecoder {
         if self.mode == FfmpegMode::V4l2Request && error == ffmpeg::Error::InvalidData {
             Error::ReferenceLost {
                 subsystem: Subsystem::V4l2,
+                reason,
+            }
+        } else if self.mode == FfmpegMode::Vaapi && vaapi_picture_error(error) {
+            // A picture the hardware failed to decode (VA_STATUS_ERROR_
+            // DECODING_ERROR becomes EIO in FFmpeg): the stream is still
+            // decodable from the next keyframe, so recover rather than switch
+            // to a fallback backend.
+            Error::ReferenceLost {
+                subsystem: Subsystem::VaApi,
                 reason,
             }
         } else {
@@ -1118,6 +1134,18 @@ fn map_hardware_frame_to_dmabuf(
         )
     };
     if map_result < 0 {
+        // Mapping syncs the surface, so a picture the hardware failed to
+        // decode surfaces here: recoverable from the next keyframe.
+        if mode == FfmpegMode::Vaapi && vaapi_picture_error(ffmpeg::Error::from(map_result)) {
+            return Err(Error::ReferenceLost {
+                subsystem: Subsystem::VaApi,
+                reason: format!(
+                    "{} frame DMA-BUF export failed: {}",
+                    mode.label(),
+                    ffmpeg::Error::from(map_result)
+                ),
+            });
+        }
         return Err(ffmpeg_error(
             format!("{} frame DMA-BUF export failed", mode.label()),
             map_result,
@@ -1306,6 +1334,17 @@ impl VideoDecoder for FfmpegDecoder {
         self.drain(false)
     }
 
+    fn reset_in_place(&mut self) -> bool {
+        // Hardware decoders only: the VA context and its surfaces stay, the
+        // next keyframe (AV1 refresh-all, H.264 IDR) restarts the references.
+        // Decode errors go through ReferenceLost and a full reopen instead.
+        if self.mode != FfmpegMode::Vaapi {
+            return false;
+        }
+        self.decoder.flush();
+        true
+    }
+
     fn flush(&mut self) -> Result<Vec<DecodedVideoFrame>> {
         match self.decoder.send_eof() {
             Ok(()) | Err(ffmpeg::Error::Eof) => self.drain(true),
@@ -1319,6 +1358,13 @@ impl VideoDecoder for FfmpegDecoder {
     fn take_format_change(&mut self) -> Option<StreamFormat> {
         self.pending_format_change.take()
     }
+}
+
+/// FFmpeg's VA-API hwaccel turns a failed vaEndPicture/vaSyncSurface into
+/// EIO, and a picture it could not set up into InvalidData.
+fn vaapi_picture_error(error: ffmpeg::Error) -> bool {
+    matches!(error, ffmpeg::Error::InvalidData)
+        || matches!(error, ffmpeg::Error::Other { errno } if errno == libc::EIO)
 }
 
 fn initialize_ffmpeg() -> Result<()> {
@@ -1689,6 +1735,19 @@ mod tests {
             #[cfg(feature = "vulkan")]
             snapshot_pool: None,
         }
+    }
+
+    #[test]
+    fn vaapi_picture_errors_are_recoverable_and_others_are_not() {
+        use super::vaapi_picture_error;
+        assert!(vaapi_picture_error(ffmpeg_next::Error::InvalidData));
+        assert!(vaapi_picture_error(ffmpeg_next::Error::Other {
+            errno: libc::EIO
+        }));
+        assert!(!vaapi_picture_error(ffmpeg_next::Error::Other {
+            errno: libc::ENOMEM
+        }));
+        assert!(!vaapi_picture_error(ffmpeg_next::Error::Eof));
     }
 
     #[test]
