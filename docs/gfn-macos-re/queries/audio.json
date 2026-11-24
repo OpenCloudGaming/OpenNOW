@@ -1,0 +1,47 @@
+[
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x5180",
+        "0x5c50",
+        "0x7180",
+        "0x76e0",
+        "0x7c50"
+      ]
+    }
+  },
+  {
+    "name": "batch_decompile",
+    "arguments": {
+      "addresses": [
+        "0x14c90",
+        "0x19870",
+        "0x1a280",
+        "0x195b0",
+        "0x16060"
+      ]
+    }
+  },
+  {
+    "name": "procedure_references",
+    "arguments": {
+      "procedure": "0x7c50",
+      "direction": "incoming"
+    }
+  },
+  {
+    "name": "procedure_references",
+    "arguments": {
+      "procedure": "0x7180",
+      "direction": "incoming"
+    }
+  },
+  {
+    "name": "procedure_references",
+    "arguments": {
+      "procedure": "0x195b0",
+      "direction": "incoming"
+    }
+  }
+]
