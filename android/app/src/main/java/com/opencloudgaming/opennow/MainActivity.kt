@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
             viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
             pendingExternalLaunchIntent?.let(::handleExternalLaunchIntent)
             pendingExternalLaunchIntent = null
-            viewModel.state.collect { state ->
+            viewModel.screenState.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
                 streamKeepAliveNotifier.update(state)
@@ -193,11 +193,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (startupDataReady) updateSpaceUiSystemBars(viewModel.state.value, newConfig)
+        if (startupDataReady) updateSpaceUiSystemBars(viewModel.screenState.value, newConfig)
     }
 
     private fun updateSpaceUiSystemBars(state: OpenNowUiState, config: Configuration = resources.configuration) {
-        val enabled = state.settings.experimentalSpaceUi && state.authSession != null && !shouldShowSetupFlow(state.settings)
+        val enabled = state.settings.experimentalSpaceUi && state.hasCloudAccount && !shouldShowSetupFlow(state.settings)
         if (spaceUiAppearanceActive != enabled) {
             spaceUiAppearanceActive = enabled
             WindowCompat.getInsetsController(window, window.decorView).let {
@@ -249,7 +249,7 @@ class MainActivity : ComponentActivity() {
         if (streamSystemUiActive && event.isAndroidVolumeKey()) {
             return super.dispatchKeyEvent(event)
         }
-        if (NativeStreamInputRouter.dispatchKey(event)) {
+        if ((startupDataReady && viewModel.dispatchBoosteroidKey(event)) || NativeStreamInputRouter.dispatchKey(event)) {
             return true
         }
         val normalizedStreamUiKeyCode = NativeStreamInputRouter.normalizedStreamUiKeyCode(event)
@@ -298,6 +298,7 @@ class MainActivity : ComponentActivity() {
         // Backgrounding mid-tap gives us no UP or CANCEL, so without this the host keeps the mouse
         // button held down. PiP does not stop the activity, hence the separate call above.
         NativeStreamInputRouter.releaseInputForLifecycle("activity-stopped")
+        if (startupDataReady) viewModel.releaseBoosteroidInput()
     }
 
     private fun KeyEvent.isAndroidVolumeKey(): Boolean =
@@ -329,7 +330,8 @@ class MainActivity : ComponentActivity() {
                 requestExternalMousePointerCaptureIfNeeded(event)
             }
         }
-        return NativeStreamInputRouter.dispatchMotion(event) ||
+        return (startupDataReady && viewModel.dispatchBoosteroidMotion(event)) ||
+            NativeStreamInputRouter.dispatchMotion(event) ||
             dispatchGamepadHatNavigation(event) ||
             super.dispatchGenericMotionEvent(event)
     }
@@ -464,6 +466,7 @@ class MainActivity : ComponentActivity() {
             // Pixel desktop and other freeform environments can intercept a shortcut after its
             // DOWN event (for example Alt+Tab), so no matching UP reaches this window.
             NativeStreamInputRouter.releaseInputForLifecycle("window-focus-lost")
+            if (startupDataReady) viewModel.releaseBoosteroidInput()
         } else if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)

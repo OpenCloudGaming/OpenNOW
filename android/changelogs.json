@@ -1,4 +1,13 @@
 {
+  "207": {
+    "version": "2.5.1",
+    "notes": [
+      "KB & Mouse passthrough (externally) there was some issues with it before",
+      "Number and special character input for some languages",
+      "Clipboard pasting",
+      "Gamepad fixes"
+    ]
+  },
   "198": {
     "version": "2.4.2",
     "notes": [

@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -99,6 +100,7 @@ private val LocalTouchInputEnabled = staticCompositionLocalOf { true }
 @Composable
 internal fun TouchOverlay(
     client: TouchOverlayInput,
+    mouseOutput: TouchMouseOutput,
     touch: AndroidTouchSettings,
     onButtonTone: () -> Unit,
     layoutEditing: Boolean,
@@ -108,6 +110,7 @@ internal fun TouchOverlay(
     onKeyboardButtonRemove: (String) -> Unit = {},
     onKeyboardStickVisibleChange: (Boolean) -> Unit = {},
     onKeyboardStickScaleChange: (Float) -> Unit = {},
+    inputEnabled: Boolean = true,
     inputResetKey: Any = Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -176,7 +179,7 @@ internal fun TouchOverlay(
         LocalTouchButtonAppearances provides touch.buttonAppearances,
         LocalTouchButtonEdit provides if (layoutEditing) ({ button: String -> editingButton = button }) else null,
         LocalTouchStickKnobScale provides touch.stickKnobScale,
-        LocalTouchInputEnabled provides (!layoutEditing && foreground),
+        LocalTouchInputEnabled provides (inputEnabled && !layoutEditing && foreground),
     ) {
         key(client, touch, layoutEditing, inputResetKey) {
             BoxWithConstraints(
@@ -200,6 +203,7 @@ internal fun TouchOverlay(
                     if (touch.keyboardModeEnabled) {
                         KeyboardTouchControls(
                             client = client,
+                            mouseOutput = mouseOutput,
                             layoutScale = layoutScale,
                             buttonScale = buttonScale,
                             stickScale = stickScale,
@@ -308,6 +312,7 @@ internal fun keyboardStickKeyCodes(x: Float, y: Float): Set<Int> {
 @Composable
 private fun BoxScope.KeyboardTouchControls(
     client: TouchOverlayInput,
+    mouseOutput: TouchMouseOutput,
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
@@ -379,7 +384,7 @@ private fun BoxScope.KeyboardTouchControls(
                 onEdit = { editButton?.invoke(button.appearanceKey()) },
                 modifier = Modifier.align(Alignment.BottomEnd),
             ) {
-                KeyboardCatalogButton(button, option, client, buttonSize, onButtonTone)
+                KeyboardCatalogButton(button, option, client, mouseOutput, buttonSize, onButtonTone)
             }
         }
     }
@@ -444,6 +449,7 @@ private fun KeyboardCatalogButton(
     button: KeyboardOverlayButton,
     option: KeyboardButtonOption,
     client: TouchOverlayInput,
+    mouseOutput: TouchMouseOutput,
     size: Dp,
     onPressTone: () -> Unit,
 ) {
@@ -471,6 +477,7 @@ private fun KeyboardCatalogButton(
                 currentOnPressedChange,
                 LocalTouchButtonAppearances.current[appearanceKey]?.toggle == true,
                 LocalTouchInputEnabled.current,
+                mouseDragOutput = mouseOutput.takeIf { option.mouseButton != null },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -1788,24 +1795,41 @@ internal fun Modifier.virtualPressInput(
     onPressedChange: State<(Boolean) -> Unit>,
     toggle: Boolean,
     enabled: Boolean,
-): Modifier = pointerInput(inputOwner, controlKey, toggle, enabled) {
+    mouseDragOutput: TouchMouseOutput? = null,
+): Modifier = pointerInput(inputOwner, controlKey, toggle, enabled, mouseDragOutput) {
     if (!enabled) return@pointerInput
     val press = TouchButtonPressState(toggle)
+    val mouseMotion = mouseDragOutput?.let { MouseMotionAccumulator() }
     try {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-            onPressedChange.value(press.down())
+            val pressedOnDown = press.down()
+            val dragOutput = mouseDragOutput.takeIf { pressedOnDown && down.type == PointerType.Touch }
+            mouseMotion?.reset()
+            onPressedChange.value(pressedOnDown)
             var completed = false
             try {
                 down.consume()
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    change.consume()
                     if (!change.pressed) {
-                        completed = true
+                        // Compose reports cancellation as an already-consumed release.
+                        completed = !change.isConsumed
+                        change.consume()
+                        if (completed && dragOutput != null) {
+                            // Deliver the last queued movement while the mouse button is still held.
+                            mouseMotion?.sendTouchMouseDelta(0f, 0f, change.uptimeMillis, dragOutput, force = true)
+                        }
                         break
                     }
+                    if (dragOutput != null) {
+                        val delta = change.position - change.previousPosition
+                        if (delta != Offset.Zero) {
+                            mouseMotion?.sendTouchMouseDelta(delta.x, delta.y, change.uptimeMillis, dragOutput)
+                        }
+                    }
+                    change.consume()
                 }
             } finally {
                 onPressedChange.value(if (completed) press.up() else press.cancel())

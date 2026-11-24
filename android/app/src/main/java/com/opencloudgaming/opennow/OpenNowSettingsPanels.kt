@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -77,7 +78,10 @@ import kotlinx.coroutines.withContext
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.opencloudgaming.opennow.ui.controls.ControlActionRow
 import com.opencloudgaming.opennow.ui.controls.ControlNavigationRow
+
+private const val DONATE_URL = "https://printedwaste.com/donate"
 
 @Composable
 internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
@@ -736,7 +740,7 @@ internal fun AccountSettingsPanel(
     searchMode: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!searchMode) {
+        if (!searchMode && !state.boosteroid.active) {
             ControlNavigationRow(
                 label = stringResource(R.string.tv_pair_settings_title),
                 value = state.localTvConnector.connectedTvName?.let {
@@ -751,12 +755,14 @@ internal fun AccountSettingsPanel(
 
 @Composable
 private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
-    val currentSession = state.authSession
-    val currentUserId = currentSession?.user?.userId
+    val currentAccount = state.activeCloudAccount
+    val accountActionsEnabled = !state.isAndroidUpdateCheckBlockedByStream() &&
+        !state.boosteroid.signingIn && state.deviceLoginPrompt == null && state.launchPhase.isBlank()
     val context = LocalContext.current
     var addAccountPromptOpen by remember { mutableStateOf(false) }
     val addAccountProviders = remember(state.providers, state.selectedProvider) {
-        accountProviderOptions(state.providers, state.selectedProvider)
+        accountProviderOptions(state.providers, state.selectedProvider) +
+            if (BOOSTEROID_AVAILABLE) listOf(boosteroidLoginProvider) else emptyList()
     }
     if (addAccountPromptOpen) {
         AddAccountProviderDialog(
@@ -764,20 +770,19 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
             selectedProvider = state.selectedProvider,
             onProviderSelected = { provider ->
                 addAccountPromptOpen = false
-                viewModel.selectProvider(provider)
-                viewModel.login(provider)
+                viewModel.addCloudAccount(provider)
             },
             onDismiss = { addAccountPromptOpen = false },
         )
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.savedAccounts.ifEmpty {
-            state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
+            listOfNotNull(currentAccount)
         }.forEach { account ->
-            val selected = account.userId == currentUserId
+            val selected = account.userId == currentAccount?.userId && account.providerCode == currentAccount.providerCode
             val membershipTier = if (selected) {
                 state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
-                    ?: currentSession?.user?.membershipTier?.takeIf { it.isNotBlank() }
+                    ?: currentAccount?.membershipTier?.takeIf { it.isNotBlank() }
                     ?: account.membershipTier
             } else {
                 account.membershipTier
@@ -805,7 +810,7 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
                     if (selected) {
                         Text(stringResource(R.string.common_active), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                     } else {
-                        OutlinedButton(onClick = { viewModel.switchAccount(account.userId) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                        OutlinedButton(onClick = { viewModel.switchCloudAccount(account) }, enabled = accountActionsEnabled, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
                             Text(stringResource(R.string.account_switch))
                         }
                     }
@@ -828,43 +833,53 @@ private fun AccountServicesSettingsPanel(state: OpenNowUiState, viewModel: OpenN
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            SettingsButton(onClick = { addAccountPromptOpen = true }, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_add)) }
-            OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_sign_out)) }
+            SettingsButton(onClick = { addAccountPromptOpen = true }, enabled = accountActionsEnabled, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_add)) }
+            OutlinedButton(onClick = viewModel::signOutCloudAccount, enabled = accountActionsEnabled, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_sign_out)) }
         }
-        OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.account_sign_out_all)) }
-        AccountPlayTimeStatsPanel(
-            subscriptionInfo = state.subscriptionInfo,
-            fallbackMembershipTier = state.authSession?.user?.membershipTier,
-        )
-        StorageAddonPanel(
-            storageAddon = state.subscriptionInfo?.storageAddon,
-            openExternal = { url ->
-                if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
-                }
-            },
-        )
-        AccountConnectorsPanel(
-            connectors = state.accountConnectors,
-            loading = state.loadingAccountConnectors,
-            actionStore = state.connectorActionStore,
-            onRefresh = viewModel::refreshAccountConnectors,
-            onConnect = { connector ->
-                viewModel.connectAccountConnector(connector.store) { url ->
+        OutlinedButton(onClick = viewModel::signOutAllCloudAccounts, enabled = accountActionsEnabled, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.account_sign_out_all)) }
+        if (state.boosteroid.active) {
+            listOf("steam" to "Steam", "epic" to "Epic Games", "battle-net" to "Battle.net").forEach { (platform, label) ->
+                ControlActionRow(
+                    label = label,
+                    actionLabel = stringResource(R.string.boosteroid_library_sync),
+                    onClick = { viewModel.syncBoosteroidLibrary(platform) },
+                )
+            }
+        } else {
+            AccountPlayTimeStatsPanel(
+                subscriptionInfo = state.subscriptionInfo,
+                fallbackMembershipTier = state.authSession?.user?.membershipTier,
+            )
+            StorageAddonPanel(
+                storageAddon = state.subscriptionInfo?.storageAddon,
+                openExternal = { url ->
                     if (!openExternalUrl(context, url)) {
                         Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
                     }
-                }
-            },
-            onDisconnect = { connector ->
-                viewModel.disconnectAccountConnector(connector.store)
-            },
-            openExternal = { url ->
-                if (!openExternalUrl(context, url)) {
-                    Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
-                }
-            },
-        )
+                },
+            )
+            AccountConnectorsPanel(
+                connectors = state.accountConnectors,
+                loading = state.loadingAccountConnectors,
+                actionStore = state.connectorActionStore,
+                onRefresh = viewModel::refreshAccountConnectors,
+                onConnect = { connector ->
+                    viewModel.connectAccountConnector(connector.store) { url ->
+                        if (!openExternalUrl(context, url)) {
+                            Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onDisconnect = { connector ->
+                    viewModel.disconnectAccountConnector(connector.store)
+                },
+                openExternal = { url ->
+                    if (!openExternalUrl(context, url)) {
+                        Toast.makeText(context, context.getString(R.string.error_no_browser), Toast.LENGTH_SHORT).show()
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -889,7 +904,7 @@ private fun AddAccountProviderDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    stringResource(R.string.settings_select_provider),
+                    stringResource(if (BOOSTEROID_AVAILABLE) R.string.cloud_account_select_provider else R.string.settings_select_provider),
                     color = SettingsTextMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1714,9 +1729,6 @@ internal fun DeveloperPanel() {
 
 @Composable
 internal fun ThanksPanel() {
-    val context = LocalContext.current
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
     Text(
         stringResource(R.string.settings_thanks_body),
         color = SettingsTextMuted,
@@ -1739,6 +1751,39 @@ internal fun ThanksPanel() {
     DiscordCommunityLink(
         summary = stringResource(R.string.discord_community_credits_summary),
     )
+    DonateButton(modifier = Modifier.fillMaxWidth())
+}
+
+@Composable
+internal fun SettingsDonationBanner() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.settings_donation_banner),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            DonateButton(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp))
+        }
+    }
+}
+
+@Composable
+private fun DonateButton(
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     Button(
         onClick = {
             scope.launch {
@@ -1750,7 +1795,8 @@ internal fun ThanksPanel() {
                 )
             }
         },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
+        contentPadding = contentPadding,
     ) {
         Text(stringResource(R.string.settings_donate), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

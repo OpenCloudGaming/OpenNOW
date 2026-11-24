@@ -224,6 +224,7 @@ internal fun clearCatalogBackgroundImage(
 internal fun CatalogBackgroundPicker(
     settings: AppSettings,
     onSettingsChange: (AppSettings) -> Unit,
+    enabled: Boolean = true,
 ) {
     val context = LocalContext.current
     val launchImagePicker = rememberCatalogBackgroundImagePicker(settings, onSettingsChange)
@@ -265,6 +266,7 @@ internal fun CatalogBackgroundPicker(
                 label = stringResource(R.string.settings_catalog_background_built_in),
                 options = presetOptions.map { it.second },
                 selected = presetOptions.first { it.first == settings.catalogBackgroundPreset }.second,
+                enabled = enabled,
             ) { selectedLabel ->
                 val selectedPreset = presetOptions.firstOrNull { it.second == selectedLabel }
                     ?.first
@@ -278,6 +280,7 @@ internal fun CatalogBackgroundPicker(
                 OutlinedButton(
                     onClick = launchImagePicker,
                     modifier = Modifier.weight(1f),
+                    enabled = enabled,
                 ) {
                     Text(stringResource(R.string.action_choose_image), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -285,6 +288,7 @@ internal fun CatalogBackgroundPicker(
                     OutlinedButton(
                         onClick = { clearCatalogBackgroundImage(context, settings, onSettingsChange) },
                         modifier = Modifier.weight(1f),
+                        enabled = enabled,
                     ) {
                         Text(stringResource(R.string.action_use_default), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }

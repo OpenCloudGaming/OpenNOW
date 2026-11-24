@@ -24,7 +24,6 @@ import com.google.android.ump.UserMessagingPlatform
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private const val ADS_TAG = "GoogleAds"
@@ -32,11 +31,10 @@ private val adsInitializing = AtomicBoolean()
 private val adsReady = CompletableDeferred<Boolean>()
 
 @Composable
-internal fun rememberAdConsent(activity: ComponentActivity, refreshDelayMillis: Long = 0): AdConsent {
+internal fun rememberAdConsent(activity: ComponentActivity): AdConsent {
     val consent = viewModel<AdConsent>(viewModelStoreOwner = activity)
-    LaunchedEffect(activity, consent, refreshDelayMillis) {
-        delay(refreshDelayMillis)
-        activity.lifecycle.withResumed { consent.refresh(activity) }
+    LaunchedEffect(activity, consent) {
+        activity.lifecycle.withResumed { consent.refresh(activity, retryFailure = true) }
     }
     return consent
 }
@@ -85,6 +83,7 @@ internal class AdConsent : ViewModel() {
                 update(consent)
             },
         )
+        update(consent)
     }
 
     fun openPrivacyChoices(activity: Activity) {

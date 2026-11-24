@@ -224,11 +224,26 @@ internal fun DeveloperOptionsPanel(state: OpenNowUiState, viewModel: OpenNowView
         }
 
         ControlSection(stringResource(R.string.dev_section_interface)) {
+            if (!state.androidTvProfile) {
+                ControlActionRow(
+                    label = stringResource(R.string.dev_clear_ad_state),
+                    value = stringResource(R.string.dev_clear_ad_state_desc),
+                    actionLabel = stringResource(R.string.dev_action_clear),
+                    enabled = state.appearanceCustomizationUnlocked,
+                    onClick = {
+                        viewModel.resetAppearanceAdReward()
+                        Toast.makeText(context, R.string.dev_toast_ad_state_cleared, Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
             ControlActionRow(
                 label = stringResource(R.string.dev_reset_interface),
                 value = stringResource(R.string.dev_reset_interface_desc),
                 actionLabel = stringResource(R.string.dev_action_reset),
-                onClick = { update({ it.resettingInterface() }, context.getString(R.string.dev_toast_interface)) },
+                onClick = {
+                    viewModel.resetInterfaceSettings()
+                    Toast.makeText(context, R.string.dev_toast_interface, Toast.LENGTH_SHORT).show()
+                },
             )
         }
 

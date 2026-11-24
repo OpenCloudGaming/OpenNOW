@@ -16,6 +16,9 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.requireLayoutCoordinates
+import androidx.compose.ui.platform.InspectorInfo
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
 
@@ -54,6 +57,43 @@ internal class GameDetailsTransitionRegistry {
 
 internal val LocalGameDetailsTransitionRegistry =
     staticCompositionLocalOf<GameDetailsTransitionRegistry?> { null }
+
+/** Reads the current artwork bounds on activation without observing every scroll position. */
+internal class GameDetailsTransitionAnchor {
+    private var node: AnchorNode? = null
+    val modifier: Modifier = AnchorElement(this)
+
+    fun boundsInWindow(): Rect? = node?.takeIf { it.isAttached }?.requireLayoutCoordinates()?.boundsInWindow()
+
+    private data class AnchorElement(val anchor: GameDetailsTransitionAnchor) : ModifierNodeElement<AnchorNode>() {
+        override fun create() = AnchorNode(anchor)
+
+        override fun update(node: AnchorNode) {
+            node.anchor = anchor
+        }
+
+        override fun InspectorInfo.inspectableProperties() {
+            name = "gameDetailsTransitionAnchor"
+        }
+    }
+
+    private class AnchorNode(anchor: GameDetailsTransitionAnchor) : Modifier.Node() {
+        var anchor = anchor
+            set(value) {
+                if (field.node === this) field.node = null
+                field = value
+                if (isAttached) field.node = this
+            }
+
+        override fun onAttach() {
+            anchor.node = this
+        }
+
+        override fun onDetach() {
+            if (anchor.node === this) anchor.node = null
+        }
+    }
+}
 
 internal data class GameDetailsContainerTransform(
     val scaleX: Float,

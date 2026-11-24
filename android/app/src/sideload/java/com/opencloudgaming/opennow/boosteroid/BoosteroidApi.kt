@@ -2,6 +2,7 @@
 package com.opencloudgaming.opennow.boosteroid
 
 import com.opencloudgaming.opennow.AuthUser
+import com.opencloudgaming.opennow.BOOSTEROID_GAME_PREFIX
 import com.opencloudgaming.opennow.BuildConfig
 import com.opencloudgaming.opennow.DeviceLoginPrompt
 import com.opencloudgaming.opennow.GameInfo
@@ -600,8 +601,8 @@ private fun boosteroidGame(element: JsonElement, installed: Boolean): GameInfo? 
         lastPlayedDate = source.string("lastPlayedAt", "lastPlayed", "updatedAt"),
     )
     return GameInfo(
-        id = id.toString(),
-        uuid = source.string("slug", "uuid") ?: id.toString(),
+        id = "$BOOSTEROID_GAME_PREFIX$id",
+        uuid = "$BOOSTEROID_GAME_PREFIX$id",
         launchAppId = id.toString(),
         title = title,
         description = source.string("description", "shortDescription", "summary"),

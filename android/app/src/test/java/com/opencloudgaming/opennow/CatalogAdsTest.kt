@@ -51,35 +51,27 @@ class CatalogAdsTest {
     }
 
     @Test
-    fun placementUsesWholeRowsNearThirtyGames() {
-        assertEquals(30, catalogAdInterval(columns = 3))
-        assertEquals(32, catalogAdInterval(columns = 4))
-        assertEquals(35, catalogAdInterval(columns = 7))
+    fun slotsArePlacedAfterEveryThirtyGames() {
+        assertEquals(emptyList<Int>(), CatalogAdSlots(29).stops.toList())
+        assertEquals(listOf(30, 60, 90), CatalogAdSlots(99).stops.toList())
     }
 
     @Test
-    fun requestsOnlyNearbySlotsWithinTheCatalog() {
-        assertEquals(emptyList<Int>(), catalogAdStops(90, 30, 1..8, 6))
-        assertEquals(listOf(30), catalogAdStops(90, 30, 1..8, 24))
-        assertEquals(listOf(30), catalogAdStops(90, 30, 22..27, 6))
-        assertEquals(listOf(60), catalogAdStops(90, 30, 53..56, 6))
-        assertEquals(emptyList<Int>(), catalogAdStops(29, 30, 24..29, 6))
+    fun prefetchStartsWithTwoSlotsAndFollowsForwardJumps() {
+        assertEquals(listOf(30, 60), catalogAdPrefetchStops(250, 1..8).toList())
+        assertEquals(listOf(30, 60, 90), catalogAdPrefetchStops(250, 24..30).toList())
+        assertEquals(listOf(150, 180), catalogAdPrefetchStops(250, 131..139).toList())
+        assertEquals(listOf(240), catalogAdPrefetchStops(250, 230..238).toList())
+        assertEquals(emptyList<Int>(), catalogAdPrefetchStops(250, 241..250).toList())
     }
 
     @Test
-    fun focusIndexAccountsForLoadedRowsBeforeTheTargetOnly() {
-        val ads = setOf(30, 60)
-        assertEquals(29, catalogGameGridIndex(29, ads))
-        assertEquals(31, catalogGameGridIndex(30, ads))
-        assertEquals(62, catalogGameGridIndex(60, ads))
-        assertEquals(2, catalogGameGridIndex(0, ads, headerCount = 2))
-        assertEquals(33, catalogGameGridIndex(30, ads, headerCount = 2))
-    }
-
-    @Test
-    fun aRecentlyPassedSlotCanStillBeLoaded() {
-        assertEquals(listOf(30), catalogAdStops(90, 30, 31..36, lookAhead = 6, lookBehind = 3))
-        assertEquals(emptyList<Int>(), catalogAdStops(90, 30, 34..39, lookAhead = 6, lookBehind = 3))
-        assertEquals(listOf(30), catalogAdStops(90, 30, 1..8, lookAhead = 24, lookBehind = 3))
+    fun focusIndexAccountsForAdSlotsWhetherTheCreativeHasLoadedOrNot() {
+        assertEquals(29, catalogGameGridIndex(29, hasAdSlots = true))
+        assertEquals(31, catalogGameGridIndex(30, hasAdSlots = true))
+        assertEquals(62, catalogGameGridIndex(60, hasAdSlots = true))
+        assertEquals(2, catalogGameGridIndex(0, hasAdSlots = true, headerCount = 2))
+        assertEquals(33, catalogGameGridIndex(30, hasAdSlots = true, headerCount = 2))
+        assertEquals(32, catalogGameGridIndex(30, hasAdSlots = false, headerCount = 2))
     }
 }

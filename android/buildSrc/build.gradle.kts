@@ -12,6 +12,8 @@ dependencies {
         exclude(group = "com.android.tools.build", module = "gradle")
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-gradle-plugin-api")
     }
+    // Legacy AGP interfaces in gradle-api reference model types from the same classloader.
+    runtimeOnly("com.android.tools.build:builder-model:9.4.0")
     implementation("org.ow2.asm:asm:9.9")
     testImplementation("junit:junit:4.13.2")
 }

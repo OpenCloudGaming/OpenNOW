@@ -27,7 +27,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
-import com.google.android.gms.ads.nativead.NativeAd
 
 /** Library grid fallback for compact multi-window configurations. Discover stays a horizontal rail. */
 @Composable
@@ -44,8 +43,7 @@ internal fun SpacePortraitCatalog(
     catalogControls: @Composable () -> Unit,
     libraryContent: @Composable () -> Unit,
     onResumeSession: () -> Unit,
-    ads: Map<Int, NativeAd> = emptyMap(),
-    topAd: NativeAd? = null,
+    ads: CatalogAdSlots? = null,
 ) {
     val reduceMotion = LocalReduceForegroundMotion.current
     val library = state.page == AppPage.Library
@@ -76,7 +74,7 @@ internal fun SpacePortraitCatalog(
                 }
             }
         }
-        catalogGameItems(games, ads, "space-portrait-game", topAd = topAd) { game ->
+        catalogGameItems(games, ads, "space-portrait-game") { game ->
             SpaceGameTile(game, selectedGame?.id == game.id, compact = false, reduceMotion = reduceMotion,
                 showPremiumMarker = state.settings.showPremiumMarker,
                 modifier = Modifier.fillMaxWidth().then(

@@ -37,6 +37,7 @@ val buildingPlayReleaseBundle =
 val liveAdsInDebug = providers.gradleProperty("adMobLive").map(String::toBooleanStrict).orElse(false).get()
 val liveAdMobAppId = "ca-app-pub-7122298728977161~1479293036"
 val liveCatalogAdUnit = "ca-app-pub-7122298728977161/6903384802"
+val liveColoursAdUnit = "ca-app-pub-7122298728977161/7896458732"
 
 android {
     namespace = "com.opencloudgaming.opennow"
@@ -49,8 +50,8 @@ android {
         // target changes are audited; LAN access is permission-gated at its feature boundary.
         //noinspection EditedTargetSdkVersion
         targetSdk = 37
-        versionCode = 199
-        versionName = "2.4.3"
+        versionCode = 207
+        versionName = "2.5.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
@@ -69,14 +70,17 @@ android {
             isMinifyEnabled = false
             val appId = if (liveAdsInDebug) liveAdMobAppId else "ca-app-pub-3940256099942544~3347511713"
             val catalogUnit = if (liveAdsInDebug) liveCatalogAdUnit else "ca-app-pub-3940256099942544/2247696110"
+            val coloursUnit = if (liveAdsInDebug) liveColoursAdUnit else "ca-app-pub-3940256099942544/5224354917"
             manifestPlaceholders["storeAdMobAppId"] = appId
             buildConfigField("String", "STORE_NATIVE_AD_UNIT_ID", "\"$catalogUnit\"")
+            buildConfigField("String", "COLOURS_REWARDED_AD_UNIT_ID", "\"$coloursUnit\"")
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             manifestPlaceholders["storeAdMobAppId"] = liveAdMobAppId
             buildConfigField("String", "STORE_NATIVE_AD_UNIT_ID", "\"$liveCatalogAdUnit\"")
+            buildConfigField("String", "COLOURS_REWARDED_AD_UNIT_ID", "\"$liveColoursAdUnit\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -153,9 +157,11 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
             (source["androidQueueSelector"] as Map<*, *>) +
             (source["androidSetup"] as Map<*, *>) +
             (source["androidBoosteroid"] as Map<*, *>) +
-            (source["androidStoreAds"] as Map<*, *>)
+            (source["androidStoreAds"] as Map<*, *>) +
+            (source["androidMonetization"] as Map<*, *>)
         fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
+            .replace("\n", "\\n")
         val output = outputs.files.singleFile.resolve("values/touch_buttons.xml")
         output.parentFile.mkdirs()
         output.writeText("<resources>\n" + strings.entries.joinToString("\n") { (key, value) ->

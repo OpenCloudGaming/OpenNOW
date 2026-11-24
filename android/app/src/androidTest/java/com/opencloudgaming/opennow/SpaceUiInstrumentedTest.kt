@@ -751,7 +751,7 @@ class SpaceUiInstrumentedTest {
         compose.runOnIdle { assertEquals("https://us-california-south.cloudmatchbeta.nvidiagrid.net/", launched) }
     }
 
-    @Test fun queuePickerShowsUnavailableServersAndCanLaunchWithDefault() {
+    @Test fun queuePickerHidesUnavailableServersAndCanLaunchWithDefault() {
         var defaultLaunches = 0
         compose.setContent {
             SpaceUiTheme {
@@ -772,7 +772,8 @@ class SpaceUiInstrumentedTest {
                 )
             }
         }
-        compose.onNodeWithText("No queue data from PrintedWaste").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("Southern California").assertDoesNotExist()
+        compose.onNodeWithText("No servers are selectable.", substring = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Launch").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Default").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, defaultLaunches) }

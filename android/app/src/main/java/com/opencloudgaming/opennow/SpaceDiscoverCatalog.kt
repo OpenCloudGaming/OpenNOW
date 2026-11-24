@@ -20,7 +20,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
-import com.google.android.gms.ads.nativead.NativeAd
 import kotlin.math.ceil
 import kotlin.math.abs
 
@@ -28,7 +27,7 @@ import kotlin.math.abs
 internal fun SpaceDiscoverCatalog(games: List<GameInfo>, selectedId: String?, gridState: LazyGridState,
     selectedRequester: FocusRequester, compact: Boolean, showPremiumMarker: Boolean, modifier: Modifier, onFocused: (String) -> Unit,
     onSelectGame: (GameInfo) -> Unit, onBack: () -> Unit, catalogControls: @Composable () -> Unit,
-    ads: Map<Int, NativeAd> = emptyMap()) {
+    ads: CatalogAdSlots? = null) {
     val reduced = LocalReduceForegroundMotion.current
     Column(modifier.fillMaxWidth().spaceArrival("discover-catalog")) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp),

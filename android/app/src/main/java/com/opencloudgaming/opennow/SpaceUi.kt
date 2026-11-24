@@ -14,7 +14,7 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -63,7 +63,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
-import com.google.android.gms.ads.nativead.NativeAd
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
@@ -116,13 +115,23 @@ internal fun SpaceUiScreen(
     onSpaceUiChange: (Boolean) -> Unit = {},
     safeAreaPadding: Dp = 0.dp,
 ) {
-    val games = remember(state.page, state.games, state.catalogResult.games, state.libraryGames,
-        state.catalogFilterIds, state.libraryFilterIds, state.librarySearch, state.librarySortId,
-        state.settings.favoriteGameIds, state.settings.demoMode) { spaceUiGames(state) }
+    val games = when (state.page) {
+        AppPage.Home -> remember(
+            IdentityKey(state.games.ifEmpty { state.catalogResult.games }), state.catalogFilterIds,
+        ) { spaceUiGames(state) }
+        AppPage.Library -> remember(
+            IdentityKey(state.libraryGames), state.libraryFilterIds, state.librarySearch, state.librarySortId,
+            state.settings.favoriteGameIds, state.settings.demoMode,
+        ) { spaceUiGames(state) }
+        else -> emptyList()
+    }
     var storeSelectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var librarySelectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedId = if (state.page == AppPage.Library) librarySelectedId else storeSelectedId
-    val game = games.firstOrNull { it.id == selectedId } ?: games.firstOrNull()
+    val selectedIndex = remember(IdentityKey(games), selectedId) {
+        if (selectedId == null) 0 else games.indexOfFirst { it.id == selectedId }.coerceAtLeast(0)
+    }
+    val game = games.getOrNull(selectedIndex)
     var searchOpen by rememberSaveable(state.page) { mutableStateOf(false) }
     val query = if (state.page == AppPage.Library) state.librarySearch else state.catalogSearch
     val listState = rememberLazyListState()
@@ -153,37 +162,31 @@ internal fun SpaceUiScreen(
     val pages = remember { listOf(AppPage.Home, AppPage.Library, AppPage.Settings) }
     val searchVisible = searchOpen || query.isNotBlank()
     val showCatalogAds = !searchVisible && when (state.page) {
-        AppPage.Home -> discoverCatalog && state.catalogFilterIds.isEmpty()
+        AppPage.Home -> state.catalogFilterIds.isEmpty()
         AppPage.Library -> state.libraryFilterIds.isEmpty()
         else -> false
     }
     val adsAccess = catalogAdAccess.takeIf { showCatalogAds }
-    val libraryTopAd = rememberCatalogTopAd(
-        adsAccess.takeIf { state.page == AppPage.Library && games.isNotEmpty() },
-        libraryGridState,
+    val ads = rememberCatalogNativeAds(
+        adsAccess.takeIf { state.page == AppPage.Library || discoverCatalog }, games.size, gridState,
     )
-    val ads = rememberCatalogNativeAds(adsAccess, games, gridState)
-    val currentAds by rememberUpdatedState(ads)
-    val hasLibraryTopAd by rememberUpdatedState(libraryTopAd != null)
+    val hasAdSlots by rememberUpdatedState(ads != null)
     val windowFocused = LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(state.page, games.isNotEmpty(), inputEnabled, windowFocused, portraitLayout, keyboardNavigation, discoverCatalog) {
         if (inputEnabled && windowFocused && (!portraitLayout || keyboardNavigation)) {
             if (searchVisible && state.page != AppPage.Settings && !(discoverCatalog && state.page == AppPage.Home)) {
                 requestFocusWithRetry(searchRequester, initialDelayMs = 0L)
             } else if (games.isNotEmpty() && state.page != AppPage.Settings) {
-                val index = games.indexOfFirst { it.id == game?.id }.coerceAtLeast(0)
                 if (state.page == AppPage.Library || discoverCatalog) {
-                    val keepLibraryStart = state.page == AppPage.Library && index == 0 && !gridState.canScrollBackward
+                    val keepLibraryStart = state.page == AppPage.Library && selectedIndex == 0 && !gridState.canScrollBackward
                     if (keepLibraryStart) gridState.scrollToItem(0)
                     if (!keepLibraryStart || gridState.layoutInfo.visibleItemsInfo.none { it.key == game?.id }) {
-                        val headerCount = if (state.page == AppPage.Library) {
-                            (if (portraitLayout) 1 else 0) + (if (hasLibraryTopAd) 1 else 0)
-                        } else 0
-                        gridState.scrollToItem(catalogGameGridIndex(index, currentAds.keys, headerCount))
+                        val headerCount = if (state.page == AppPage.Library && portraitLayout) 1 else 0
+                        gridState.scrollToItem(catalogGameGridIndex(selectedIndex, hasAdSlots, headerCount))
                     }
                     snapshotFlow { gridState.layoutInfo.visibleItemsInfo.any { it.key == game?.id } }.first { it }
                 } else {
-                    listState.scrollToItem(index)
+                    listState.scrollToItem(selectedIndex)
                     snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { it.key == game?.id } }.first { it }
                 }
                 requestFocusWithRetry(selectedRequester, initialDelayMs = 0L)
@@ -199,7 +202,18 @@ internal fun SpaceUiScreen(
     }
     val fastNavigation = rememberSpaceFastNavigation(listState, game?.id,
         enabled = inputEnabled && state.page == AppPage.Home && !discoverCatalog && !reduceMotion)
+    val catalogScrolling by remember(state.page, discoverCatalog, gridState, listState, discoveryScroll) {
+        derivedStateOf {
+            when (state.page) {
+                AppPage.Home -> if (discoverCatalog) gridState.isScrollInProgress
+                    else listState.isScrollInProgress || discoveryScroll.isScrollInProgress
+                AppPage.Library -> gridState.isScrollInProgress
+                else -> false
+            }
+        }
+    }
     CompositionLocalProvider(LocalSpaceFastNavigation provides fastNavigation) {
+    CatalogImageLoadingAnimationProvider(tvProfile = state.androidTvProfile, catalogScrolling = catalogScrolling) {
     BoxWithConstraints(
         Modifier.fillMaxSize().testTag("space-ui").spaceSafeViewport()
             .onPreviewKeyEvent { event ->
@@ -263,7 +277,7 @@ internal fun SpaceUiScreen(
                         if (state.page == AppPage.Library) librarySelectedId = id else storeSelectedId = id
                     }, onSelectGame = onSelectGame, onRefresh = onRefresh,
                     catalogControls = catalogControls, libraryContent = libraryContent,
-                    onResumeSession = onResumeSession, ads = ads, topAd = libraryTopAd)
+                    onResumeSession = onResumeSession, ads = ads)
             } else if (state.page == AppPage.Library) {
                 if (searchVisible) {
                     NativeSearchField(query, onSearchChange, stringResource(R.string.nav_search),
@@ -275,7 +289,7 @@ internal fun SpaceUiScreen(
                         compact = compact, portrait = portrait,
                         onFocused = { librarySelectedId = it }, onSelectGame = onSelectGame,
                         onRefresh = onRefresh, catalogControls = catalogControls, libraryContent = libraryContent,
-                        ads = ads, topAd = libraryTopAd)
+                        ads = ads)
                 }
             } else if (discoverCatalog) {
                 if (searchVisible) NativeSearchField(query, onSearchChange, stringResource(R.string.nav_search),
@@ -331,7 +345,7 @@ internal fun SpaceUiScreen(
                                     }
                                 } else Text(stringResource(R.string.nav_store), color = SpaceMuted, fontSize = 11.sp, letterSpacing = 2.sp)
                                 Spacer(Modifier.weight(1f))
-                                if (showCatalogPosition) Text("${if (game == null) 0 else games.indexOf(game) + 1} / ${games.size}", color = SpaceMuted, fontSize = 11.sp)
+                                if (showCatalogPosition) Text("${if (game == null) 0 else selectedIndex + 1} / ${games.size}", color = SpaceMuted, fontSize = 11.sp)
                                 Spacer(Modifier.width(12.dp))
                                 catalogControls()
                         }
@@ -344,13 +358,13 @@ internal fun SpaceUiScreen(
                                     } else false
                                 },
                                 contentPadding = PaddingValues(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                                itemsIndexed(games, key = { _, item -> item.id }) { index, item ->
+                                items(games, key = { it.id }, contentType = { "space-game-tile" }) { item ->
                                     SpaceGameTile(game = item, selected = game?.id == item.id,
                                         compact = compact, reduceMotion = reduceMotion,
                                         showPremiumMarker = state.settings.showPremiumMarker,
                                         artworkSize = railArtworkSize,
                                         artworkAspectRatio = if (portraitRail) 628f / 888f else 1f,
-                                        modifier = Modifier.spaceArrival(item.id, (index.coerceAtMost(5) * 24)).then(if (game?.id == item.id) Modifier.focusRequester(selectedRequester) else Modifier),
+                                        modifier = if (game?.id == item.id) Modifier.focusRequester(selectedRequester) else Modifier,
                                         onFocused = {
                                             if (state.page == AppPage.Library) librarySelectedId = item.id
                                             else storeSelectedId = item.id
@@ -362,6 +376,7 @@ internal fun SpaceUiScreen(
                 }
             }
         }
+    }
     }
     }
 }
@@ -432,8 +447,7 @@ private fun SpaceLibraryBody(
     onRefresh: () -> Unit,
     catalogControls: @Composable () -> Unit,
     libraryContent: @Composable () -> Unit,
-    ads: Map<Int, NativeAd>,
-    topAd: NativeAd?,
+    ads: CatalogAdSlots?,
 ) {
     val reduceMotion = LocalReduceForegroundMotion.current
     val overview: @Composable () -> Unit = {
@@ -465,7 +479,7 @@ private fun SpaceLibraryBody(
             } else LazyVerticalGrid(columns = GridCells.Fixed(4), state = gridState,
                 contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(0.dp),
                 horizontalArrangement = Arrangement.spacedBy(0.dp), modifier = Modifier.weight(1f).testTag("space-library-grid")) {
-                catalogGameItems(games, ads, "space-library-game", topAd = topAd) { game ->
+                catalogGameItems(games, ads, "space-library-game") { game ->
                     SpaceGameTile(game, selectedGame?.id == game.id, compact, reduceMotion,
                         showPremiumMarker = state.settings.showPremiumMarker,
                         modifier = Modifier.fillMaxWidth().then(

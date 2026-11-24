@@ -160,6 +160,7 @@ internal fun NumberSlider(
     valueFormatter: ((Float) -> String)? = null,
     description: String? = null,
     descriptionProvider: ((Float) -> String?)? = null,
+    enabled: Boolean = true,
     onChange: (Float) -> Unit,
 ) {
     ControlSliderRow(
@@ -173,6 +174,7 @@ internal fun NumberSlider(
         valueFormatter = valueFormatter,
         description = description,
         descriptionProvider = descriptionProvider,
+        enabled = enabled,
     )
 }
 
@@ -184,6 +186,7 @@ internal fun ChoiceRow(
     description: String? = null,
     activeOutlineColor: Color? = null,
     activeOutlineSecondaryColor: Color? = null,
+    enabled: Boolean = true,
     onSelect: (String) -> Unit,
 ) {
     ChoiceMenuRow(
@@ -193,6 +196,7 @@ internal fun ChoiceRow(
         description = description,
         activeOutlineColor = activeOutlineColor,
         activeOutlineSecondaryColor = activeOutlineSecondaryColor,
+        enabled = enabled,
         onSelect = onSelect,
     )
 }
@@ -206,11 +210,12 @@ internal fun ChoiceMenuRow(
     activeOutlineColor: Color? = null,
     activeOutlineSecondaryColor: Color? = null,
     selectedValue: String? = null,
+    enabled: Boolean = true,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var descriptionExpanded by remember(label) { mutableStateOf(false) }
-    BackHandler(enabled = expanded) { expanded = false }
+    BackHandler(enabled = enabled && expanded) { expanded = false }
     val autoLabel = stringResource(R.string.option_auto)
     val style = com.opencloudgaming.opennow.ui.controls.controlRowStyle()
     val textMeasurer = rememberTextMeasurer()
@@ -221,13 +226,14 @@ internal fun ChoiceMenuRow(
             label = label,
             value = null,
             expandedDescription = description?.takeIf { descriptionExpanded },
-            enabled = true,
+            enabled = enabled,
             style = style,
         )
         if (!description.isNullOrBlank()) {
             IconButton(
                 onClick = { descriptionExpanded = !descriptionExpanded },
                 modifier = Modifier.padding(horizontal = 2.dp),
+                enabled = enabled,
             ) {
                 Icon(
                     painter = painterResource(R.drawable.ic_help),
@@ -242,9 +248,11 @@ internal fun ChoiceMenuRow(
     }
     val selector: @Composable () -> Unit = {
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(displayLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            OutlinedButton(onClick = { expanded = true }, enabled = enabled) {
+                Text(displayLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             ControllerFocusFrame(
-                visible = activeOutlineColor != null,
+                visible = enabled && activeOutlineColor != null,
                 cornerRadius = 20.dp,
                 tint = activeOutlineColor,
                 secondaryTint = activeOutlineSecondaryColor,
@@ -252,7 +260,7 @@ internal fun ChoiceMenuRow(
                 // Follow the pill so the Cinema orbit is vertically centered on the border.
                 verticalInset = 4.dp,
             )
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenu(expanded = enabled && expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
                     var optionFocused by remember(option.value) { mutableStateOf(false) }
                     Box {
@@ -310,6 +318,7 @@ internal fun ChoiceMenuRow(
     ControlRow(
         onClick = { expanded = true },
         onLongClick = if (description.isNullOrBlank()) null else ({ descriptionExpanded = !descriptionExpanded }),
+        enabled = enabled,
     ) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // Compare natural text widths before the button can squeeze the weighted label.

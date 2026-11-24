@@ -3,8 +3,8 @@ package com.opencloudgaming.opennow.boosteroid
 
 import com.opencloudgaming.opennow.AuthUser
 import com.opencloudgaming.opennow.ColorQuality
-import com.opencloudgaming.opennow.OpenNowJson
 import com.opencloudgaming.opennow.StreamSettings
+import com.opencloudgaming.opennow.OpenNowJson
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
@@ -56,11 +56,16 @@ internal class BoosteroidAccountStore(context: Context) {
         return true
     }
 
-    fun loadSettings(): StreamSettings = prefs.getString("stream_settings", null)?.let {
-        runCatching { OpenNowJson.decodeFromString<StreamSettings>(it) }.getOrNull()
-    } ?: StreamSettings(colorQuality = ColorQuality.EightBit420)
+    var isActive: Boolean
+        get() = prefs.getBoolean("active_service", false)
+        set(value) { prefs.edit().putBoolean("active_service", value).apply() }
 
-    fun saveSettings(settings: StreamSettings) {
+    fun loadStreamSettings(): StreamSettings =
+        prefs.getString("stream_settings", null)?.let { json ->
+            runCatching { OpenNowJson.decodeFromString<StreamSettings>(json) }.getOrNull()
+        } ?: StreamSettings(colorQuality = ColorQuality.EightBit420)
+
+    fun saveStreamSettings(settings: StreamSettings) {
         prefs.edit().putString("stream_settings", OpenNowJson.encodeToString(settings)).apply()
     }
 }

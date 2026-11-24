@@ -1021,6 +1021,8 @@ internal fun StreamScreen(
             if (touchControlsVisible) {
                 TouchOverlay(
                     client = client,
+                    mouseOutput = remember(client) { NativeTouchMouseOutput(client) },
+                    inputEnabled = streamReady && !streamOverlayOpen,
                     inputResetKey = streamState,
                     touch = state.settings.androidTouch.copy(
                         enabled = true,

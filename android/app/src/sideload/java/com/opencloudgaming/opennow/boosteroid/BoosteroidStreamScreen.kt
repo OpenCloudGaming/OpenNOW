@@ -56,7 +56,9 @@ internal fun BoosteroidStreamScreen(
     launch: BoosteroidLaunch,
     session: BoosteroidSession,
     tv: Boolean,
-    model: BoosteroidViewModel,
+    touchSettings: AndroidTouchSettings,
+    model: BoosteroidController,
+    onFirstFrame: () -> Unit,
     onInputChanged: (BoosteroidStreamClient?, Boolean) -> Unit,
 ) {
     val context = LocalContext.current
@@ -80,7 +82,7 @@ internal fun BoosteroidStreamScreen(
                 onSessionRecoveryRequired = { model.recover(session, fallback = false) },
                 onStats = { stats = it },
                 onRemoteCursor = { cursor = it },
-                onFirstFrame = { firstFrame = true },
+                onFirstFrame = { firstFrame = true; onFirstFrame() },
             )
         }.getOrNull()
     }
@@ -154,7 +156,8 @@ internal fun BoosteroidStreamScreen(
             if (firstFrame && touchControls && !menuVisible) {
                 TouchOverlay(
                     client = client,
-                    touch = AndroidTouchSettings(),
+                    mouseOutput = client,
+                    touch = touchSettings,
                     onButtonTone = {},
                     layoutEditing = false,
                     onSaveAllOffsets = {},

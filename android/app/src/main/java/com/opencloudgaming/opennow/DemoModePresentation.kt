@@ -8,12 +8,14 @@ internal val LocalDemoMode = staticCompositionLocalOf { false }
 
 @Composable
 internal fun rememberDemoPresentation(state: OpenNowUiState): OpenNowUiState {
+    if (!state.settings.demoMode) return state
+
     // Session/queue updates must not rebuild the combined catalog on every state emission.
     val library = remember(
-        state.settings.demoMode, state.games, state.catalogResult.games,
-        state.newlyAddedGames, state.libraryGames,
+        IdentityKey(state.games), IdentityKey(state.catalogResult.games),
+        IdentityKey(state.newlyAddedGames), IdentityKey(state.libraryGames),
     ) {
-        if (state.settings.demoMode) demoLibraryGames(state) else emptyList()
+        demoLibraryGames(state)
     }
-    return remember(state, library) { state.forDemoPresentation(library) }
+    return remember(IdentityKey(state), IdentityKey(library)) { state.forDemoPresentation(library) }
 }

@@ -68,6 +68,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.text.style.TextAlign
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
@@ -242,7 +243,8 @@ internal fun SetupFlowScreen(state: OpenNowUiState, viewModel: OpenNowViewModel)
                                     when (currentStep) {
                                         SetupStep.Appearance -> SetupAppearanceStep(
                                             state = state,
-                                            onSettingsChange = viewModel::updateSettings,
+                                            viewModel = viewModel,
+                                            isCurrentStep = { step == SetupStep.Appearance },
                                         )
                                         SetupStep.Streaming -> SetupStreamingStep(
                                             state = state,
@@ -504,130 +506,26 @@ private fun SetupExpandableSection(title: String, content: @Composable () -> Uni
 }
 
 @Composable
-private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSettings) -> Unit) {
+private fun SetupAppearanceStep(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    isCurrentStep: () -> Boolean,
+) {
     val settings = state.settings
-    val context = LocalContext.current
-    val launchImagePicker = rememberCatalogBackgroundImagePicker(settings, onSettingsChange)
-    val customUri = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
-    val backgroundName = when {
-        appBackgroundChoiceFor(settings) == AppBackgroundChoice.Default ->
-            stringResource(R.string.setup_background_default)
-        appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing ->
-            stringResource(R.string.setup_background_nothing)
-        appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper ->
-            stringResource(R.string.settings_background_system_wallpaper)
-        customUri != null -> stringResource(R.string.settings_catalog_background_image_custom)
-        else -> catalogBackgroundPresetLabel(settings.catalogBackgroundPreset)
-    }
+    val onSettingsChange = viewModel::updateSettings
     Column(
         Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
     ) {
         SetupAppearancePreview(state)
 
-        Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
-            SetupSectionLabel(stringResource(R.string.setup_background), backgroundName)
-            SetupPeekRow { tileWidth ->
-                SetupTile(
-                    width = tileWidth,
-                    selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.Default,
-                    onClick = { onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.Default)) },
-                ) {
-                    Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
-                    AmbientBackground(Modifier.matchParentSize())
-                    Text(
-                        stringResource(R.string.setup_background_default),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                SetupTile(
-                    width = tileWidth,
-                    selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing,
-                    onClick = { onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.Nothing)) },
-                ) {
-                    Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
-                    Text(
-                        stringResource(R.string.setup_background_nothing),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                SetupTile(
-                    width = tileWidth,
-                    selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper,
-                    onClick = {
-                        onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.SystemWallpaper))
-                    },
-                ) {
-                    Text(
-                        stringResource(R.string.settings_background_system_wallpaper),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                CatalogBackgroundPreset.entries.forEach { preset ->
-                    SetupTile(
-                        width = tileWidth,
-                        selected = settings.nerdCatalogBackground &&
-                            customUri == null &&
-                            settings.catalogBackgroundPreset == preset,
-                        onClick = { applyCatalogBackgroundPreset(context, settings, preset, onSettingsChange) },
-                    ) {
-                        Image(
-                            painter = painterResource(preset.drawableRes),
-                            contentDescription = catalogBackgroundPresetLabel(preset),
-                            modifier = Modifier.matchParentSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-                }
-                SetupTile(
-                    width = tileWidth,
-                    selected = settings.nerdCatalogBackground && customUri != null,
-                    onClick = launchImagePicker,
-                ) {
-                    if (customUri == null) {
-                        Box(
-                            Modifier
-                                .matchParentSize()
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)),
-                        )
-                        Text(
-                            stringResource(R.string.setup_background_your_image),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    } else {
-                        AsyncImage(
-                            model = imageDataForSource(customUri),
-                            contentDescription = stringResource(R.string.settings_catalog_background_image_custom),
-                            modifier = Modifier.matchParentSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-                }
-            }
-        }
-
-        Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
-            SetupSectionLabel(
-                stringResource(R.string.setup_appearance_accent),
-                uiAccentLabel(settings.uiAccent),
+        if (!state.canCustomizeAppearance) {
+            AppearanceUnlockOffer(
+                onEarned = viewModel::unlockAppearanceCustomization,
+                isCurrentDestination = isCurrentStep,
             )
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
-            ) {
-                selectableUiAccents().forEach { accent ->
-                    SetupAccentSwatch(
-                        accent = accent,
-                        selected = settings.uiAccent == accent,
-                        onClick = { onSettingsChange(settings.copy(uiAccent = accent)) },
-                    )
-                }
-            }
         }
+        SetupColourAndBackgroundControls(settings, onSettingsChange, enabled = state.canCustomizeAppearance)
 
         SetupExpandableSection(stringResource(R.string.setup_appearance_layout)) {
             Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
@@ -722,6 +620,136 @@ private fun SetupAppearanceStep(state: OpenNowUiState, onSettingsChange: (AppSet
                 description = stringResource(R.string.setup_appearance_sounds_desc),
             ) {
                 onSettingsChange(settings.copy(controllerUiSounds = it))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupColourAndBackgroundControls(
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
+    enabled: Boolean,
+) {
+    val context = LocalContext.current
+    val launchImagePicker = rememberCatalogBackgroundImagePicker(settings, onSettingsChange)
+    val customUri = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
+    val backgroundName = when {
+        appBackgroundChoiceFor(settings) == AppBackgroundChoice.Default ->
+            stringResource(R.string.setup_background_default)
+        appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing ->
+            stringResource(R.string.setup_background_nothing)
+        appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper ->
+            stringResource(R.string.settings_background_system_wallpaper)
+        customUri != null -> stringResource(R.string.settings_catalog_background_image_custom)
+        else -> catalogBackgroundPresetLabel(settings.catalogBackgroundPreset)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        SetupSectionLabel(stringResource(R.string.setup_background), backgroundName)
+        SetupPeekRow { tileWidth ->
+            SetupTile(
+                width = tileWidth,
+                enabled = enabled,
+                selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.Default,
+                onClick = { onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.Default)) },
+            ) {
+                Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
+                AmbientBackground(Modifier.matchParentSize())
+                Text(
+                    stringResource(R.string.setup_background_default),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            SetupTile(
+                width = tileWidth,
+                enabled = enabled,
+                selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.Nothing,
+                onClick = { onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.Nothing)) },
+            ) {
+                Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.background))
+                Text(
+                    stringResource(R.string.setup_background_nothing),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            SetupTile(
+                width = tileWidth,
+                enabled = enabled,
+                selected = appBackgroundChoiceFor(settings) == AppBackgroundChoice.SystemWallpaper,
+                onClick = {
+                    onSettingsChange(settings.withAppBackgroundChoice(AppBackgroundChoice.SystemWallpaper))
+                },
+            ) {
+                Text(
+                    stringResource(R.string.settings_background_system_wallpaper),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            CatalogBackgroundPreset.entries.forEach { preset ->
+                SetupTile(
+                    width = tileWidth,
+                    enabled = enabled,
+                    selected = settings.nerdCatalogBackground &&
+                        customUri == null &&
+                        settings.catalogBackgroundPreset == preset,
+                    onClick = { applyCatalogBackgroundPreset(context, settings, preset, onSettingsChange) },
+                ) {
+                    Image(
+                        painter = painterResource(preset.drawableRes),
+                        contentDescription = catalogBackgroundPresetLabel(preset),
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+            }
+            SetupTile(
+                width = tileWidth,
+                enabled = enabled,
+                selected = settings.nerdCatalogBackground && customUri != null,
+                onClick = launchImagePicker,
+            ) {
+                if (customUri == null) {
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)),
+                    )
+                    Text(
+                        stringResource(R.string.setup_background_your_image),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                } else {
+                    AsyncImage(
+                        model = imageDataForSource(customUri),
+                        contentDescription = stringResource(R.string.settings_catalog_background_image_custom),
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+            }
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        SetupSectionLabel(
+            stringResource(R.string.setup_appearance_accent),
+            uiAccentLabel(settings.uiAccent),
+        )
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+        ) {
+            selectableUiAccents().forEach { accent ->
+                SetupAccentSwatch(
+                    accent = accent,
+                    enabled = enabled,
+                    selected = settings.uiAccent == accent,
+                    onClick = { onSettingsChange(settings.copy(uiAccent = accent)) },
+                )
             }
         }
     }
@@ -2092,6 +2120,7 @@ private fun SetupTile(
     selected: Boolean,
     onClick: () -> Unit,
     width: Dp = SetupTileMaxWidth,
+    enabled: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val controllerFocusEnabled = LocalControllerFocusEnabled.current
@@ -2115,15 +2144,16 @@ private fun SetupTile(
                 shape = shape,
             )
             .clip(shape)
+            .alpha(if (enabled) 1f else 0.48f)
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
         content = content,
     )
 }
 
 @Composable
-private fun SetupAccentSwatch(accent: UiAccent, selected: Boolean, onClick: () -> Unit) {
+private fun SetupAccentSwatch(accent: UiAccent, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val controllerFocusEnabled = LocalControllerFocusEnabled.current
     var focused by remember { mutableStateOf(false) }
     val showFocusRing = focused && controllerFocusEnabled
@@ -2137,8 +2167,9 @@ private fun SetupAccentSwatch(accent: UiAccent, selected: Boolean, onClick: () -
             .size(SetupSwatchTarget)
             .border(if (ringColor == Color.Transparent) 0.dp else 2.dp, ringColor, CircleShape)
             .clip(CircleShape)
+            .alpha(if (enabled) 1f else 0.48f)
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(SetupSwatchDot).clip(CircleShape).background(accent.color))

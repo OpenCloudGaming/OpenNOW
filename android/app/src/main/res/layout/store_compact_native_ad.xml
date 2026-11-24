@@ -49,6 +49,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="2"
                 android:textSize="15sp"
                 android:textStyle="bold" />
 
@@ -61,6 +63,7 @@
                 android:maxWidth="104dp"
                 android:minWidth="48dp"
                 android:minHeight="48dp"
+                android:maxLines="2"
                 android:textSize="14sp"
                 android:textStyle="bold" />
         </LinearLayout>

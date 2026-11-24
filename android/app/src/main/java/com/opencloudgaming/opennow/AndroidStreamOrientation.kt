@@ -8,7 +8,7 @@ internal fun shouldLockPhoneStreamLandscape(
 ): Boolean =
     state.page == AppPage.Stream &&
         state.streamStatus in phoneStreamLandscapeStatuses &&
-        state.streamSession?.isReadyForStream() == true &&
+        (state.boosteroid.active || state.streamSession?.isReadyForStream() == true) &&
         !(state.androidTvProfile || state.codecReport?.androidTvProfile == true) &&
         isPhoneSizedAndroidDevice(smallestScreenWidthDp)
 

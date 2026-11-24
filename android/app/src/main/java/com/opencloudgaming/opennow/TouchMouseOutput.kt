@@ -13,6 +13,24 @@ internal interface TouchMouseOutput {
     fun sendTouchMouseWheel(delta: Int)
 }
 
+internal fun MouseMotionAccumulator.sendTouchMouseDelta(
+    dx: Float,
+    dy: Float,
+    eventTimeMs: Long,
+    output: TouchMouseOutput,
+    force: Boolean = false,
+) {
+    val delta = add(
+        dx = dx,
+        dy = dy,
+        eventTimeMs = eventTimeMs,
+        sensitivity = output.settings.effectiveTouchMouseSensitivity(),
+        acceleration = output.settings.mouseAcceleration,
+        force = force,
+    ) ?: return
+    output.sendRawMouseMove(delta.dx, delta.dy)
+}
+
 internal class NativeTouchMouseOutput(private val client: NativeStreamClient) : TouchMouseOutput {
     override val settings: StreamSettings get() = client.settings
     override fun setTouchMouseButton(pressed: Boolean) = client.setTouchMouseButton(pressed)

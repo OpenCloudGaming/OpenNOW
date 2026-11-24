@@ -1201,7 +1201,7 @@ internal class TouchMouseState {
             doubleTapDragCandidate = false
             if (selecting) NativeInputDiagnostics.add("touch double tap drag start")
         }
-        sendMouseDelta(x - lastX, y - lastY, eventTimeMs, client)
+        motionAccumulator.sendTouchMouseDelta(x - lastX, y - lastY, eventTimeMs, client)
         lastX = x
         lastY = y
     }
@@ -1216,7 +1216,7 @@ internal class TouchMouseState {
         val y = event.getY(index)
         // UP ends the gesture; its coordinates are not another movement sample. Flush only
         // deltas already collected from MOVE so rate limiting cannot lose the drag's tail.
-        sendMouseDelta(0f, 0f, event.eventTime, client, force = true)
+        motionAccumulator.sendTouchMouseDelta(0f, 0f, event.eventTime, client, force = true)
         if (combinedSlideDirectClick) {
             if (activePointerId < 0) return
             val click = doubleTapDirectClick.finish(x, y, event.eventTime)
@@ -1276,24 +1276,6 @@ internal class TouchMouseState {
         if (!lastTapX.isFinite() || !lastTapY.isFinite()) return false
         return abs(event.getX(index) - lastTapX) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX &&
             abs(event.getY(index) - lastTapY) <= TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX
-    }
-
-    private fun sendMouseDelta(
-        dx: Float,
-        dy: Float,
-        eventTimeMs: Long,
-        client: TouchMouseOutput,
-        force: Boolean = false,
-    ) {
-        val delta = motionAccumulator.add(
-            dx = dx,
-            dy = dy,
-            eventTimeMs = eventTimeMs,
-            sensitivity = client.settings.effectiveTouchMouseSensitivity(),
-            acceleration = client.settings.mouseAcceleration,
-            force = force,
-        ) ?: return
-        client.sendRawMouseMove(delta.dx, delta.dy)
     }
 
     companion object {

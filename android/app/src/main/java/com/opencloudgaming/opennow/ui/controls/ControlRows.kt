@@ -186,6 +186,7 @@ internal fun ControlSliderRow(
     descriptionProvider: ((Float) -> String?)? = null,
     onChangePreview: ((Float) -> Unit)? = null,
     style: ControlRowStyle = controlRowStyle(),
+    enabled: Boolean = true,
 ) {
     var local by remember(value) { mutableFloatStateOf(value) }
     var descriptionExpanded by remember(label) { mutableStateOf(false) }
@@ -203,14 +204,14 @@ internal fun ControlSliderRow(
             Modifier
                 .fillMaxWidth()
                 .then(motion?.modifier ?: Modifier)
-                .hoverable(hoverInteraction)
+                .hoverable(hoverInteraction, enabled = enabled)
                 .controlRowContainer(style = style, showFocus = showFocus, emphasis = motion?.emphasis),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     label,
                     Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else DISABLED_ALPHA),
                     style = style.labelStyle,
                     fontWeight = style.labelWeight,
                     maxLines = 2,
@@ -218,7 +219,7 @@ internal fun ControlSliderRow(
                 )
                 Text(
                     formatSliderValue(local, min, max, step, unit, valueFormatter),
-                    color = style.supportingColor,
+                    color = if (enabled) style.supportingColor else style.supportingColor.copy(alpha = DISABLED_ALPHA),
                     // Tabular figures so the readout does not reflow while the thumb is dragged.
                     style = MaterialTheme.typography.labelLarge.numeric(),
                 )
@@ -226,6 +227,7 @@ internal fun ControlSliderRow(
                     IconButton(
                         onClick = { descriptionExpanded = !descriptionExpanded },
                         modifier = Modifier.width(40.dp),
+                        enabled = enabled,
                     ) {
                         Icon(
                             painter = painterResource(R.drawable.ic_help),
@@ -248,10 +250,11 @@ internal fun ControlSliderRow(
                 )
             }
             Slider(
+                enabled = enabled,
                 modifier = Modifier
                     .onFocusChanged { focused = style.focusable && it.isFocused }
                     .onPreviewKeyEvent {
-                        handleSliderDpadInput(it, local, min, max, step, focusManager) { next ->
+                        enabled && handleSliderDpadInput(it, local, min, max, step, focusManager) { next ->
                             local = quantize(next)
                             onChange(local)
                         }

@@ -54,6 +54,7 @@ internal fun SpaceGameHub(
     removeConfirmationText: String?,
     removeEnabled: Boolean,
     onRemove: (() -> Unit)?,
+    onAddToLibrary: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     tvProfile: Boolean = false,
 ) {
@@ -170,6 +171,9 @@ internal fun SpaceGameHub(
                             previousRequester = if (gallery) galleryRequester else playRequester)
                     }
                     SpaceGameDetails(game, defaultVariantId)
+                    onAddToLibrary?.let { add ->
+                        SpaceControl(stringResource(R.string.boosteroid_add_game), onClick = add)
+                    }
                     if (removeLabel != null && removeEnabled && onRemove != null) {
                         SpaceControl(removeLabel, onClick = {
                             if (removeConfirmationText != null) confirmRemove = true else onRemove()

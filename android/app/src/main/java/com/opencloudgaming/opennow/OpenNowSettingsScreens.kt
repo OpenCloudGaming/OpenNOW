@@ -103,7 +103,6 @@ internal val SettingsPanel = OpenNowPalette.Panel
 internal val SettingsPanelAlt = OpenNowPalette.PanelAlt
 internal val SettingsText = OpenNowPalette.TextPrimary
 internal val SettingsTextMuted = OpenNowPalette.TextMuted
-internal const val DONATE_URL = "https://printedwaste.com/donate"
 internal val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 internal val APP_NAV_RAIL_WIDTH = 80.dp
 internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
@@ -586,6 +585,9 @@ private fun SpaceSettingsLayout(
         onSelect = { id -> onSelectCategory(SettingsCategory.valueOf(id)) }) {
         Column(Modifier.fillMaxWidth().focusRequester(detailFocusRequester).focusGroup(),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (selectedCategory == SettingsCategory.General) {
+                SettingsDonationBanner()
+            }
             SettingsContent(state, viewModel, searchQuery = "", selectedCategory = selectedCategory,
                 onSelectCategory = onSelectCategory, showSessionProxyWarning = showSessionProxyWarning)
         }
@@ -679,7 +681,8 @@ private fun SettingsContent(
         return
     }
     val deviceHasBattery = rememberDeviceHasBattery()
-    val fallbackMembershipTier = state.authSession?.user?.membershipTier
+    val fallbackMembershipTier = state.activeCloudAccount?.membershipTier
+    val boosteroidActive = state.boosteroid.active
     var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
     var showStreamMenuShortcutDialog by remember { mutableStateOf(false) }
     var showBugReportDialog by rememberSaveable { mutableStateOf(false) }
@@ -862,8 +865,8 @@ private fun SettingsContent(
                 }
                 val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
                     streamResolutionChoicesForAspect("16:9")
-                }
-                val selectedResolution = normalizeStreamResolutionForAspectAndPlan(
+                }.filter { !boosteroidActive || it.value in BOOSTEROID_RESOLUTIONS }
+                val selectedResolution = if (boosteroidActive) settings.stream.resolution else normalizeStreamResolutionForAspectAndPlan(
                     settings.stream.resolution,
                     settings.stream.aspectRatio,
                     state.subscriptionInfo,
@@ -872,7 +875,7 @@ private fun SettingsContent(
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_resolution),
                     options = resolutionChoices.map { choice ->
-                        val available = choice.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier)
+                        val available = boosteroidActive || choice.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier)
                         ChoiceMenuOption(
                             value = choice.value,
                             label = choice.label,
@@ -884,30 +887,32 @@ private fun SettingsContent(
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
                 }
-                ChoiceMenuRow(
-                    label = stringResource(R.string.settings_aspect_ratio),
-                    options = streamAspectRatioOptions().map { aspectRatio ->
-                        val choices = streamResolutionChoicesForAspect(aspectRatio)
-                        val available = choices.any { it.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier) }
-                        ChoiceMenuOption(
-                            value = aspectRatio,
-                            label = aspectRatio,
-                            enabled = available,
-                            badge = if (available) null else choices.firstNotNullOfOrNull { it.requiredPlanLabel },
-                        )
-                    },
-                    selectedLabel = settings.stream.aspectRatio,
-                ) {
-                    viewModel.updateStreamSettings { s ->
-                        s.copy(
-                            aspectRatio = it,
-                            resolution = normalizeStreamResolutionForAspectAndPlan(
-                                s.resolution,
-                                it,
-                                state.subscriptionInfo,
-                                fallbackMembershipTier,
-                            ),
-                        )
+                if (!boosteroidActive) {
+                    ChoiceMenuRow(
+                        label = stringResource(R.string.settings_aspect_ratio),
+                        options = streamAspectRatioOptions().map { aspectRatio ->
+                            val choices = streamResolutionChoicesForAspect(aspectRatio)
+                            val available = choices.any { it.isAvailableFor(state.subscriptionInfo, fallbackMembershipTier) }
+                            ChoiceMenuOption(
+                                value = aspectRatio,
+                                label = aspectRatio,
+                                enabled = available,
+                                badge = if (available) null else choices.firstNotNullOfOrNull { it.requiredPlanLabel },
+                            )
+                        },
+                        selectedLabel = settings.stream.aspectRatio,
+                    ) {
+                        viewModel.updateStreamSettings { s ->
+                            s.copy(
+                                aspectRatio = it,
+                                resolution = normalizeStreamResolutionForAspectAndPlan(
+                                    s.resolution,
+                                    it,
+                                    state.subscriptionInfo,
+                                    fallbackMembershipTier,
+                                ),
+                            )
+                        }
                     }
                 }
                 SettingSwitch(
@@ -921,16 +926,17 @@ private fun SettingsContent(
                         ),
                     )
                 }
-                val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
+                val maxFps = if (boosteroidActive) 120 else maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
+                val minFps = if (boosteroidActive) 60 else 30
                 NumberSlider(
                     label = stringResource(R.string.settings_fps),
                     value = settings.stream.fps.coerceAtMost(maxFps).toFloat(),
-                    min = 30f,
+                    min = minFps.toFloat(),
                     max = maxFps.toFloat(),
-                    step = 30f,
+                    step = minFps.toFloat(),
                     unit = "FPS",
                 ) {
-                    val fps = it.roundToInt().coerceIn(30, maxFps)
+                    val fps = it.roundToInt().coerceIn(minFps, maxFps)
                     viewModel.updateStreamSettings { s -> s.copy(fps = fps) }
                 }
                 NumberSlider(
@@ -946,27 +952,29 @@ private fun SettingsContent(
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder", "video output", "surface", "webrtc", "texture") {
-                val defaultVideoOutputLabel = stringResource(when (defaultStreamVideoOutput(BuildConfig.PLAY_STORE_RELEASE)) {
-                    StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_default_surface
-                    StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_default_texture
-                    StreamVideoOutput.Default -> R.string.settings_video_output_default
-                })
-                val videoOutputOptions = listOf(
-                    SettingsChoiceOption(StreamVideoOutput.Default.name, defaultVideoOutputLabel),
-                    SettingsChoiceOption(StreamVideoOutput.MediaCodecSurface.name, stringResource(R.string.settings_video_output_surface)),
-                    SettingsChoiceOption(StreamVideoOutput.WebRtcTexture.name, stringResource(R.string.settings_video_output_texture)),
-                )
-                ChoiceOptionRow(
-                    stringResource(R.string.settings_video_output),
-                    videoOutputOptions,
-                    settings.stream.videoOutput.name,
-                    description = stringResource(R.string.settings_video_output_desc),
-                    selectedDisplayLabel = stringResource(when (settings.stream.videoOutput) {
+                if (!boosteroidActive) {
+                    val defaultVideoOutputLabel = stringResource(when (defaultStreamVideoOutput(BuildConfig.PLAY_STORE_RELEASE)) {
+                        StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_default_surface
+                        StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_default_texture
                         StreamVideoOutput.Default -> R.string.settings_video_output_default
-                        StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_direct_short
-                        StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_textures_short
-                    }),
-                ) { output -> viewModel.updateVideoOutput(StreamVideoOutput.valueOf(output)) }
+                    })
+                    val videoOutputOptions = listOf(
+                        SettingsChoiceOption(StreamVideoOutput.Default.name, defaultVideoOutputLabel),
+                        SettingsChoiceOption(StreamVideoOutput.MediaCodecSurface.name, stringResource(R.string.settings_video_output_surface)),
+                        SettingsChoiceOption(StreamVideoOutput.WebRtcTexture.name, stringResource(R.string.settings_video_output_texture)),
+                    )
+                    ChoiceOptionRow(
+                        stringResource(R.string.settings_video_output),
+                        videoOutputOptions,
+                        settings.stream.videoOutput.name,
+                        description = stringResource(R.string.settings_video_output_desc),
+                        selectedDisplayLabel = stringResource(when (settings.stream.videoOutput) {
+                            StreamVideoOutput.Default -> R.string.settings_video_output_default
+                            StreamVideoOutput.MediaCodecSurface -> R.string.settings_video_output_direct_short
+                            StreamVideoOutput.WebRtcTexture -> R.string.settings_video_output_textures_short
+                        }),
+                    ) { output -> viewModel.updateVideoOutput(StreamVideoOutput.valueOf(output)) }
+                }
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
                 val unavailableLabel = stringResource(R.string.common_unavailable)
                 val h264H265OnlyLabel = stringResource(R.string.settings_av1_ten_bit_badge)
@@ -979,7 +987,9 @@ private fun SettingsContent(
                 )
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_codec),
-                    options = codecChoices.options,
+                    options = codecChoices.options.filter {
+                        !boosteroidActive || it.value in setOf(VideoCodec.H264.name, VideoCodec.AV1.name)
+                    },
                     selectedLabel = codecChoices.selectedLabel,
                     description = stringResource(R.string.settings_stream_codec_help),
                 ) { value ->
@@ -997,142 +1007,146 @@ private fun SettingsContent(
                         ).show()
                     }
                 }
-                val effectiveColorQuality = settingsAvailableStream.withCodecColorCompatibility().colorQuality
-                ChoiceMenuRow(
-                    label = stringResource(R.string.settings_color),
-                    options = ColorQuality.entries.map { quality ->
-                        val available = quality.availableForCodec(settingsAvailableStream.codec) &&
-                            !(settingsAvailableStream.hdrEnabled && quality.isTenBit())
-                        ChoiceMenuOption(
-                            value = quality.name,
-                            label = quality.label,
-                            enabled = available,
-                            badge = when {
-                                available -> null
-                                settingsAvailableStream.hdrEnabled && quality.isTenBit() -> stringResource(R.string.settings_hdr_ten_bit_badge)
-                                settingsAvailableStream.codec == VideoCodec.AV1 && quality == ColorQuality.TenBit420 -> h264H265OnlyLabel
-                                else -> comingSoonLabel
-                            },
-                        )
-                    },
-                    selectedLabel = if (effectiveColorQuality == settings.stream.colorQuality) {
-                        settings.stream.colorQuality.label
-                    } else {
-                        "${settings.stream.colorQuality.label} -> ${effectiveColorQuality.label}"
-                    },
-                    description = stringResource(R.string.settings_stream_color_help),
-                ) { value ->
-                    viewModel.updateStreamSettings { s ->
-                        s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
-                    }
-                }
-                if (settingsAvailableStream.codec == VideoCodec.AV1) {
-                    Text(
-                        stringResource(R.string.settings_av1_ten_bit_hint),
-                        color = SettingsTextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                val hdrDeviceAvailable by produceState(false, settingsAvailableStream.codec,
-                    settingsAvailableStream.resolution, settingsAvailableStream.fps) {
-                    value = withContext(Dispatchers.Default) {
-                        settingsAvailableStream.copy(hdrEnabled = true).withHdrDeviceSupport(context).hdrEnabled
-                    }
-                }
-                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) && hdrDeviceAvailable
-                SettingSwitch(
-                    label = stringResource(R.string.settings_hdr),
-                    checked = settings.stream.hdrEnabled && hdrAvailable,
-                    enabled = hdrAvailable,
-                    description = stringResource(R.string.settings_hdr_desc),
-                ) { enabled ->
-                    viewModel.updateStreamSettings { s ->
-                        s.copy(
-                            hdrEnabled = enabled,
-                            colorQuality = if (enabled) ColorQuality.EightBit420 else s.colorQuality,
-                        ).withCodecColorCompatibility()
-                    }
-                }
-                if (settingsAvailableStream.hdrEnabled) {
-                    Text(
-                        stringResource(R.string.settings_hdr_ten_bit_warning),
-                        color = Color(0xffffb74d),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (!hdrDeviceAvailable) {
-                    Text(
-                        if (state.androidTvProfile) {
-                            stringResource(R.string.settings_hdr_android_tv_compatibility_hint)
-                        } else {
-                            stringResource(R.string.settings_hdr_android_handheld_hint)
+                if (!boosteroidActive) {
+                    val effectiveColorQuality = settingsAvailableStream.withCodecColorCompatibility().colorQuality
+                    ChoiceMenuRow(
+                        label = stringResource(R.string.settings_color),
+                        options = ColorQuality.entries.map { quality ->
+                            val available = quality.availableForCodec(settingsAvailableStream.codec) &&
+                                !(settingsAvailableStream.hdrEnabled && quality.isTenBit())
+                            ChoiceMenuOption(
+                                value = quality.name,
+                                label = quality.label,
+                                enabled = available,
+                                badge = when {
+                                    available -> null
+                                    settingsAvailableStream.hdrEnabled && quality.isTenBit() -> stringResource(R.string.settings_hdr_ten_bit_badge)
+                                    settingsAvailableStream.codec == VideoCodec.AV1 && quality == ColorQuality.TenBit420 -> h264H265OnlyLabel
+                                    else -> comingSoonLabel
+                                },
+                            )
                         },
+                        selectedLabel = if (effectiveColorQuality == settings.stream.colorQuality) {
+                            settings.stream.colorQuality.label
+                        } else {
+                            "${settings.stream.colorQuality.label} -> ${effectiveColorQuality.label}"
+                        },
+                        description = stringResource(R.string.settings_stream_color_help),
+                    ) { value ->
+                        viewModel.updateStreamSettings { s ->
+                            s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
+                        }
+                    }
+                    if (settingsAvailableStream.codec == VideoCodec.AV1) {
+                        Text(
+                            stringResource(R.string.settings_av1_ten_bit_hint),
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    val hdrDeviceAvailable by produceState(false, settingsAvailableStream.codec,
+                        settingsAvailableStream.resolution, settingsAvailableStream.fps) {
+                        value = withContext(Dispatchers.Default) {
+                            settingsAvailableStream.copy(hdrEnabled = true).withHdrDeviceSupport(context).hdrEnabled
+                        }
+                    }
+                    val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) && hdrDeviceAvailable
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_hdr),
+                        checked = settings.stream.hdrEnabled && hdrAvailable,
+                        enabled = hdrAvailable,
+                        description = stringResource(R.string.settings_hdr_desc),
+                    ) { enabled ->
+                        viewModel.updateStreamSettings { s ->
+                            s.copy(
+                                hdrEnabled = enabled,
+                                colorQuality = if (enabled) ColorQuality.EightBit420 else s.colorQuality,
+                            ).withCodecColorCompatibility()
+                        }
+                    }
+                    if (settingsAvailableStream.hdrEnabled) {
+                        Text(
+                            stringResource(R.string.settings_hdr_ten_bit_warning),
+                            color = Color(0xffffb74d),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (!hdrDeviceAvailable) {
+                        Text(
+                            if (state.androidTvProfile) {
+                                stringResource(R.string.settings_hdr_android_tv_compatibility_hint)
+                            } else {
+                                stringResource(R.string.settings_hdr_android_handheld_hint)
+                            },
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    SettingSwitch(
+                        label = stringResource(R.string.stream_panel_sharpening),
+                        checked = settings.stream.streamSharpeningEnabled,
+                        description = stringResource(R.string.settings_stream_sharpening_desc),
+                    ) {
+                        viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
+                    }
+                    if (settings.stream.streamSharpeningEnabled) {
+                        NumberSlider(
+                            label = stringResource(R.string.stream_panel_sharpening_amount),
+                            value = settings.stream.streamSharpeningAmount,
+                            min = 0f,
+                            max = 1f,
+                            step = 0.05f,
+                            description = stringResource(R.string.settings_stream_sharpening_amount_desc),
+                        ) {
+                            viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
+                        }
+                    }
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_native_streamer),
+                        checked = settings.nativeLowLatencyDecoder,
+                        description = stringResource(R.string.settings_native_streamer_desc),
+                    ) { enabled ->
+                        viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
+                    }
+                }
+            }
+    if (!boosteroidActive) {
+        CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_connection), "stream", "connection", "network", "region", "session proxy", "proxy") {
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_browser_client_mode),
+                        checked = settings.stream.browserClientMode,
+                        description = stringResource(R.string.settings_browser_client_mode_desc),
+                    ) { enabled ->
+                        viewModel.updateStreamSettings { s -> s.copy(browserClientMode = enabled) }
+                    }
+                    ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
+                        val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
+                        viewModel.updateStreamSettings { s -> s.copy(region = url) }
+                    }
+                    SettingSwitch(stringResource(R.string.settings_session_proxy), settings.stream.sessionProxyEnabled) { enabled ->
+                        if (enabled) {
+                            showSessionProxyWarning()
+                        } else {
+                            viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = false) }
+                        }
+                    }
+                    Text(
+                        stringResource(R.string.settings_session_proxy_hint),
                         color = SettingsTextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                }
-                SettingSwitch(
-                    label = stringResource(R.string.stream_panel_sharpening),
-                    checked = settings.stream.streamSharpeningEnabled,
-                    description = stringResource(R.string.settings_stream_sharpening_desc),
-                ) {
-                    viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
-                }
-                if (settings.stream.streamSharpeningEnabled) {
-                    NumberSlider(
-                        label = stringResource(R.string.stream_panel_sharpening_amount),
-                        value = settings.stream.streamSharpeningAmount,
-                        min = 0f,
-                        max = 1f,
-                        step = 0.05f,
-                        description = stringResource(R.string.settings_stream_sharpening_amount_desc),
-                    ) {
-                        viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
+                    if (settings.stream.sessionProxyEnabled) {
+                        OutlinedTextField(
+                            value = settings.stream.sessionProxyUrl,
+                            onValueChange = { value -> viewModel.updateStreamSettings { s -> s.copy(sessionProxyUrl = value) } },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.settings_session_proxy_url)) },
+                            placeholder = { Text("http://127.0.0.1:8080") },
+                        )
                     }
                 }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_native_streamer),
-                    checked = settings.nativeLowLatencyDecoder,
-                    description = stringResource(R.string.settings_native_streamer_desc),
-                ) { enabled ->
-                    viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
-                }
-            }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_connection), "stream", "connection", "network", "region", "session proxy", "proxy") {
-                SettingSwitch(
-                    label = stringResource(R.string.settings_browser_client_mode),
-                    checked = settings.stream.browserClientMode,
-                    description = stringResource(R.string.settings_browser_client_mode_desc),
-                ) { enabled ->
-                    viewModel.updateStreamSettings { s -> s.copy(browserClientMode = enabled) }
-                }
-                ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
-                    val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
-                    viewModel.updateStreamSettings { s -> s.copy(region = url) }
-                }
-                SettingSwitch(stringResource(R.string.settings_session_proxy), settings.stream.sessionProxyEnabled) { enabled ->
-                    if (enabled) {
-                        showSessionProxyWarning()
-                    } else {
-                        viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = false) }
-                    }
-                }
-                Text(
-                    stringResource(R.string.settings_session_proxy_hint),
-                    color = SettingsTextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (settings.stream.sessionProxyEnabled) {
-                    OutlinedTextField(
-                        value = settings.stream.sessionProxyUrl,
-                        onValueChange = { value -> viewModel.updateStreamSettings { s -> s.copy(sessionProxyUrl = value) } },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(stringResource(R.string.settings_session_proxy_url)) },
-                        placeholder = { Text("http://127.0.0.1:8080") },
-                    )
-                }
-            }
+    }
     CategorySettingsSection(selectedCategory, SettingsCategory.Recording, searchQuery, stringResource(R.string.settings_section_recording_output), "recording", "recordings", "video", "mp4", "bitrate", "fps", "sharpness", "nitidez", "gravação", "upscale", "microphone", "camera", "narration") {
                 ControlActionRow(
                     label = stringResource(R.string.settings_recording_folder),
@@ -1513,11 +1527,22 @@ private fun SettingsContent(
                     checked = settings.experimentalSpaceUi,
                     onCheckedChange = viewModel::setSpaceUiEnabled,
                 )
+                if (!state.canCustomizeAppearance) {
+                    AppearanceUnlockOffer(
+                        onEarned = viewModel::unlockAppearanceCustomization,
+                        isCurrentDestination = { viewModel.screenState.value.page == AppPage.Settings },
+                    )
+                }
                 val accentOptions = selectableUiAccents().map { it to uiAccentLabel(it) }
-                SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_dynamic_color),
+                    checked = settings.dynamicColor,
+                    enabled = state.canCustomizeAppearance,
+                ) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 SettingSwitch(
                     label = stringResource(R.string.settings_custom_navigation_background),
                     checked = settings.navigationRailBackgroundOpacity != null,
+                    enabled = state.canCustomizeAppearance,
                     description = stringResource(R.string.settings_custom_navigation_background_desc),
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(navigationRailBackgroundOpacity = if (enabled) 0.75f else null))
@@ -1529,10 +1554,12 @@ private fun SettingsContent(
                         min = 0f,
                         max = 1f,
                         step = 0.01f,
+                        enabled = state.canCustomizeAppearance,
                     ) { value -> viewModel.updateSettings(settings.copy(navigationRailBackgroundOpacity = value)) }
                 }
                 ChoiceRow(
                     label = stringResource(R.string.settings_accent),
+                    enabled = state.canCustomizeAppearance,
                     options = accentOptions.map { it.second },
                     selected = accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second,
                     activeOutlineColor = LocalActiveSelectionColor.current.takeIf { LocalActiveSelectionEnabled.current },
@@ -1561,7 +1588,7 @@ private fun SettingsContent(
                         ),
                     )
                 }
-                SelectionEffectColorSetting(settings) { colors ->
+                SelectionEffectColorSetting(settings, enabled = state.canCustomizeAppearance) { colors ->
                     viewModel.updateSettings(settings.copy(selectionEffectColors = colors))
                 }
                 SettingSwitch(
@@ -1613,7 +1640,11 @@ private fun SettingsContent(
                 NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }
-                CatalogBackgroundSettings(settings = settings, viewModel = viewModel)
+                CatalogBackgroundSettings(
+                    settings = settings,
+                    viewModel = viewModel,
+                    enabled = state.canCustomizeAppearance,
+                )
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "favorites", "favourites", "save", "icon", "premium", "marker", "game card size", "server selector", "hero", "banner", "featured", "landscape", "new games") {
                 SettingSwitch(
@@ -1866,11 +1897,11 @@ private fun SettingsContent(
                 )
         }
     }
-    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "discord", "community", "support", "donate", "paypal", "printedwaste") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "discord", "community", "support", "donate", "donation", "paypal", "printedwaste") {
                 ThanksPanel()
             }
     if (settings.developerOptionsUnlocked) {
-        CategorySettingsSection(selectedCategory, SettingsCategory.Developer, searchQuery, stringResource(R.string.settings_category_developer), "developer", "developer options", "demo", "mask", "screenshots", "debug", "reset", "wipe", "diagnostics", "runtime", "environment", "flows", "onboarding", "cache") {
+        CategorySettingsSection(selectedCategory, SettingsCategory.Developer, searchQuery, stringResource(R.string.settings_category_developer), "developer", "developer options", "demo", "mask", "screenshots", "debug", "reset", "wipe", "diagnostics", "runtime", "environment", "flows", "onboarding", "cache", "clear ad state", "reward") {
                     DeveloperOptionsPanel(state = state, viewModel = viewModel)
                 }
     }
@@ -1924,6 +1955,7 @@ private fun SettingsCategoryLanding(
     onSelectCategory: (SettingsCategory) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        SettingsDonationBanner()
         SettingsAccountCard(
             state = state,
             onClick = { onSelectCategory(SettingsCategory.Account) },
@@ -1965,7 +1997,7 @@ private fun AdvancedOptionsSettings(settings: AppSettings, viewModel: OpenNowVie
 }
 
 @Composable
-private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowViewModel) {
+private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowViewModel, enabled: Boolean) {
     val choices = listOf(
         AppBackgroundChoice.Default to stringResource(R.string.setup_background_default),
         AppBackgroundChoice.Nothing to stringResource(R.string.setup_background_nothing),
@@ -1974,6 +2006,7 @@ private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowV
     )
     ChoiceRow(
         label = stringResource(R.string.settings_background_style),
+        enabled = enabled,
         options = choices.map { it.second },
         selected = choices.first { it.first == appBackgroundChoiceFor(settings) }.second,
     ) { selectedLabel ->
@@ -1983,7 +2016,7 @@ private fun CatalogBackgroundSettings(settings: AppSettings, viewModel: OpenNowV
     }
     // Keep the choices discoverable while the backdrop is off. Choosing an image or preset turns
     // the backdrop on, so users do not have to know that the switch used to gate these controls.
-    CatalogBackgroundPicker(settings = settings, onSettingsChange = viewModel::updateSettings)
+    CatalogBackgroundPicker(settings = settings, onSettingsChange = viewModel::updateSettings, enabled = enabled)
 }
 
 /** Est. bandwidth a stream at [mbps] pulls per hour, shared by Settings and the in-stream panel. */
@@ -2016,7 +2049,7 @@ private fun appLaunchPageLabel(page: AppLaunchPage): String =
 
 @Composable
 private fun SettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
-    val account = state.savedAccounts.firstOrNull { it.userId == state.authSession?.user?.userId }
+    val account = state.activeCloudAccount
         ?: state.savedAccounts.firstOrNull()
     val displayName = account?.displayName?.takeIf { it.isNotBlank() }
         ?: state.authSession?.user?.displayName?.takeIf { it.isNotBlank() }

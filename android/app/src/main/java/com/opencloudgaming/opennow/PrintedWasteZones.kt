@@ -62,7 +62,7 @@ internal fun printedWasteGpuTier(entry: PrintedWasteServerMappingEntry?): Printe
 /**
  * The name to show for a zone: the mapping's title, or the raw id when the mapping has no entry.
  *
- * The raw id still identifies a newly added server before the mapping catches up.
+ * The raw id is a fallback when the caller has no display name.
  */
 internal fun printedWasteZoneTitle(zoneId: String, entry: PrintedWasteServerMappingEntry?): String =
     entry?.title?.trim()?.takeIf { it.isNotEmpty() } ?: zoneId
@@ -112,23 +112,20 @@ internal fun printedWasteLocations(
     zones: List<PrintedWasteZoneOption>,
     mapping: Map<String, PrintedWasteServerMappingEntry>,
 ): List<PrintedWasteLocation> {
-    if (zones.isEmpty()) return emptyList()
     val available = zones.filter { it.routingUrl != null }
+    if (available.isEmpty()) return emptyList()
     val maxPing = available.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
     val maxQueue = available.mapNotNull { it.zone?.QueuePosition }.maxOrNull()?.coerceAtLeast(1) ?: 1
-    return zones
-        .groupBy { zone ->
-            val title = printedWasteZoneTitle(zone.zoneId, mapping[zone.zoneId])
-            title to zone.zoneId.takeIf { zone.routingUrl == null }
-        }
-        .map { (key, group) ->
+    return available
+        .groupBy { zone -> printedWasteZoneTitle(zone.zoneId, mapping[zone.zoneId]) }
+        .map { (title, group) ->
             val ordered = group.sortedWith(
                 compareBy<PrintedWasteZoneOption> { printedWasteScore(it, maxPing, maxQueue) }
                     .thenBy { it.zoneId },
             )
             val primary = ordered.first()
             PrintedWasteLocation(
-                title = key.first,
+                title = title,
                 region = printedWasteZoneRegion(mapping[primary.zoneId], primary.zone?.Region.orEmpty()),
                 primary = primary,
                 alternateCount = ordered.size - 1,

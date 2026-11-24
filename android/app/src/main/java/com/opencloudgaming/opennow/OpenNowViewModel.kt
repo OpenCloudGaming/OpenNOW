@@ -6,9 +6,12 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -29,6 +32,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -256,11 +262,12 @@ enum class StorePersonalRail {
     InQueue,
 }
 
-@Immutable
+// Let Compose compare instances. Structural equality can traverse the entire catalog.
 data class OpenNowUiState(
     val initializing: Boolean = false,
     val page: AppPage = AppPage.Home,
     val authSession: AuthSession? = null,
+    val boosteroid: BoosteroidPresentation = BoosteroidPresentation(),
     val providers: List<LoginProvider> = listOf(defaultProvider()),
     val selectedProvider: LoginProvider = defaultProvider(),
     val savedAccounts: List<SavedAccount> = emptyList(),
@@ -289,6 +296,8 @@ data class OpenNowUiState(
     val settingsRouteTarget: SettingsRouteTarget? = null,
     val settings: AppSettings = AppSettings(),
     val androidTvProfile: Boolean = false,
+    val appearanceCustomizationUnlocked: Boolean = false,
+    val supportNoticeDismissed: Boolean = false,
     val codecReport: RuntimeCodecReport? = null,
     val recommendedStreamSettings: StreamSettings? = null,
     val selectedGame: GameInfo? = null,
@@ -486,6 +495,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val openNowApplication = application as OpenNowApplication
     private val http: OkHttpClient = openNowApplication.httpClient
     private val settingsStore = SettingsStore(application)
+    private val monetizationPreferences = AppMonetizationPreferences(application)
     private val spaceUiEnablement = SpaceUiEnablement(
         hasConfirmed = settingsStore::hasConfirmedSpaceUiEnable,
         rememberConfirmation = settingsStore::confirmSpaceUiEnable,
@@ -588,6 +598,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             librarySortId = initialSettings.librarySortId,
             libraryFilterIds = initialSettings.libraryFilterIds,
             androidTvProfile = androidTvProfile,
+            appearanceCustomizationUnlocked = monetizationPreferences.customizationUnlocked,
+            supportNoticeDismissed = monetizationPreferences.supportNoticeDismissed,
             androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
             queuedGameKeys = queuedGameStore.load(),
@@ -595,6 +607,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         ),
     )
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
+
+    private val boosteroid: BoosteroidIntegration? = createBoosteroidIntegration(application, viewModelScope)
+    internal val screenState: StateFlow<OpenNowUiState> = boosteroid?.let { service ->
+        combine(state, service.presentation, OpenNowUiState::withBoosteroidPresentation)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, state.value)
+    } ?: state
 
     private var gamesJob: Job? = null
     private var gameDetailsJob: Job? = null
@@ -1570,6 +1588,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun playOnLocalTv(game: GameInfo) {
+        if (boosteroid?.active == true || game.isBoosteroidGame) return
         if (state.value.androidTvProfile) return
         localTvConnector.sendLaunch(gameTrackingKey(game), game.title)
     }
@@ -1762,6 +1781,77 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 settingsRouteTarget = SettingsRouteTarget.Account,
             )
         }
+    }
+
+    private fun canSwitchCloudAccount(): Boolean =
+        boosteroid?.busy != true && !screenState.value.isAndroidUpdateCheckBlockedByStream() &&
+            !state.value.isAndroidUpdateCheckBlockedByStream() &&
+            launchJob?.isActive != true && printedWasteLoadJob?.isActive != true &&
+            state.value.pendingPrintedWasteGame == null && state.value.pendingStoreChoiceGame == null &&
+            state.value.pendingBatteryOptimizationLaunch == null && state.value.pendingLaunchRecovery == null &&
+            state.value.pendingMembershipNotice == null && state.value.activeSessionDecision == null
+
+    internal fun signInToBoosteroid() {
+        if (!canSwitchCloudAccount()) return
+        cancelLogin()
+        _state.update { it.copy(selectedGame = null, selectedGameRail = null, error = null) }
+        boosteroid?.signInOrSwitch()
+    }
+
+    internal fun cancelBoosteroidSignIn() { boosteroid?.cancelSignIn() }
+
+    internal fun dismissBoosteroidError() { boosteroid?.dismissError() }
+
+    internal fun switchCloudAccount(account: SavedAccount) {
+        if (!canSwitchCloudAccount()) return
+        if (account.providerCode == BOOSTEROID_PROVIDER_CODE) {
+            signInToBoosteroid()
+        } else {
+            boosteroid?.switchAway()
+            clearSelectedGame()
+            if (state.value.authSession?.user?.userId != account.userId) switchAccount(account.userId)
+        }
+    }
+
+    internal fun addCloudAccount(provider: LoginProvider) {
+        if (!canSwitchCloudAccount()) return
+        if (provider.code == BOOSTEROID_PROVIDER_CODE) {
+            signInToBoosteroid()
+        } else {
+            boosteroid?.switchAway()
+            selectProvider(provider)
+            login(provider)
+        }
+    }
+
+    internal fun signOutCloudAccount() {
+        if (!canSwitchCloudAccount()) return
+        if (boosteroid?.active == true) boosteroid.signOut() else logout()
+    }
+
+    internal fun signOutAllCloudAccounts() {
+        if (!canSwitchCloudAccount()) return
+        boosteroid?.signOut()
+        logoutAll()
+    }
+
+    internal fun addBoosteroidLibraryGame(game: GameInfo) {
+        if (boosteroid?.active == true && game.isBoosteroidGame) boosteroid.setInstalled(game, true)
+    }
+
+    internal fun syncBoosteroidLibrary(platform: String) {
+        if (boosteroid?.active == true) boosteroid.syncLibrary(platform)
+    }
+
+    internal fun dispatchBoosteroidKey(event: KeyEvent): Boolean = boosteroid?.dispatchKey(event) == true
+
+    internal fun dispatchBoosteroidMotion(event: MotionEvent): Boolean = boosteroid?.dispatchMotion(event) == true
+
+    internal fun releaseBoosteroidInput() { boosteroid?.releaseInput() }
+
+    @Composable
+    internal fun BoosteroidStream(state: OpenNowUiState) {
+        boosteroid?.Stream(state)
     }
 
     fun openStreamSettings() {
@@ -2103,6 +2193,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun refreshGames() {
+        if (boosteroid?.active == true) return boosteroid.refresh()
         val session = state.value.authSession ?: return
         catalogRetryJob?.cancel()
         catalogRetryAttempt = 0
@@ -2112,6 +2203,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setCatalogSearch(query: String) {
+        if (boosteroid?.active == true) return boosteroid.search(query)
         _state.update { it.copy(catalogSearch = query, catalogQueryLoading = true) }
         refreshCatalogDebounced(debounceSearch = true)
     }
@@ -2142,12 +2234,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setCatalogSort(sortId: String) {
+        if (boosteroid?.active == true) return
         _state.update { it.copy(catalogSortId = sortId, catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogSortId = sortId) }
         refreshCatalogDebounced()
     }
 
     fun toggleCatalogFilter(filterId: String) {
+        if (boosteroid?.active == true) return
         val nextFilters = state.value.catalogFilterIds.let { current ->
             if (filterId in current) current - filterId else current + filterId
         }
@@ -2157,12 +2251,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearCatalogFilters() {
+        if (boosteroid?.active == true) return
         _state.update { it.copy(catalogFilterIds = emptyList(), catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogFilterIds = emptyList()) }
         refreshCatalogDebounced()
     }
 
     fun selectGame(game: GameInfo, sourceRail: StorePersonalRail? = null) {
+        if (game.isBoosteroidGame) {
+            if (boosteroid?.active == true) boosteroid.selectGame(game)
+            return
+        }
+        if (boosteroid?.active == true) return
         gameDetailsJob?.cancel()
         _state.update { it.copy(selectedGame = game, selectedGameRail = sourceRail) }
         if (!shouldHydrateGameDetails(game)) return
@@ -2203,12 +2303,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearSelectedGame() {
+        if (boosteroid?.active == true) return boosteroid.selectGame(null)
         gameDetailsJob?.cancel()
         gameDetailsJob = null
         _state.update { it.copy(selectedGame = null, selectedGameRail = null) }
     }
 
     fun removeLibraryGame(game: GameInfo) {
+        if (game.isBoosteroidGame) {
+            if (boosteroid?.active == true) boosteroid.setInstalled(game, false)
+            return
+        }
+        if (boosteroid?.active == true) return
         val session = state.value.authSession ?: return
         val variantIds = game.variants.filter(::isOwnedGameVariant).map { it.id }.filter { it.isNotBlank() }.distinct()
         if (variantIds.isEmpty() || state.value.removingLibraryGameId != null) return
@@ -2271,11 +2377,41 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     internal fun cancelSpaceUiEnable() = spaceUiEnablement.cancel()
 
-    fun updateSettings(next: AppSettings) {
-        settingsStore.replace(next)
+    internal fun unlockAppearanceCustomization() {
+        if (monetizationPreferences.customizationUnlocked) return
+        monetizationPreferences.unlockCustomization()
+        _state.update { it.copy(appearanceCustomizationUnlocked = true) }
     }
 
-    suspend fun restoreSettingsBackup(next: AppSettings): Boolean = settingsStore.restore(next)
+    internal fun resetAppearanceAdReward() {
+        monetizationPreferences.resetCustomizationUnlock()
+        _state.update { it.copy(appearanceCustomizationUnlocked = false) }
+    }
+
+    internal fun dismissSupportNotice() {
+        if (monetizationPreferences.supportNoticeDismissed) return
+        monetizationPreferences.dismissSupportNotice()
+        _state.update { it.copy(supportNoticeDismissed = true) }
+    }
+
+    fun updateSettings(next: AppSettings) {
+        val current = settingsStore.settings.value
+        val allowed = keepLockedAppearance(next, current)
+        if (boosteroid?.active == true) {
+            if (allowed.stream != screenState.value.settings.stream) boosteroid.updateStreamSettings(allowed.stream)
+            settingsStore.replace(allowed.copy(stream = current.stream, streamPreset = current.streamPreset))
+        } else {
+            settingsStore.replace(allowed)
+        }
+    }
+
+    private fun keepLockedAppearance(next: AppSettings, current: AppSettings): AppSettings =
+        if (androidTvProfile || monetizationPreferences.customizationUnlocked) next else next.withAppearanceFrom(current)
+
+    suspend fun restoreSettingsBackup(next: AppSettings): Boolean =
+        settingsStore.restore(keepLockedAppearance(next, settingsStore.settings.value))
+
+    internal fun resetInterfaceSettings() = settingsStore.update(AppSettings::resettingInterface)
 
     fun addLocalApp(packageName: String) {
         if (packageName.isBlank() || packageName == getApplication<Application>().packageName) return
@@ -2388,6 +2524,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun refreshSettings() {
+        if (boosteroid?.active == true) return boosteroid.refresh()
         if (settingsRefreshJob?.isActive == true) return
         settingsRefreshJob = viewModelScope.launch {
             _state.update { it.copy(settingsRefreshing = true, error = null) }
@@ -2651,12 +2788,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     /** Recording preferences do not change the selected streaming preset or live transport. */
     fun updateRecordingSettings(transform: (StreamSettings) -> StreamSettings) {
+        if (boosteroid?.active == true) return
         settingsStore.update { current ->
             current.copy(stream = transform(current.stream))
         }
     }
 
     fun updateStreamSettings(transform: (StreamSettings) -> StreamSettings) {
+        if (boosteroid?.active == true) return boosteroid.updateStreamSettings(transform(screenState.value.settings.stream))
         val snapshot = state.value
         settingsStore.update {
             it.copy(
@@ -2670,16 +2809,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateVideoOutput(output: StreamVideoOutput) {
+        if (boosteroid?.active == true) return
         settingsStore.update { current -> current.copy(stream = current.stream.copy(videoOutput = output)) }
     }
 
     fun updateDynamicNetworkAdjustment(enabled: Boolean) {
+        if (boosteroid?.active == true) return
         settingsStore.update { current ->
             current.copy(stream = current.stream.copy(experimentalDynamicNetworkAdjustment = enabled))
         }
     }
 
     fun updateDynamicMinimumBitrate(mbps: Int) {
+        if (boosteroid?.active == true) return
         settingsStore.update { current ->
             current.copy(stream = current.stream.copy(experimentalDynamicMinimumBitrateMbps = mbps))
         }
@@ -2687,6 +2829,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun applyStreamPreset(preset: StreamPreset) {
         val snapshot = state.value
+        if (boosteroid?.active == true) {
+            val stream = screenState.value.settings.stream
+            val next = if (preset == StreamPreset.Recommended) {
+                (deviceRecommendation ?: recommendedAndroidStreamProfile(getApplication(), snapshot.codecReport)).stream
+            } else {
+                stream.applyingStreamPreset(preset)
+            }
+            boosteroid.updateStreamSettings(next)
+            return
+        }
         settingsStore.update { settings ->
             val presetStream = (if (preset == StreamPreset.Recommended) {
                 (deviceRecommendation ?: recommendedAndroidStreamProfile(getApplication(), snapshot.codecReport)).stream
@@ -2793,6 +2945,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun chooseStore(game: GameInfo) {
+        if (boosteroid?.active == true || game.isBoosteroidGame) return play(game)
         val launchVariants = launchableGameVariants(game.variants)
         if (launchVariants.size > 1) {
             _state.update { it.copy(pendingStoreChoiceGame = game, selectedGame = null, error = null) }
@@ -2815,6 +2968,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         skipBatteryOptimizationPrompt: Boolean = false,
         streamSettingsOverride: StreamSettings? = null,
     ) {
+        if (game.isBoosteroidGame) {
+            if (boosteroid?.active == true) boosteroid.play(game, screenState.value.settings.stream)
+            return
+        }
+        if (boosteroid?.active == true) return
         if (state.value.streamStatus == "stopping") return
         if (launchJob?.isActive == true || printedWasteLoadJob?.isActive == true) {
             recordDebugEvent("launch", "Ignored play request while another launch is active game=${game.title}")
@@ -3277,6 +3435,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun stopStream(origin: StreamStopOrigin) {
+        if (boosteroid?.active == true) return boosteroid.stop()
         val beforeStop = state.value
         if (beforeStop.streamStatus == "stopping") return
         streamSessionRecoveryTracker.reset()
@@ -3499,6 +3658,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun resumeActiveSession() {
+        if (boosteroid?.active == true) return boosteroid.resume(screenState.value.settings.stream)
         if (state.value.streamStatus == "stopping") return
         if (launchJob?.isActive == true) {
             recordDebugEvent("queue", "Ignored resume request while another launch is active")

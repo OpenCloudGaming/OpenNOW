@@ -195,13 +195,13 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 )
                 Spacer(Modifier.height(if (compactForPhonePairing) 12.dp else 24.dp))
                 if (BOOSTEROID_AVAILABLE) {
-                    if (deviceLoginPrompt == null && !normalLoginBusy) {
+                    if (deviceLoginPrompt == null && !normalLoginBusy && !state.boosteroid.signingIn) {
                         val showAllianceOptions = state.providers.size > 1 ||
                             !state.selectedProvider.code.equals("NVIDIA", ignoreCase = true)
                         LoginServiceSelector(
                             selected = LoginService.Nvidia,
                             onNvidia = {},
-                            onBoosteroid = { openBoosteroid(context) },
+                            onBoosteroid = viewModel::signInToBoosteroid,
                             nvidiaChoice = if (showAllianceOptions) {
                                 {
                                     ProviderPicker(
@@ -223,7 +223,7 @@ internal fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 } ?: Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = { viewModel.login() },
-                        enabled = !normalLoginBusy,
+                        enabled = !normalLoginBusy && !state.boosteroid.signingIn,
                         modifier = Modifier.focusRequester(signInFocusRequester),
                         colors = ButtonDefaults.buttonColors(
                             disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),

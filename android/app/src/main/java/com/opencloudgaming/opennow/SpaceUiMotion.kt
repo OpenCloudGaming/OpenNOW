@@ -57,10 +57,18 @@ internal fun rememberSpaceInteraction(focused: Boolean, tile: Boolean = false, e
         else -> 1f
     }, tween(if (reduceMotion) 0 else if (fast) 45 else if (pressed) 80 else 180, easing = FastOutSlowInEasing), label = "space-scale")
     val lift = with(LocalDensity.current) { (if (tile) 3.dp else 0.dp).toPx() }
-    return SpaceInteraction(source, enabled && hovered, emphasis, Modifier.graphicsLayer {
-        scaleX = scale.value; scaleY = scale.value
-        translationY = if (reduceMotion || pressed) 0f else -lift * emphasis.value
-    }.then(if (tile || !showFocusOutline || !LocalSpaceAnimatedFocusOutline.current) Modifier else Modifier.spaceFocusFrame(engaged, cornerRadius, hovered = enabled && hovered)))
+    val liftEnabled = !reduceMotion && !pressed
+    val usesLayer = !tile || remember(scale, emphasis, liftEnabled) {
+        derivedStateOf { scale.value != 1f || (liftEnabled && emphasis.value != 0f) }
+    }.value
+    val transform = if (usesLayer) Modifier.graphicsLayer {
+        scaleX = scale.value
+        scaleY = scale.value
+        translationY = if (liftEnabled) -lift * emphasis.value else 0f
+    } else Modifier
+    val focusFrame = if (tile || !showFocusOutline || !LocalSpaceAnimatedFocusOutline.current) Modifier
+        else Modifier.spaceFocusFrame(engaged, cornerRadius, hovered = enabled && hovered)
+    return SpaceInteraction(source, enabled && hovered, emphasis, transform.then(focusFrame))
 }
 
 /** Read animation state only while drawing; keep brushes and outlines out of the frame loop. */

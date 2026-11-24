@@ -555,7 +555,7 @@ fun OpenNowApp(
     viewModel: OpenNowViewModel,
     onMicrophoneCaptureActiveChange: (Boolean) -> Unit = {},
 ) {
-    val actualState by viewModel.state.collectAsStateWithLifecycle()
+    val actualState by viewModel.screenState.collectAsStateWithLifecycle()
     val state = rememberDemoPresentation(actualState)
     CompositionLocalProvider(LocalDemoMode provides actualState.settings.demoMode) {
         OpenNowAppContent(viewModel, state, onMicrophoneCaptureActiveChange)
@@ -619,6 +619,7 @@ private fun OpenNowAppContent(
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
         !showSetupFlow &&
+        !state.boosteroid.signingIn &&
         !showSessionReport &&
         !showCompletedSessionBugReport &&
         !diagnosticDialogVisible &&
@@ -631,7 +632,7 @@ private fun OpenNowAppContent(
         !showSessionReport &&
         !showCompletedSessionBugReport &&
         !diagnosticDialogVisible &&
-        state.deviceLoginPrompt == null &&
+        state.deviceLoginPrompt == null && !state.boosteroid.signingIn &&
         state.pendingStoreChoiceGame == null &&
         state.pendingMembershipNotice == null &&
         state.pendingPrintedWasteGame == null &&
@@ -768,7 +769,7 @@ private fun OpenNowAppContent(
         physicalControllerConnected = physicalControllerConnected,
         runtimeCodecReport = state.codecReport,
     ) {
-        SpaceUiTheme(enabled = state.settings.experimentalSpaceUi && state.authSession != null && !showSetupFlow && (state.page != AppPage.Stream || state.pendingStoreChoiceGame != null || state.pendingPrintedWasteGame != null),
+        SpaceUiTheme(enabled = state.settings.experimentalSpaceUi && state.hasCloudAccount && !showSetupFlow && (state.page != AppPage.Stream || state.pendingStoreChoiceGame != null || state.pendingPrintedWasteGame != null),
             physicalControllerConnected = physicalControllerConnected) {
             val primaryColor = MaterialTheme.colorScheme.primary
             CompositionLocalProvider(
@@ -804,7 +805,7 @@ private fun OpenNowAppContent(
                     Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
                         when {
                             showSetupFlow -> SetupFlowScreen(state = state, viewModel = viewModel)
-                            state.authSession != null -> MainShell(
+                            state.hasCloudAccount -> MainShell(
                                 state = state,
                                 viewModel = viewModel,
                                 musicControl = musicControl,
@@ -812,6 +813,37 @@ private fun OpenNowAppContent(
                             )
                             else -> LoginScreen(state, viewModel)
                         }
+                    }
+                    state.boosteroid.loginPrompt?.let { prompt ->
+                        LaunchedEffect(prompt.verificationUri, state.androidTvProfile) {
+                            if (!state.androidTvProfile) openExternalUrl(context, prompt.verificationUri)
+                        }
+                        AlertDialog(
+                            onDismissRequest = viewModel::cancelBoosteroidSignIn,
+                            title = { Text(stringResource(R.string.action_sign_in)) },
+                            text = {
+                                DeviceLoginPanel(
+                                    prompt = prompt,
+                                    phase = stringResource(R.string.boosteroid_waiting_for_sign_in),
+                                    onCancel = viewModel::cancelBoosteroidSignIn,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    qrMaxSize = 175.dp,
+                                )
+                            },
+                            confirmButton = {},
+                        )
+                    }
+                    state.boosteroid.error?.let { message ->
+                        AlertDialog(
+                            onDismissRequest = viewModel::dismissBoosteroidError,
+                            title = { Text(stringResource(R.string.app_name)) },
+                            text = { Text(stringResource(message)) },
+                            confirmButton = {
+                                TextButton(onClick = viewModel::dismissBoosteroidError) {
+                                    Text(stringResource(R.string.action_ok))
+                                }
+                            },
+                        )
                     }
                     if (spaceUiEnableConfirmationPending) {
                         SpaceUiEnableDialog(
@@ -921,14 +953,19 @@ private fun OpenNowAppContent(
                             pendingChangelogs = emptyList()
                         }
                     }
-                    if (!messageCheckBlocked && !showSetupFlow && !showUpdatePrompt && !showChangelogPrompt && !showSessionReport &&
+                    if (!messageCheckBlocked && !showUpdatePrompt && !showChangelogPrompt && !showSessionReport &&
                         !showCompletedSessionBugReport && !diagnosticDialogVisible &&
                         state.deviceLoginPrompt == null && state.pendingStoreChoiceGame == null &&
                         state.pendingMembershipNotice == null && state.pendingPrintedWasteGame == null &&
                         !state.pendingGfnMembershipActivation &&
                         state.pendingBatteryOptimizationLaunch == null && state.pendingLaunchRecovery == null &&
                         state.error == null && !state.loginToolsVisible) {
-                        state.appMessage?.let { message ->
+                        if (!state.supportNoticeDismissed && !state.initializing &&
+                            !state.boosteroid.signingIn && state.boosteroid.error == null &&
+                            !spaceUiEnableConfirmationPending && !state.awaitingLaunchInputModeChoice
+                        ) {
+                            SupportNoticeDialog(onDismiss = viewModel::dismissSupportNotice)
+                        } else if (!showSetupFlow) state.appMessage?.let { message ->
                             AlertDialog(
                                 onDismissRequest = {},
                                 title = { Text(message.title) },
@@ -952,7 +989,7 @@ private fun OpenNowAppContent(
                     }
                     UselessMascotOverlay(
                         settings = state.settings,
-                        allowed = !showSetupFlow && state.authSession != null &&
+                        allowed = !showSetupFlow && state.hasCloudAccount &&
                             state.streamStatus != "streaming" && state.streamStatus != "connecting",
                     )
                     DiagnosticShareDialog(
@@ -988,6 +1025,7 @@ private fun MainShell(
     val spaceUiStateHolder = rememberSaveableStateHolder()
     val catalogAdAccess = rememberCatalogAdAccess(
         enabled = canShowCatalogAds(state) && !tvProfile && (BuildConfig.DEBUG || !state.settings.demoMode),
+        preloadTopAds = !spaceUi,
     )
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
@@ -1191,7 +1229,7 @@ private fun MainShell(
                                     catalogControls = {
                                         if (state.page == AppPage.Library) {
                                             val touchLabel = stringResource(R.string.catalog_filter_touch_controls)
-                                            val options = remember(state.libraryGames, touchLabel, state.settings.demoMode) {
+                                            val options = remember(IdentityKey(state.libraryGames), touchLabel, state.settings.demoMode) {
                                                 libraryStoreFilterOptions(state.libraryGames, touchLabel, state.settings.demoMode)
                                             }
                                             CatalogSortFilterMenu(
@@ -1347,7 +1385,7 @@ private fun MainShell(
                                         )
                                     } else if (libraryControlsInTopBar) {
                                         val orderedLibraryGames = remember(
-                                            state.libraryGames,
+                                            IdentityKey(state.libraryGames),
                                             state.settings.favoriteGameIds,
                                             state.librarySortId,
                                         ) {
@@ -1357,7 +1395,7 @@ private fun MainShell(
                                             )
                                         }
                                         val touchFilterLabel = stringResource(R.string.catalog_filter_touch_controls)
-                                        val libraryFilterOptions = remember(orderedLibraryGames, touchFilterLabel, state.settings.demoMode) {
+                                        val libraryFilterOptions = remember(IdentityKey(orderedLibraryGames), touchFilterLabel, state.settings.demoMode) {
                                             libraryStoreFilterOptions(orderedLibraryGames, touchFilterLabel, state.settings.demoMode)
                                         }
                                         Spacer(Modifier.weight(1f))
@@ -1437,11 +1475,15 @@ private fun MainShell(
                                             },
                                             onDetailRouteChange = { settingsDetailRouteOpen = it },
                                         )
-                                        AppPage.Stream -> StreamScreen(
-                                            state = state,
-                                            viewModel = viewModel,
-                                            onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
-                                        )
+                                        AppPage.Stream -> if (state.boosteroid.active) {
+                                            viewModel.BoosteroidStream(state)
+                                        } else {
+                                            StreamScreen(
+                                                state = state,
+                                                viewModel = viewModel,
+                                                onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1466,11 +1508,15 @@ private fun MainShell(
                             game.title,
                         )
                         StorePersonalRail.InQueue -> stringResource(R.string.store_remove_from_queue, game.title)
-                        null -> if (libraryRemoval) stringResource(R.string.library_remove_gfn_game, game.title) else null
+                        null -> when {
+                            !libraryRemoval -> null
+                            state.boosteroid.active -> stringResource(R.string.boosteroid_remove_game)
+                            else -> stringResource(R.string.library_remove_gfn_game, game.title)
+                        }
                     }
                     val removeConfirmationText = if (libraryRemoval) {
                         stringResource(
-                            R.string.library_remove_gfn_game_body,
+                            if (state.boosteroid.active) R.string.boosteroid_remove_game_body else R.string.library_remove_gfn_game_body,
                             game.title,
                             libraryVariants.map { gameStoreDisplayName(it.store) }.distinct().joinToString(", "),
                         )
@@ -1490,6 +1536,9 @@ private fun MainShell(
                         }
                         null -> if (libraryRemoval) ({ viewModel.removeLibraryGame(game) }) else null
                     }
+                    val onAddToLibrary = if (state.boosteroid.active && !isGameInLibrary(game)) {
+                        { viewModel.addBoosteroidLibraryGame(game) }
+                    } else null
                     ControllerModalOverlay(onDismissRequest = viewModel::clearSelectedGame) {
                         // Keep details in the app's window so the activated artwork and destination
                         // banner share coordinates and the first visible frame follows the haptic.
@@ -1507,6 +1556,7 @@ private fun MainShell(
                             removeConfirmationText = removeConfirmationText,
                             removeEnabled = state.removingLibraryGameId == null,
                             onRemove = onRemove,
+                            onAddToLibrary = onAddToLibrary,
                             onDismiss = viewModel::clearSelectedGame,
                         ) else GameDetailsSheet(
                             game = game,
@@ -1523,6 +1573,7 @@ private fun MainShell(
                             removeConfirmationText = removeConfirmationText,
                             removeEnabled = state.removingLibraryGameId == null,
                             onRemove = onRemove,
+                            onAddToLibrary = onAddToLibrary,
                             onDismiss = viewModel::clearSelectedGame,
                         )
                     }
@@ -2153,23 +2204,17 @@ internal fun TopBarProfileMenu(
     onOpenLocalApps: () -> Unit,
     onSpaceUiChange: (Boolean) -> Unit,
 ) {
-    val context = LocalContext.current
-    val activity = context as? Activity
+    val activity = LocalContext.current as? Activity
     var expanded by remember { mutableStateOf(false) }
     BackHandler(enabled = expanded) { expanded = false }
     var focused by remember { mutableStateOf(false) }
-    val currentUser = state.authSession?.user
-    val savedAccount = state.savedAccounts.firstOrNull { it.userId == currentUser?.userId }
-        ?: state.savedAccounts.firstOrNull()
-    val displayName = currentUser?.displayName?.takeIf { it.isNotBlank() }
-        ?: savedAccount?.displayName?.takeIf { it.isNotBlank() }
+    val account = state.activeCloudAccount ?: state.savedAccounts.firstOrNull()
+    val displayName = account?.displayName?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.profile_not_available)
     val tier = state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
-        ?: currentUser?.membershipTier?.takeIf { it.isNotBlank() }
-        ?: savedAccount?.membershipTier?.takeIf { it.isNotBlank() }
+        ?: account?.membershipTier?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.profile_not_available)
-    val email = currentUser?.email?.takeIf { it.isNotBlank() }
-        ?: savedAccount?.email?.takeIf { it.isNotBlank() }
+    val email = account?.email?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.profile_not_available)
     val profileDescription = stringResource(R.string.profile_menu_description)
     val haptics = LocalOpenNowHaptics.current
@@ -2199,6 +2244,7 @@ internal fun TopBarProfileMenu(
         ) {
             OpenNowAppIcon(
                 size = 32.dp,
+                boosteroid = state.boosteroid.active,
                 animate = shouldAnimateOpenNowAppIcon(
                     codecReport = state.codecReport,
                     reduceMotion = LocalReduceMotion.current,
@@ -2240,16 +2286,6 @@ internal fun TopBarProfileMenu(
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (BOOSTEROID_AVAILABLE && state.streamStatus == "idle") {
-                ProfileDropdownMenuItem(
-                    text = { Text(stringResource(R.string.login_switch_service), fontWeight = FontWeight.SemiBold) },
-                    onClick = {
-                        expanded = false
-                        haptics?.play(HapticCue.Activate)
-                        openBoosteroid(context, chooseService = true)
-                    },
                 )
             }
             if (BuildConfig.LOCAL_APP_LAUNCHER_SUPPORTED) {

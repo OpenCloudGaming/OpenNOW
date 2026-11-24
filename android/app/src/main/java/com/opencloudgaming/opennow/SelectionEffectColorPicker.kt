@@ -15,12 +15,12 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
 @Composable
-internal fun SelectionEffectColorSetting(settings: AppSettings, onSave: (SelectionEffectColors?) -> Unit) {
+internal fun SelectionEffectColorSetting(settings: AppSettings, enabled: Boolean = true, onSave: (SelectionEffectColors?) -> Unit) {
     var open by rememberSaveable { mutableStateOf(false) }
-    OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+    OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth(), enabled = enabled) {
         Text(if (settings.selectionEffectColors == null) "Effect colors · Follow theme" else "Effect colors · Custom")
     }
-    if (open) {
+    if (enabled && open) {
         val style = settings.activeSelectionEffectStyle()
         val colors = controllerFocusEnergyColors(settings.uiAccent == UiAccent.AbsoluteCinema,
             style.color, style.secondaryColor, settings.selectionEffectColors)

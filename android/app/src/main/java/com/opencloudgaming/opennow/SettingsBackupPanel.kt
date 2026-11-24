@@ -81,7 +81,15 @@ internal fun SettingsBackupPanel(viewModel: OpenNowViewModel) {
         AlertDialog(
             onDismissRequest = { restoreCandidate = null },
             title = { Text(stringResource(R.string.settings_backup_restore_title)) },
-            text = { Text(stringResource(R.string.settings_backup_restore_confirm)) },
+            text = {
+                val current = viewModel.screenState.value
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.settings_backup_restore_confirm))
+                    if (!current.canCustomizeAppearance && candidate.withAppearanceFrom(current.settings) != candidate) {
+                        Text(stringResource(R.string.appearance_backup_locked))
+                    }
+                }
+            },
             confirmButton = {
                 Button(onClick = {
                     restoreCandidate = null

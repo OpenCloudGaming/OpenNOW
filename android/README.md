@@ -14,26 +14,33 @@ Release and debug builds include `arm64-v8a`, `armeabi-v7a`, and `x86_64`. The `
 
 ## Boosteroid in APK builds
 
-The OpenNOW sign-in screen lets you select NVIDIA or Boosteroid. If you're already signed in,
-use **Switch service** to reopen that selector. Boosteroid has separate account storage,
-a Store and Library, and its own stream settings. OpenNOW uses a blue-purple cloud in that mode.
+OpenNOW uses the same Store, Library, and Settings for both services. To add or switch an
+account, open **Settings → Accounts**. The sign-in screen also offers both services on direct
+APKs. Boosteroid uses a blue-purple cloud and has separate credentials, catalog and sessions.
 
-Direct APKs include the Boosteroid activity and provider code. Google Play bundles omit both.
+Google Play bundles omit the Boosteroid provider code.
 For custom bundle tasks, pass `-Pdistribution=play-store`.
 
-## Catalog ads
+## Ads and appearance customization
 
-The handset and tablet Store and Library can show a full-width Native Advanced ad after roughly
-every 30 games, aligned to complete rows. The Library can also show a compact ad above its first
-game row. When Continue playing is available, the Store can show one above New Games Added.
-The ads use the catalog's normal margins and appear as their own scrollable rows.
+The regular handset and tablet Store and Library preload a compact Native Advanced ad for the
+top of each tab and show the row when an ad is ready. In Space UI, Discover and Library use only
+inline catalog ads. The game grids reserve a full-width slot after every 30 games and preload the
+upcoming slots. Ads use the catalog's normal margins and scroll with the content.
 Set the shared **Store** ad unit's media type to **Image** in AdMob. Release builds request OpenNOW's
-live catalog unit after Google's consent SDK allows it. Debug builds default to Google's sample unit.
-Use `./gradlew :app:assembleDebug -PadMobLive=true` when a debug APK needs the live catalog unit.
+live units after Google's consent SDK allows it. Debug builds default to Google's sample units.
+Use `./gradlew :app:assembleDebug -PadMobLive=true` when a debug APK needs the live units.
 Configure the app's consent messages in AdMob's **Privacy & messaging** before shipping.
-Catalog ad requests and row updates wait for scrolling to settle. The Store and Library can
-show ads while a queue is minimized, unless NVIDIA requires a sponsor ad. Catalog ads pause
-during rig setup, connection, and gameplay.
+Catalog ads prefetch and can appear while users scroll. The Store and Library can show ads while a
+queue is minimized, unless NVIDIA requires a sponsor ad. Catalog ads pause during rig setup,
+connection, and gameplay.
+
+On phones and tablets, one completed opt-in **Colours** rewarded ad unlocks colours and
+backgrounds for that installation in Settings and first-run setup. The unlock and the startup
+notice dismissal survive restarts, updates, and settings resets. Android TV keeps its appearance
+controls available because the ads SDK does not support it.
+In AdMob, enable only video for **Colours** and turn off ad pods to limit a rewarded impression
+to one video.
 
 ## Release Notes and First-Install Defaults
 

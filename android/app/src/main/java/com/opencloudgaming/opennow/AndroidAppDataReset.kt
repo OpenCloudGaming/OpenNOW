@@ -30,6 +30,7 @@ internal fun wipeAppDataAndRelaunch(context: Context): Nothing {
         SystemClock.elapsedRealtime() + APP_DATA_RESET_RELAUNCH_DELAY_MS,
         relaunchPendingIntent,
     )
+    AppMonetizationPreferences(appContext).flushBeforeReset()
     clearAppDataDirectories(appContext)
     Process.killProcess(Process.myPid())
     exitProcess(0)
@@ -61,8 +62,11 @@ private fun clearAppDataDirectories(context: Context) {
         return
     }
     children.forEach { child ->
-        if (child.name == "lib") return@forEach
-        deleteAppDataPath(child)
+        when (child.name) {
+            "lib" -> Unit
+            "shared_prefs" -> deleteResettablePreferences(child)
+            else -> deleteAppDataPath(child)
+        }
     }
 }
 
@@ -72,9 +76,17 @@ private fun deleteKnownAppDataDirectories(context: Context) {
         context.cacheDir,
         context.codeCacheDir,
         context.noBackupFilesDir,
-        File(context.appDataDirCompat, "shared_prefs"),
         File(context.appDataDirCompat, "databases"),
     ).forEach(::deleteAppDataPath)
+    deleteResettablePreferences(File(context.appDataDirCompat, "shared_prefs"))
+}
+
+private fun deleteResettablePreferences(directory: File) {
+    directory.listFiles().orEmpty().forEach { file ->
+        if (file.name != "$APP_MONETIZATION_PREFS_NAME.xml" && file.name != "$APP_MONETIZATION_PREFS_NAME.xml.bak") {
+            deleteAppDataPath(file)
+        }
+    }
 }
 
 private fun deleteAppDataPath(path: File?) {
