@@ -73,6 +73,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenNOW">
         <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${storeAdMobAppId}" />
+        <meta-data
+            android:name="com.google.android.gms.ads.flag.NATIVE_AD_DEBUGGER_ENABLED"
+            android:value="false" />
+        <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode_ui" />
         <service

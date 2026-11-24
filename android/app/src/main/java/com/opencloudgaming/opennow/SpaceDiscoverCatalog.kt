@@ -6,7 +6,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -21,13 +20,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opencloudgaming.opennow.ui.theme.LocalReduceForegroundMotion
+import com.google.android.gms.ads.nativead.NativeAd
 import kotlin.math.ceil
 import kotlin.math.abs
 
 @Composable
 internal fun SpaceDiscoverCatalog(games: List<GameInfo>, selectedId: String?, gridState: LazyGridState,
     selectedRequester: FocusRequester, compact: Boolean, showPremiumMarker: Boolean, modifier: Modifier, onFocused: (String) -> Unit,
-    onSelectGame: (GameInfo) -> Unit, onBack: () -> Unit, catalogControls: @Composable () -> Unit) {
+    onSelectGame: (GameInfo) -> Unit, onBack: () -> Unit, catalogControls: @Composable () -> Unit,
+    ads: Map<Int, NativeAd> = emptyMap()) {
     val reduced = LocalReduceForegroundMotion.current
     Column(modifier.fillMaxWidth().spaceArrival("discover-catalog")) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -44,7 +45,7 @@ internal fun SpaceDiscoverCatalog(games: List<GameInfo>, selectedId: String?, gr
             val columns = ceil(maxWidth / slotWidth).toInt().coerceAtLeast(1)
             LazyVerticalGrid(columns = GridCells.Fixed(columns), state = gridState,
                 modifier = Modifier.fillMaxSize().testTag("space-discover-catalog"), contentPadding = PaddingValues(4.dp)) {
-                items(games, key = { it.id }) { game ->
+                catalogGameItems(games, ads, "space-discover-game") { game ->
                     SpaceGameTile(game, selectedId == game.id, compact, reduced, showPremiumMarker,
                         modifier = Modifier.fillMaxWidth().then(if (selectedId == game.id) Modifier.focusRequester(selectedRequester) else Modifier),
                         onFocused = { onFocused(game.id) }, onClick = { onSelectGame(game) }, portraitArtwork = true)

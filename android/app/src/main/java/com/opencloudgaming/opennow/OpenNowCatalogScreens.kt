@@ -222,6 +222,7 @@ internal fun HomeScreen(
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
+    catalogAdAccess: CatalogAdAccess? = null,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val catalogGames = state.games.ifEmpty { state.catalogResult.games }
@@ -262,7 +263,8 @@ internal fun HomeScreen(
     )
     val showScrollActions by remember(gridState) {
         derivedStateOf {
-            gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80
+            (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 80) &&
+                gridState.layoutInfo.visibleItemsInfo.none { it.contentType == CATALOG_AD_CONTENT_TYPE }
         }
     }
     val scrolledAwayFromTop by remember(gridState) {
@@ -415,6 +417,7 @@ internal fun HomeScreen(
                             showToolbar = !controlsInTopBar,
                             topFocusRequester = topBarFocusRequester,
                             resultsOnly = resultsOnly,
+                            catalogAdAccess = catalogAdAccess,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -566,6 +569,7 @@ internal fun LibraryScreen(
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
+    catalogAdAccess: CatalogAdAccess? = null,
 ) {
     val haptics = LocalOpenNowHaptics.current
     val selectGameWithHaptic: (GameInfo) -> Unit = { game ->
@@ -671,6 +675,7 @@ internal fun LibraryScreen(
                     showToolbar = !controlsInTopBar,
                     modifier = Modifier.padding(horizontal = OpenNowSpacing.ScreenEdge),
                 )
+                CatalogAdPrivacyOptions(catalogAdAccess)
                 if (state.loadingGames && state.libraryGames.isEmpty()) {
                     RefreshingGamesPlaceholder(
                         settings = state.settings,
@@ -701,6 +706,7 @@ internal fun LibraryScreen(
                         // hairline rather than its full 12dp inset: those two stacked were the
                         // paragraph-sized hole between the filter row and the first row of posters.
                         topContentPadding = OpenNowSpacing.xs,
+                        catalogAdAccess = catalogAdAccess.takeIf { !showSearch && state.libraryFilterIds.isEmpty() },
                         emptyContent = {
                             val hasSearch = state.librarySearch.isNotBlank()
                             val hasFilters = state.libraryFilterIds.isNotEmpty()
@@ -1576,6 +1582,7 @@ private fun GameGrid(
     /** Overrides the spec's top inset when the caller has already spaced the grid off what's above it. */
     topContentPadding: Dp? = null,
     emptyContent: (@Composable () -> Unit)? = null,
+    catalogAdAccess: CatalogAdAccess? = null,
 ) {
     if (games.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1599,6 +1606,8 @@ private fun GameGrid(
     val density = LocalDensity.current
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val topAd = rememberCatalogTopAd(catalogAdAccess, gridState)
+        val ads = rememberCatalogNativeAds(catalogAdAccess, games, gridState)
         val cardRequestWidth = catalogGridCardImageRequestWidth(
             availableWidth = maxWidth,
             gridSpec = gridSpec,
@@ -1619,7 +1628,7 @@ private fun GameGrid(
                     horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
                     verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
                 ) {
-                    gridItems(games, key = { it.id }, contentType = { "catalog-game" }) { game ->
+                    catalogGameItems(games, ads, "catalog-game", topAd = topAd) { game ->
                         GameCard(
                             game = game,
                             favorite = game.id in favoriteIdSet,
@@ -1668,6 +1677,7 @@ private fun StoreGameGrid(
     showToolbar: Boolean = true,
     topFocusRequester: FocusRequester? = null,
     resultsOnly: Boolean = false,
+    catalogAdAccess: CatalogAdAccess? = null,
     modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
@@ -1710,6 +1720,14 @@ private fun StoreGameGrid(
         searchActive = state.catalogSearch.isNotBlank(),
         filterActive = state.catalogFilterIds.isNotEmpty(),
     )
+    val startRails = remember(games, state.libraryGames, favoriteIds, state.queuedGameKeys, state.dismissedContinuePlaying) {
+        storeStartRailGroups(games, state.libraryGames, favoriteIds, state.queuedGameKeys, state.dismissedContinuePlaying)
+    }
+    val storeTopAd = rememberCatalogTopAd(
+        catalogAdAccess.takeIf { showDiscoverySections && !resultsOnly && startRails.continuePlaying.isNotEmpty() },
+        grid = gridState,
+        keepGridAtStart = false,
+    )
     val catalogScrolling by remember(gridState) {
         derivedStateOf { gridState.isScrollInProgress }
     }
@@ -1717,6 +1735,11 @@ private fun StoreGameGrid(
     val density = LocalDensity.current
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val ads = rememberCatalogNativeAds(
+            catalogAdAccess.takeIf { showDiscoverySections && !resultsOnly },
+            games,
+            gridState,
+        )
         val cardRequestWidth = catalogGridCardImageRequestWidth(
             availableWidth = maxWidth,
             gridSpec = gridSpec,
@@ -1745,14 +1768,15 @@ private fun StoreGameGrid(
                         }
                     }
                     if (showDiscoverySections) {
-                        item(key = "store-start-rails", span = { GridItemSpan(maxLineSpan) }) {
+                        item(
+                            key = "store-start-rails",
+                            span = { GridItemSpan(maxLineSpan) },
+                            contentType = CATALOG_AD_CONTENT_TYPE.takeIf { storeTopAd != null },
+                        ) {
                             StoreStartRails(
-                                games = games,
+                                startRails = startRails,
                                 newlyAddedGames = state.newlyAddedGames,
-                                libraryGames = state.libraryGames,
                                 favoriteIds = favoriteIds,
-                                queuedGameKeys = state.queuedGameKeys,
-                                dismissedContinuePlaying = state.dismissedContinuePlaying,
                                 settings = settings,
                                 tvProfile = tvProfile,
                                 controllerActionMode = controllerActionMode,
@@ -1764,20 +1788,24 @@ private fun StoreGameGrid(
                                 onPlay = onPlay,
                                 onChooseStore = onChooseStore,
                                 onLandscapeNewGamesCollapsedChange = onLandscapeNewGamesCollapsedChange,
+                                topAd = storeTopAd?.let { ad -> { CatalogNativeAdCard(ad, compact = true) } },
                             )
                         }
                     }
                     if (games.isNotEmpty()) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
-                            SectionHeader(
-                                title = stringResource(
-                                    if (showDiscoverySections) R.string.store_recommendations else R.string.store_results,
-                                ),
-                                modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
-                            )
+                            Column {
+                                CatalogAdPrivacyOptions(catalogAdAccess)
+                                SectionHeader(
+                                    title = stringResource(
+                                        if (showDiscoverySections) R.string.store_recommendations else R.string.store_results,
+                                    ),
+                                    modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
+                                )
+                            }
                         }
                     }
-                    gridItems(games, key = { it.id }, contentType = { "store-game" }) { game ->
+                    catalogGameItems(games, ads, "store-game") { game ->
                         GameCard(
                             game = game,
                             favorite = game.id in favoriteIdSet,
@@ -1809,12 +1837,9 @@ private fun StoreGameGrid(
 
 @Composable
 private fun StoreStartRails(
-    games: List<GameInfo>,
+    startRails: StoreStartRailGroups,
     newlyAddedGames: List<GameInfo>,
-    libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
-    queuedGameKeys: List<String>,
-    dismissedContinuePlaying: Map<String, String>,
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
@@ -1824,6 +1849,7 @@ private fun StoreStartRails(
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
     onLandscapeNewGamesCollapsedChange: (Boolean) -> Unit,
+    topAd: (@Composable () -> Unit)?,
 ) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val showFeaturedHero = shouldShowStoreHero(
@@ -1831,15 +1857,6 @@ private fun StoreStartRails(
         landscape = landscape,
         landscapeEnabled = settings.landscapeNewGamesHero,
     )
-    val startRails = remember(games, libraryGames, favoriteIds, queuedGameKeys, dismissedContinuePlaying) {
-        storeStartRailGroups(
-            games,
-            libraryGames,
-            favoriteIds,
-            queuedGameKeys,
-            dismissedContinuePlaying,
-        )
-    }
     val featured = remember(newlyAddedGames, startRails, showFeaturedHero) {
         if (showFeaturedHero) {
             newlyAddedStoreHeroGames(
@@ -1857,8 +1874,8 @@ private fun StoreStartRails(
             .padding(top = if (landscape) 0.dp else 2.dp, bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg),
     ) {
-        // The exact same hero leads on handheld and TV. Its aspect ratio adapts to the surface,
-        // but its feed, interaction model, and visual treatment remain shared.
+        // Keep the ad in the same grid item so a late load is visible at the top of the rails.
+        topAd?.invoke()
         if (featured.isNotEmpty()) {
             val collapseAvailable = shouldOfferStoreHeroCollapse(tvProfile, landscape)
             StoreComingNextCarousel(

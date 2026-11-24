@@ -21,6 +21,20 @@ a Store and Library, and its own stream settings. OpenNOW uses a blue-purple clo
 Direct APKs include the Boosteroid activity and provider code. Google Play bundles omit both.
 For custom bundle tasks, pass `-Pdistribution=play-store`.
 
+## Catalog ads
+
+The handset and tablet Store and Library can show a full-width Native Advanced ad after roughly
+every 30 games, aligned to complete rows. The Library can also show a compact ad above its first
+game row. When Continue playing is available, the Store can show one above New Games Added.
+The ads use the catalog's normal margins and appear as their own scrollable rows.
+Set the shared **Store** ad unit's media type to **Image** in AdMob. Release builds request OpenNOW's
+live catalog unit after Google's consent SDK allows it. Debug builds default to Google's sample unit.
+Use `./gradlew :app:assembleDebug -PadMobLive=true` when a debug APK needs the live catalog unit.
+Configure the app's consent messages in AdMob's **Privacy & messaging** before shipping.
+Catalog ad requests and row updates wait for scrolling to settle. The Store and Library can
+show ads while a queue is minimized, unless NVIDIA requires a sponsor ad. Catalog ads pause
+during rig setup, connection, and gameplay.
+
 ## Release Notes and First-Install Defaults
 
 - Edit `changelogs.json` in this folder for each version code. See `docs/changelogs.md` for the note format.

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "370151241948",
+    "project_id": "opennow-13a07",
+    "storage_bucket": "opennow-13a07.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:370151241948:android:be51ed621d249f95975c19",
+        "android_client_info": {
+          "package_name": "com.opencloudgaming.opennow"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqDCW3XxD9GGfrbBgGLcT43pQcyMDVjHE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

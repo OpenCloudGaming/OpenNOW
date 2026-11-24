@@ -986,6 +986,9 @@ private fun MainShell(
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !inStream)
     val spaceUi = shouldUseSpaceUi(state.settings.experimentalSpaceUi, state.page)
     val spaceUiStateHolder = rememberSaveableStateHolder()
+    val catalogAdAccess = rememberCatalogAdAccess(
+        enabled = canShowCatalogAds(state) && !tvProfile && (BuildConfig.DEBUG || !state.settings.demoMode),
+    )
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
@@ -1184,6 +1187,7 @@ private fun MainShell(
                                         else viewModel.setCatalogSearch(query)
                                     },
                                     inputEnabled = state.selectedGame == null && !modalPickerOpen,
+                                    catalogAdAccess = catalogAdAccess,
                                     catalogControls = {
                                         if (state.page == AppPage.Library) {
                                             val touchLabel = stringResource(R.string.catalog_filter_touch_controls)
@@ -1392,6 +1396,7 @@ private fun MainShell(
                                                 storeControlsInTopBar
                                             },
                                             searchRequested = visibleSearchTarget == SearchTarget.Store,
+                                            catalogAdAccess = catalogAdAccess,
                                             onSearchDismissed = {
                                                 if (visibleSearchTarget == SearchTarget.Store) {
                                                     visibleSearchTarget = null
@@ -1409,6 +1414,7 @@ private fun MainShell(
                                                 libraryControlsInTopBar
                                             },
                                             searchRequested = visibleSearchTarget == SearchTarget.Library,
+                                            catalogAdAccess = catalogAdAccess,
                                             onSearchDismissed = {
                                                 if (visibleSearchTarget == SearchTarget.Library) {
                                                     visibleSearchTarget = null

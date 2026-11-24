@@ -5,6 +5,7 @@ import com.opencloudgaming.buildlogic.WebRtcTextureDeliveryFactory
 
 plugins {
     id("com.android.application")
+    id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
@@ -32,6 +33,10 @@ val buildingPlayReleaseBundle =
         gradle.startParameter.taskNames.any { taskName ->
             bundleRequest.matches(taskName.substringAfterLast(":"))
         }
+
+val liveAdsInDebug = providers.gradleProperty("adMobLive").map(String::toBooleanStrict).orElse(false).get()
+val liveAdMobAppId = "ca-app-pub-7122298728977161~1479293036"
+val liveCatalogAdUnit = "ca-app-pub-7122298728977161/6903384802"
 
 android {
     namespace = "com.opencloudgaming.opennow"
@@ -62,10 +67,16 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
+            val appId = if (liveAdsInDebug) liveAdMobAppId else "ca-app-pub-3940256099942544~3347511713"
+            val catalogUnit = if (liveAdsInDebug) liveCatalogAdUnit else "ca-app-pub-3940256099942544/2247696110"
+            manifestPlaceholders["storeAdMobAppId"] = appId
+            buildConfigField("String", "STORE_NATIVE_AD_UNIT_ID", "\"$catalogUnit\"")
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            manifestPlaceholders["storeAdMobAppId"] = liveAdMobAppId
+            buildConfigField("String", "STORE_NATIVE_AD_UNIT_ID", "\"$liveCatalogAdUnit\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -141,7 +152,8 @@ val generateTouchButtonResources = tasks.register("generateTouchButtonResources"
             (source["androidStreamVideo"] as Map<*, *>) +
             (source["androidQueueSelector"] as Map<*, *>) +
             (source["androidSetup"] as Map<*, *>) +
-            (source["androidBoosteroid"] as Map<*, *>)
+            (source["androidBoosteroid"] as Map<*, *>) +
+            (source["androidStoreAds"] as Map<*, *>)
         fun xml(value: String) = value.replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace("\"", "\\\"").replace("'", "\\'")
         val output = outputs.files.singleFile.resolve("values/touch_buttons.xml")
@@ -194,6 +206,7 @@ kotlin {
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.08.00"))
+    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
 
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.browser:browser:1.10.0")
@@ -220,6 +233,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.5.0")
     implementation("com.google.android.play:app-update:2.1.0")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation("com.google.android.gms:play-services-ads:25.5.0")
+    implementation("com.google.android.ump:user-messaging-platform:4.0.0")
+    implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.mlkit:language-id:17.0.6")
     // Includes upstream Android AudioRecord restart and stopped-transceiver stats crash fixes.
     implementation("io.github.webrtc-sdk:android:144.7559.14")

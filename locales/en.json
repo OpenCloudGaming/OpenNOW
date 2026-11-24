@@ -776,6 +776,11 @@
     "catalog_queue_mapping_missing": "No location mapping for this server",
     "catalog_queue_route_missing": "GeForce NOW did not provide a route for this location"
   },
+  "androidStoreAds": {
+    "store_ad_attribution": "Sponsored",
+    "store_ad_privacy_choices": "Ad privacy choices",
+    "store_ad_privacy_unavailable": "Could not open ad privacy choices. Try again."
+  },
   "androidBoosteroid": {
     "boosteroid_name": "Boosteroid",
     "login_service_nvidia": "NVIDIA",
