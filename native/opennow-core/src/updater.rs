@@ -570,7 +570,13 @@ fn state_json(state: &State) -> Value {
         "canInstall": matches!(state.status, "downloaded" | "error" | "available" | "not-available" | "failed" | "rolled-back") && state.downloaded.is_some(),
         "exitRequired": state.status == "awaiting-exit",
         "installVersion": state.transaction.as_ref().map(|transaction| &transaction.version),
-        "updateSource": if state.status == "unsupported" { "flatpak" } else { "github-releases" },
+        "updateSource": if state.status != "unsupported" {
+            "github-releases"
+        } else if cfg!(target_os = "freebsd") {
+            "freebsd-package"
+        } else {
+            "flatpak"
+        },
         "signaturePolicy": if embedded_update_key().is_ok() { "ed25519-pinned" } else { "unconfigured-fail-closed" }
     })
 }
@@ -1036,6 +1042,65 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use ed25519_dalek::{Signer as _, SigningKey};
 
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn freebsd_updates_are_external_even_with_cached_native_updates() {
+        let directory = tempfile::tempdir().unwrap();
+        let updates = directory.path().join("updates");
+        fs::create_dir(&updates).unwrap();
+        let persisted = updates.join("active-apply.json");
+        fs::write(&persisted, b"partial host update transaction").unwrap();
+        let updater = UpdaterService::new(directory.path()).unwrap();
+        let message = update_apply::external_update_message().unwrap();
+        assert!(message.contains("pkg upgrade"));
+        assert!(!updater.installation_pending());
+        for state in [updater.state(), updater.check(&json!({})).unwrap()] {
+            assert_eq!(state["status"], "unsupported");
+            assert_eq!(state["updateSource"], "freebsd-package");
+            assert_eq!(state["message"], message);
+            for capability in ["canCheck", "canDownload", "canInstall", "exitRequired"] {
+                assert_eq!(state[capability], false);
+            }
+            assert!(state["installVersion"].is_null());
+        }
+        updater.request_failed("A generic failure must not replace the update instruction");
+        assert_eq!(updater.state()["message"], message);
+        assert_eq!(updater.download(&|_| {}).unwrap_err(), message);
+        assert_eq!(
+            updater.install(&json!({"confirmed": true})).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            fs::read(&persisted).unwrap(),
+            b"partial host update transaction"
+        );
+        assert_eq!(fs::read_dir(&updates).unwrap().count(), 1);
+        assert_eq!(
+            update_apply::compatible_package_extension().unwrap_err(),
+            message
+        );
+        let package = directory.path().join("OpenNOW.txz");
+        let application = directory.path().join("OpenNOW");
+        assert_eq!(
+            update_apply::detect_install_kind(&application, &package).unwrap_err(),
+            message
+        );
+        let prepared = update_apply::PreparedUpdate {
+            plan_path: directory.path().join("plan.json"),
+            outcome_path: directory.path().join("outcome.json"),
+            version: "1.2.3".to_owned(),
+        };
+        assert_eq!(
+            update_apply::launch_prepared_update(&prepared).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            update_apply::run_helper(&prepared.plan_path).unwrap_err(),
+            message
+        );
+        assert!(!directory.path().join("apply.lock").exists());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn flatpak_updates_are_external_even_with_cached_native_updates() {
@@ -1178,6 +1243,7 @@ mod tests {
         prepared
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn a_live_native_installer_keeps_persisted_updates_blocking() {
         for status in [
@@ -1198,6 +1264,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn a_live_helper_keeps_native_recovery_blocking() {
         use fs2::FileExt;
@@ -1225,6 +1292,7 @@ mod tests {
         assert_eq!(updater.state()["canCheck"], true);
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn finished_native_installer_verification_failure_unblocks_and_clears_persistence() {
         let directory = tempfile::tempdir().unwrap();
@@ -1254,6 +1322,7 @@ mod tests {
     }
 
     #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn missing_native_installer_identity_requires_a_proven_reboot_before_recovery() {
         let directory = tempfile::tempdir().unwrap();
@@ -1286,6 +1355,7 @@ mod tests {
     }
 
     #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn reboot_warning_allows_sessions_but_blocks_update_operations_until_boot_change() {
         let directory = tempfile::tempdir().unwrap();
@@ -1317,6 +1387,7 @@ mod tests {
         assert!(!directory.path().join("updates/active-apply.json").exists());
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn persisted_apply_outcomes_require_a_live_helper_before_quit() {
         let directory = tempfile::tempdir().unwrap();
@@ -1365,6 +1436,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn terminal_helper_outcomes_are_reported_once_then_cleared() {
         for (outcome, expected) in [
@@ -1405,6 +1477,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn corrupt_update_status_does_not_prevent_core_startup() {
         let directory = tempfile::tempdir().unwrap();
@@ -1448,6 +1521,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn install_requires_consent_before_accessing_packages() {
         let path =
@@ -1466,6 +1540,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn overlapping_update_operations_are_rejected_without_mutating_state() {
         let path =
@@ -1826,6 +1901,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "freebsd"))]
     #[test]
     fn builds_without_a_pinned_key_cannot_download_updates() {
         if option_env!("OPENNOW_UPDATE_ED25519_PUBLIC_KEY")

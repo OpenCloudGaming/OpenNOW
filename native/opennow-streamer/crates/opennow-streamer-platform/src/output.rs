@@ -767,7 +767,8 @@ impl LinuxHardwareOutput {
             raw_input.set_enabled(
                 self.visible
                     && self.input_capture.focused
-                    && self.input_capture.relative_mouse_enabled(),
+                    && self.input_capture.relative_mouse_enabled()
+                    && self.input_capture.pressed_buttons.is_empty(),
             );
         }
         // NVST input must not sit behind Vulkan presentation. FIFO acquire can
@@ -1039,13 +1040,30 @@ impl SdlInputCapture {
         }
     }
 
+    /// Whether the Linux XInput2 thread is capturing right now. It only runs in relative mouse
+    /// mode, and not while SDL still owns a press: the click that switched to relative mode is
+    /// forwarded by SDL, so the thread stays out until that button is released and each event
+    /// has exactly one owner. See the `set_enabled` calls that use `pressed_buttons`.
+    fn raw_thread_capturing(&self) -> bool {
+        self.relative_mouse && self.pressed_buttons.is_empty()
+    }
+
     /// Whether an external raw-input thread currently owns mouse buttons and the wheel, so SDL
     /// must not report them too. The Windows raw input controller always does. The Linux
-    /// XInput2 thread only captures while relative mouse mode is on, so SDL keeps ownership in
-    /// absolute mode and whenever that thread did not start.
+    /// XInput2 thread only captures in relative mouse mode (see `raw_thread_capturing`), so SDL
+    /// keeps ownership in absolute mode and whenever that thread did not start.
     fn external_mouse_buttons_active(&self) -> bool {
         self.external_mouse_buttons
-            && (!cfg!(any(target_os = "linux", target_os = "freebsd")) || self.relative_mouse)
+            && (!cfg!(any(target_os = "linux", target_os = "freebsd"))
+                || self.raw_thread_capturing())
+    }
+
+    /// Same ownership rule for relative motion.
+    fn external_relative_motion_active(&self) -> bool {
+        self.relative_mouse
+            && self.external_relative_motion
+            && (!cfg!(any(target_os = "linux", target_os = "freebsd"))
+                || self.raw_thread_capturing())
     }
 
     pub(crate) fn enable_gamepads(&mut self, sdl: &sdl2::Sdl) {
@@ -1291,7 +1309,7 @@ impl SdlInputCapture {
                     });
                 }
             }
-            Event::MouseMotion { .. } if self.relative_mouse && self.external_relative_motion => {}
+            Event::MouseMotion { .. } if self.external_relative_motion_active() => {}
             Event::MouseMotion { xrel, yrel, .. } if self.relative_mouse => {
                 push_mouse_motion(&mut self.captured, xrel, yrel);
             }
@@ -1309,10 +1327,14 @@ impl SdlInputCapture {
                 // A button event proves this window owns foreground input even
                 // if SDL delivered FocusGained later in the same pump batch.
                 self.focused = true;
+                // Decide ownership before this click can switch to relative mode: the activating
+                // press is forwarded here (the raw thread is not capturing yet and drops it),
+                // and the thread takes over only after the button is released.
+                let raw_owns_buttons = self.external_mouse_buttons_active();
                 if self.cursor_state == RemoteCursorState::Hidden {
                     self.enable_relative_mouse(sdl, window);
                 }
-                if !self.external_mouse_buttons_active()
+                if !raw_owns_buttons
                     && let Some(button) = sdl_mouse_button(mouse_btn)
                     && self.pressed_buttons.insert(button)
                 {
@@ -1838,7 +1860,8 @@ impl SoftwareOutput {
             raw_input.set_enabled(
                 self.visible
                     && self.input_capture.focused
-                    && self.input_capture.relative_mouse_enabled(),
+                    && self.input_capture.relative_mouse_enabled()
+                    && self.input_capture.pressed_buttons.is_empty(),
             );
         }
         if self.paused || !self.visible {
@@ -3499,6 +3522,18 @@ mod tests {
         );
         capture.relative_mouse = true;
         assert!(capture.external_mouse_buttons_active());
+        assert!(capture.external_relative_motion_active());
+        // While SDL owns a press (the click that switched to relative mode) the Linux thread
+        // stays out, so SDL keeps the buttons, the wheel and the motion until it is released.
+        capture.pressed_buttons.insert(1);
+        assert_eq!(
+            capture.external_mouse_buttons_active(),
+            !cfg!(any(target_os = "linux", target_os = "freebsd"))
+        );
+        assert_eq!(
+            capture.external_relative_motion_active(),
+            !cfg!(any(target_os = "linux", target_os = "freebsd"))
+        );
         // Without an external owner SDL keeps the buttons in every mode.
         let mut capture =
             SdlInputCapture::new(true, false, false, StreamShortcutBindings::default());

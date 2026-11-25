@@ -42,6 +42,7 @@ fn windows_zip_is_selected_until_the_install_is_msi_registered() {
     assert!(WINDOWS_INSTALLER_REPLACEMENT_MESSAGE.contains("setup.exe"));
 }
 
+#[cfg(not(target_os = "freebsd"))]
 #[test]
 fn msi_registered_install_never_reaches_msiexec() {
     let directory = TempDir::new().unwrap();
@@ -815,6 +816,7 @@ fn interrupted_replacement_recovers_without_the_target_existing() {
     );
 }
 
+#[cfg(not(target_os = "freebsd"))]
 #[test]
 fn repeated_helper_invocation_preserves_cleaned_up_terminal_outcomes() {
     for status in [OutcomeStatus::Completed, OutcomeStatus::RolledBack] {

@@ -141,15 +141,9 @@ fn run_xinput_thread(
 
     let mut residual_x = 0.0_f64;
     let mut residual_y = 0.0_f64;
-    // While a button is held this X server may stop delivering raw events, so the
-    // pointer position is polled as a fallback source of motion (see
-    // reconcile_pressed_buttons).
-    let mut drag_last_position: Option<(f64, f64)> = None;
-    let mut drag_motion_seen = false;
-    // Pointer-position deltas are in screen pixels, raw motion in device counts; keep their
-    // sub-pixel remainders apart.
-    let mut drag_residual_x = 0.0_f64;
-    let mut drag_residual_y = 0.0_f64;
+    // While a button is held this X server may stop delivering raw events, so the pointer
+    // position is polled as a fallback source of motion (see reconcile_pressed_buttons).
+    let mut drag = DragFallback::default();
     // Some X servers (seen on FreeBSD) deliver RawButtonPress but not every
     // RawButtonRelease, which leaves a button stuck in the stream. Check the real
     // button state of the master pointer and synthesize any missing release.
@@ -207,16 +201,7 @@ fn run_xinput_thread(
         {
             unsafe {
                 reconcile_pressed_buttons(
-                    &state,
-                    &xlib,
-                    &xi,
-                    display,
-                    root,
-                    pointer_id,
-                    &mut drag_last_position,
-                    &mut drag_motion_seen,
-                    &mut drag_residual_x,
-                    &mut drag_residual_y,
+                    &state, &xlib, &xi, display, root, pointer_id, opcode, &mut drag,
                 )
             };
             continue;
@@ -239,7 +224,7 @@ fn run_xinput_thread(
                     xinput2::XI_RawButtonRelease => button_event = Some((raw.detail, false)),
                     _ => {
                         if process_raw_event(&state, raw, &mut residual_x, &mut residual_y) {
-                            drag_motion_seen = true;
+                            drag.motion_seen = true;
                         }
                     }
                 }
@@ -252,22 +237,22 @@ fn run_xinput_thread(
                 // data has been released.
                 let map = unsafe { pointer_button_map(&xlib, display) };
                 if state.enabled.load(Ordering::Acquire) {
+                    if !pressed {
+                        // Movement the pointer made that raw motion did not carry must be sent
+                        // before this release clears the drag tracking.
+                        unsafe {
+                            reconcile_pressed_buttons(
+                                &state, &xlib, &xi, display, root, pointer_id, opcode, &mut drag,
+                            )
+                        };
+                    }
                     process_button(&state, logical_button(&map, detail), pressed);
                 }
             }
         }
         unsafe {
             reconcile_pressed_buttons(
-                &state,
-                &xlib,
-                &xi,
-                display,
-                root,
-                pointer_id,
-                &mut drag_last_position,
-                &mut drag_motion_seen,
-                &mut drag_residual_x,
-                &mut drag_residual_y,
+                &state, &xlib, &xi, display, root, pointer_id, opcode, &mut drag,
             )
         };
         if x_revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
@@ -373,24 +358,24 @@ fn raw_motion(raw: &xinput2::XIRawEvent) -> (f64, f64) {
     result
 }
 
+/// Wheel clicks arrive as buttons 4 and 5 (vertical) and 6 and 7 (horizontal), press only.
+fn wheel_delta(detail: libc::c_int) -> Option<(i16, i16)> {
+    match detail {
+        4 => Some((0, 120)),
+        5 => Some((0, -120)),
+        6 => Some((-120, 0)),
+        7 => Some((120, 0)),
+        _ => None,
+    }
+}
+
 fn process_button(state: &XInputState, detail: libc::c_int, pressed: bool) {
     if pressed {
-        match detail {
-            4 => {
-                state.captured_input.push(CapturedInput::MouseWheel {
-                    delta_x: 0,
-                    delta_y: 120,
-                });
-                return;
-            }
-            5 => {
-                state.captured_input.push(CapturedInput::MouseWheel {
-                    delta_x: 0,
-                    delta_y: -120,
-                });
-                return;
-            }
-            _ => {}
+        if let Some((delta_x, delta_y)) = wheel_delta(detail) {
+            state
+                .captured_input
+                .push(CapturedInput::MouseWheel { delta_x, delta_y });
+            return;
         }
     } else if matches!(detail, 4..=7) {
         return;
@@ -500,6 +485,88 @@ unsafe fn query_pointer(
     Some((down, root_x, root_y))
 }
 
+/// State of the pointer-position stand-in for raw events while a button is held.
+#[derive(Default)]
+struct DragFallback {
+    last_position: Option<(f64, f64)>,
+    /// Raw motion was handled since the last sample, so it already carries the movement.
+    motion_seen: bool,
+    // Pointer-position deltas are in screen pixels, raw motion in device counts; the sub-pixel
+    // remainders are kept apart from the raw path's.
+    residual_x: f64,
+    residual_y: f64,
+}
+
+/// Where the movement between two pointer samples comes from.
+#[derive(Debug, PartialEq)]
+enum FallbackMotion {
+    /// Raw motion was already handled for it.
+    RawCarried,
+    /// Raw motion for it is waiting in Xlib's queue and will be handled next.
+    RawQueued,
+    /// Nothing raw covers it: send the pointer position change as a delta.
+    Pointer,
+    /// First sample of a drag: nothing to compare against yet.
+    Start,
+}
+
+fn fallback_motion(motion_seen: bool, raw_motion_queued: bool, tracking: bool) -> FallbackMotion {
+    if motion_seen {
+        FallbackMotion::RawCarried
+    } else if raw_motion_queued {
+        FallbackMotion::RawQueued
+    } else if tracking {
+        FallbackMotion::Pointer
+    } else {
+        FallbackMotion::Start
+    }
+}
+
+struct RawMotionScan {
+    opcode: libc::c_int,
+    found: bool,
+}
+
+/// XCheckIfEvent predicate that only looks: it never claims an event, so the queue is untouched.
+unsafe extern "C" fn scan_for_raw_motion(
+    _display: *mut xlib::Display,
+    event: *mut xlib::XEvent,
+    arg: *mut libc::c_char,
+) -> libc::c_int {
+    let scan = unsafe { &mut *arg.cast::<RawMotionScan>() };
+    let event = unsafe { &*event };
+    if event.get_type() == xlib::GenericEvent {
+        let cookie = unsafe { &event.generic_event_cookie };
+        if cookie.extension == scan.opcode && cookie.evtype == xinput2::XI_RawMotion {
+            scan.found = true;
+        }
+    }
+    0
+}
+
+/// Whether raw motion is waiting in Xlib's event queue. Other queued events (a button release,
+/// say) say nothing about whether the sampled movement will be reported, so only motion counts.
+unsafe fn raw_motion_queued(
+    xlib: &xlib::Xlib,
+    display: *mut xlib::Display,
+    opcode: libc::c_int,
+) -> bool {
+    let mut scan = RawMotionScan {
+        opcode,
+        found: false,
+    };
+    let mut unused = xlib::XEvent { pad: [0; 24] };
+    unsafe {
+        (xlib.XCheckIfEvent)(
+            display,
+            &mut unused,
+            Some(scan_for_raw_motion),
+            (&raw mut scan).cast(),
+        )
+    };
+    scan.found
+}
+
 /// Some X servers (seen on FreeBSD) stop delivering raw events while a button is held:
 /// releases and further presses never arrive and the pointer appears frozen in the stream.
 /// While a button is believed held, ask the server for the real button state, send any
@@ -513,10 +580,8 @@ unsafe fn reconcile_pressed_buttons(
     display: *mut xlib::Display,
     root: xlib::Window,
     pointer_id: libc::c_int,
-    last_position: &mut Option<(f64, f64)>,
-    motion_seen: &mut bool,
-    residual_x: &mut f64,
-    residual_y: &mut f64,
+    opcode: libc::c_int,
+    fallback: &mut DragFallback,
 ) {
     if state
         .pressed_buttons
@@ -524,8 +589,7 @@ unsafe fn reconcile_pressed_buttons(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_empty()
     {
-        *last_position = None;
-        *motion_seen = false;
+        *fallback = DragFallback::default();
         return;
     }
     let Some((down, x, y)) = (unsafe { query_pointer(xlib, xi, display, root, pointer_id) })
@@ -541,46 +605,56 @@ unsafe fn reconcile_pressed_buttons(
     }
     // The query above is a round trip, so raw motion for the movement it sampled may be sitting
     // unprocessed in Xlib's queue. Leave that movement to those events: they will set
-    // motion_seen, and otherwise the next sample sends it.
-    let raw_pending = unsafe { (xlib.XPending)(display) } > 0;
-    // Movement first, so it stays ordered before any button change sent below. The position
-    // delta is pointer-accelerated; it is only a stand-in while raw motion is not delivered.
-    if *motion_seen {
-        *motion_seen = false;
-        *last_position = Some((x, y));
-    } else if raw_pending {
-        if last_position.is_none() {
-            *last_position = Some((x, y));
+    // motion_seen, and otherwise the next sample sends it. Movement is sent first, so it stays
+    // ordered before any button change below. The position delta is pointer-accelerated; it is
+    // only a stand-in while raw motion is not delivered.
+    let queued = unsafe { raw_motion_queued(xlib, display, opcode) };
+    match fallback_motion(
+        fallback.motion_seen,
+        queued,
+        fallback.last_position.is_some(),
+    ) {
+        FallbackMotion::RawCarried => {
+            fallback.motion_seen = false;
+            fallback.last_position = Some((x, y));
         }
-    } else if let Some((last_x, last_y)) = *last_position {
-        *residual_x += x - last_x;
-        *residual_y += y - last_y;
-        let delta_x = residual_x.trunc() as i32;
-        let delta_y = residual_y.trunc() as i32;
-        *residual_x -= f64::from(delta_x);
-        *residual_y -= f64::from(delta_y);
-        push_mouse_delta(&state.captured_input, delta_x, delta_y);
-        // The pointer position stops at the screen edge but relative mouse look must not:
-        // when it gets close, put the pointer back in the middle of the screen.
-        let screen = unsafe { (xlib.XDefaultScreen)(display) };
-        let width = f64::from(unsafe { (xlib.XDisplayWidth)(display, screen) });
-        let height = f64::from(unsafe { (xlib.XDisplayHeight)(display, screen) });
-        const EDGE_MARGIN: f64 = 64.0;
-        if x < EDGE_MARGIN || y < EDGE_MARGIN || x > width - EDGE_MARGIN || y > height - EDGE_MARGIN
-        {
-            let (center_x, center_y) = (width / 2.0, height / 2.0);
-            unsafe {
-                (xi.XIWarpPointer)(
-                    display, pointer_id, 0, root, 0.0, 0.0, 0, 0, center_x, center_y,
-                );
-                (xlib.XFlush)(display);
+        FallbackMotion::RawQueued | FallbackMotion::Start => {
+            if fallback.last_position.is_none() {
+                fallback.last_position = Some((x, y));
             }
-            *last_position = Some((center_x, center_y));
-        } else {
-            *last_position = Some((x, y));
         }
-    } else {
-        *last_position = Some((x, y));
+        FallbackMotion::Pointer => {
+            let (last_x, last_y) = fallback.last_position.unwrap_or((x, y));
+            fallback.residual_x += x - last_x;
+            fallback.residual_y += y - last_y;
+            let delta_x = fallback.residual_x.trunc() as i32;
+            let delta_y = fallback.residual_y.trunc() as i32;
+            fallback.residual_x -= f64::from(delta_x);
+            fallback.residual_y -= f64::from(delta_y);
+            push_mouse_delta(&state.captured_input, delta_x, delta_y);
+            // The pointer position stops at the screen edge but relative mouse look must not:
+            // when it gets close, put the pointer back in the middle of the screen.
+            let screen = unsafe { (xlib.XDefaultScreen)(display) };
+            let width = f64::from(unsafe { (xlib.XDisplayWidth)(display, screen) });
+            let height = f64::from(unsafe { (xlib.XDisplayHeight)(display, screen) });
+            const EDGE_MARGIN: f64 = 64.0;
+            if x < EDGE_MARGIN
+                || y < EDGE_MARGIN
+                || x > width - EDGE_MARGIN
+                || y > height - EDGE_MARGIN
+            {
+                let (center_x, center_y) = (width / 2.0, height / 2.0);
+                unsafe {
+                    (xi.XIWarpPointer)(
+                        display, pointer_id, 0, root, 0.0, 0.0, 0, 0, center_x, center_y,
+                    );
+                    (xlib.XFlush)(display);
+                }
+                fallback.last_position = Some((center_x, center_y));
+            } else {
+                fallback.last_position = Some((x, y));
+            }
+        }
     }
     // A second button pressed while the first is held produces no raw press either.
     for button in down.iter().copied() {
@@ -635,6 +709,29 @@ fn push_mouse_delta(queue: &CapturedInputQueue, mut delta_x: i32, mut delta_y: i
 mod tests {
     use super::{logical_button, push_mouse_delta};
     use crate::media::{CapturedInput, CapturedInputQueue};
+
+    #[test]
+    fn wheel_buttons_cover_both_axes() {
+        use super::wheel_delta;
+        assert_eq!(wheel_delta(4), Some((0, 120)));
+        assert_eq!(wheel_delta(5), Some((0, -120)));
+        assert_eq!(wheel_delta(6), Some((-120, 0)));
+        assert_eq!(wheel_delta(7), Some((120, 0)));
+        assert_eq!(wheel_delta(1), None);
+        assert_eq!(wheel_delta(8), None);
+    }
+
+    #[test]
+    fn fallback_motion_only_defers_to_raw_motion() {
+        use super::{FallbackMotion, fallback_motion};
+        // Movement raw motion already carried, or that raw motion will carry, is never sent as
+        // a pointer delta; anything else is, so a pending button event cannot swallow it.
+        assert_eq!(fallback_motion(true, false, true), FallbackMotion::RawCarried);
+        assert_eq!(fallback_motion(true, true, true), FallbackMotion::RawCarried);
+        assert_eq!(fallback_motion(false, true, true), FallbackMotion::RawQueued);
+        assert_eq!(fallback_motion(false, false, true), FallbackMotion::Pointer);
+        assert_eq!(fallback_motion(false, false, false), FallbackMotion::Start);
+    }
 
     #[test]
     fn raw_buttons_are_converted_to_the_servers_logical_buttons() {

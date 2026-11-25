@@ -923,7 +923,9 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-#[cfg(test)]
+// These tests pin a pipe size with F_SETPIPE_SZ and stub an ALSA suspend with ESTRPIPE, both
+// Linux-only libc items.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use opus::{Application, Channels, Encoder as OpusEncoder};

@@ -1477,6 +1477,11 @@ in `message`. The core does not recover native update transactions inside the
 sandbox, and the native update helper rejects execution there. Flatpak owns
 package replacement and updates.
 
+On FreeBSD the updater is externally managed in the same way, with
+`updateSource: "freebsd-package"`. `message` tells the user to update through
+`pkg upgrade` or by rebuilding the port, and the native update helper rejects
+execution. Releases publish no FreeBSD package, so no update asset is selected.
+
 The additive updater state fields `exitRequired` and `installVersion` describe
 the prepared installation, separately from `availableVersion` and
 `downloadedVersion`. The shell may quit for an update only after a confirmed
