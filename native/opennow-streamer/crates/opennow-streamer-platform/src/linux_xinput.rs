@@ -426,15 +426,25 @@ fn logical_button(map: &[u8], detail: libc::c_int) -> libc::c_int {
         .map_or(detail, |logical| libc::c_int::from(*logical))
 }
 
-/// Reads the master pointer's pressed buttons (logical button numbers mapped to the stream's
-/// button numbers) and its root-window position.
+/// What one XIQueryPointer call reports.
+struct PointerSample {
+    /// Pressed buttons (logical button numbers mapped to the stream's button numbers).
+    buttons: HashSet<u8>,
+    /// Root-window position.
+    x: f64,
+    y: f64,
+    /// The top-level window under the pointer (0 over the root window).
+    child: xlib::Window,
+}
+
+/// Reads the master pointer's pressed buttons and position.
 unsafe fn query_pointer(
     xlib: &xlib::Xlib,
     xi: &xinput2::XInput2,
     display: *mut xlib::Display,
     root: xlib::Window,
     pointer_id: libc::c_int,
-) -> Option<(HashSet<u8>, f64, f64)> {
+) -> Option<PointerSample> {
     let mut root_return = 0;
     let mut child_return = 0;
     let (mut root_x, mut root_y, mut win_x, mut win_y) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
@@ -482,7 +492,99 @@ unsafe fn query_pointer(
         }
         unsafe { (xlib.XFree)(buttons.mask.cast()) };
     }
-    Some((down, root_x, root_y))
+    Some(PointerSample {
+        buttons: down,
+        x: root_x,
+        y: root_y,
+        child: child_return,
+    })
+}
+
+/// Root-relative bounds the pointer can move in while a drag is captured.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptureBounds {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl CaptureBounds {
+    const EDGE_MARGIN: f64 = 64.0;
+
+    /// The bounds of `window` (a child of the root) clipped to the screen, or the whole screen
+    /// when the window is unknown or too small to recenter inside.
+    fn of_window(window: Option<(f64, f64, f64, f64)>, screen_width: f64, screen_height: f64) -> Self {
+        let screen = Self {
+            left: 0.0,
+            top: 0.0,
+            right: screen_width,
+            bottom: screen_height,
+        };
+        let Some((x, y, width, height)) = window else {
+            return screen;
+        };
+        let bounds = Self {
+            left: x.max(0.0),
+            top: y.max(0.0),
+            right: (x + width).min(screen_width),
+            bottom: (y + height).min(screen_height),
+        };
+        if bounds.right - bounds.left < 4.0 * Self::EDGE_MARGIN
+            || bounds.bottom - bounds.top < 4.0 * Self::EDGE_MARGIN
+        {
+            screen
+        } else {
+            bounds
+        }
+    }
+
+    fn center(&self) -> (f64, f64) {
+        ((self.left + self.right) / 2.0, (self.top + self.bottom) / 2.0)
+    }
+
+    /// Whether the pointer is close enough to an edge that further movement would be clipped.
+    fn near_edge(&self, x: f64, y: f64) -> bool {
+        x < self.left + Self::EDGE_MARGIN
+            || y < self.top + Self::EDGE_MARGIN
+            || x > self.right - Self::EDGE_MARGIN
+            || y > self.bottom - Self::EDGE_MARGIN
+    }
+}
+
+/// The bounds the pointer is captured in: the top-level window under it (the capture window,
+/// which also confines the pointer when SDL grabs it), clipped to the screen.
+unsafe fn capture_bounds(
+    xlib: &xlib::Xlib,
+    display: *mut xlib::Display,
+    child: xlib::Window,
+) -> CaptureBounds {
+    let screen = unsafe { (xlib.XDefaultScreen)(display) };
+    let screen_width = f64::from(unsafe { (xlib.XDisplayWidth)(display, screen) });
+    let screen_height = f64::from(unsafe { (xlib.XDisplayHeight)(display, screen) });
+    let mut geometry = None;
+    if child != 0 {
+        let mut root_return = 0;
+        let (mut x, mut y) = (0, 0);
+        let (mut width, mut height, mut border, mut depth) = (0_u32, 0_u32, 0_u32, 0_u32);
+        if unsafe {
+            (xlib.XGetGeometry)(
+                display,
+                child,
+                &mut root_return,
+                &mut x,
+                &mut y,
+                &mut width,
+                &mut height,
+                &mut border,
+                &mut depth,
+            )
+        } != 0
+        {
+            geometry = Some((f64::from(x), f64::from(y), f64::from(width), f64::from(height)));
+        }
+    }
+    CaptureBounds::of_window(geometry, screen_width, screen_height)
 }
 
 /// State of the pointer-position stand-in for raw events while a button is held.
@@ -592,10 +694,10 @@ unsafe fn reconcile_pressed_buttons(
         *fallback = DragFallback::default();
         return;
     }
-    let Some((down, x, y)) = (unsafe { query_pointer(xlib, xi, display, root, pointer_id) })
-    else {
+    let Some(sample) = (unsafe { query_pointer(xlib, xi, display, root, pointer_id) }) else {
         return;
     };
+    let (down, x, y) = (sample.buttons, sample.x, sample.y);
     let mut pressed_buttons = state
         .pressed_buttons
         .lock()
@@ -615,6 +717,11 @@ unsafe fn reconcile_pressed_buttons(
         fallback.last_position.is_some(),
     ) {
         FallbackMotion::RawCarried => {
+            // Raw events carry no pointer coordinates, so the pointer movement made between the
+            // last raw event and this sample cannot be established and the position is simply
+            // taken as the new baseline. Handing over from raw motion to the pointer position
+            // loses at most one sampling interval (about 4 ms) of movement; subtracting raw
+            // deltas from the accelerated pointer movement would not be valid.
             fallback.motion_seen = false;
             fallback.last_position = Some((x, y));
         }
@@ -632,25 +739,26 @@ unsafe fn reconcile_pressed_buttons(
             fallback.residual_x -= f64::from(delta_x);
             fallback.residual_y -= f64::from(delta_y);
             push_mouse_delta(&state.captured_input, delta_x, delta_y);
-            // The pointer position stops at the screen edge but relative mouse look must not:
-            // when it gets close, put the pointer back in the middle of the screen.
-            let screen = unsafe { (xlib.XDefaultScreen)(display) };
-            let width = f64::from(unsafe { (xlib.XDisplayWidth)(display, screen) });
-            let height = f64::from(unsafe { (xlib.XDisplayHeight)(display, screen) });
-            const EDGE_MARGIN: f64 = 64.0;
-            if x < EDGE_MARGIN
-                || y < EDGE_MARGIN
-                || x > width - EDGE_MARGIN
-                || y > height - EDGE_MARGIN
-            {
-                let (center_x, center_y) = (width / 2.0, height / 2.0);
+            // The pointer position stops at the edge of the area it can move in but relative
+            // mouse look must not: when it gets close, put the pointer back in the middle of
+            // that area. This is the capture window, not the screen, because a grabbed pointer
+            // is confined to its window and a warp outside it would be clipped.
+            let bounds = unsafe { capture_bounds(xlib, display, sample.child) };
+            if bounds.near_edge(x, y) {
+                let (center_x, center_y) = bounds.center();
                 unsafe {
                     (xi.XIWarpPointer)(
                         display, pointer_id, 0, root, 0.0, 0.0, 0, 0, center_x, center_y,
                     );
                     (xlib.XFlush)(display);
                 }
-                fallback.last_position = Some((center_x, center_y));
+                // Read back where the warp actually landed, so a clipped warp is never taken
+                // for user movement on the next sample.
+                fallback.last_position =
+                    match unsafe { query_pointer(xlib, xi, display, root, pointer_id) } {
+                        Some(landed) => Some((landed.x, landed.y)),
+                        None => Some((center_x, center_y)),
+                    };
             } else {
                 fallback.last_position = Some((x, y));
             }
@@ -709,6 +817,29 @@ fn push_mouse_delta(queue: &CapturedInputQueue, mut delta_x: i32, mut delta_y: i
 mod tests {
     use super::{logical_button, push_mouse_delta};
     use crate::media::{CapturedInput, CapturedInputQueue};
+
+    #[test]
+    fn recentering_uses_the_capture_window_not_the_screen() {
+        use super::CaptureBounds;
+        // A 800x600 window in the corner of a 1920x1080 screen.
+        let window = CaptureBounds::of_window(Some((100.0, 50.0, 800.0, 600.0)), 1920.0, 1080.0);
+        assert_eq!(window.center(), (500.0, 350.0));
+        // Well inside the window but nowhere near a screen edge: still not an edge.
+        assert!(!window.near_edge(500.0, 350.0));
+        // Close to the window edge, far from every screen edge: recenter.
+        assert!(window.near_edge(130.0, 350.0));
+        assert!(window.near_edge(500.0, 620.0));
+        // A window running off the screen is clipped to it.
+        let clipped = CaptureBounds::of_window(Some((1500.0, 700.0, 800.0, 600.0)), 1920.0, 1080.0);
+        assert_eq!((clipped.right, clipped.bottom), (1920.0, 1080.0));
+        // Unknown or tiny windows fall back to the screen.
+        let screen = CaptureBounds::of_window(None, 1920.0, 1080.0);
+        assert_eq!(screen.center(), (960.0, 540.0));
+        assert_eq!(
+            CaptureBounds::of_window(Some((0.0, 0.0, 100.0, 100.0)), 1920.0, 1080.0),
+            screen
+        );
+    }
 
     #[test]
     fn wheel_buttons_cover_both_axes() {

@@ -662,9 +662,87 @@ struct PipeWireSink {
     silence: Vec<u8>,
     lead: Vec<f32>,
     channels: usize,
+    playout: PlayoutClock,
     command: Command,
     process: Option<PipeWireProcess>,
     last_restart: Option<Instant>,
+}
+
+/// Estimates how much audio is queued in pw-cat's input pipe from what was written and when,
+/// assuming pw-cat plays in real time. FIONREAD on the write end of a pipe only reports the
+/// queue on Linux: on FreeBSD pipes are bidirectional and the write end sees data readable the
+/// other way, so it always reads 0 there.
+struct PlayoutClock {
+    samples_per_second: f64,
+    /// When everything written so far will have been played.
+    ends_at: Option<Instant>,
+}
+
+impl PlayoutClock {
+    fn new(sample_rate: u32, channels: usize) -> Self {
+        Self {
+            samples_per_second: f64::from(sample_rate) * channels as f64,
+            ends_at: None,
+        }
+    }
+
+    /// Samples written but not yet played at `now`.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    fn queued_samples(&self, now: Instant) -> usize {
+        self.ends_at.map_or(0, |ends_at| {
+            (ends_at.saturating_duration_since(now).as_secs_f64() * self.samples_per_second)
+                as usize
+        })
+    }
+
+    /// Accounts for `samples` written at `now`. Playback continues from the end of the queue, or
+    /// from `now` when the queue had already run dry.
+    fn record_written(&mut self, now: Instant, samples: usize) {
+        let start = self.ends_at.filter(|ends_at| *ends_at > now).unwrap_or(now);
+        self.ends_at =
+            Some(start + Duration::from_secs_f64(samples as f64 / self.samples_per_second));
+    }
+
+    fn reset(&mut self) {
+        self.ends_at = None;
+    }
+}
+
+/// How many samples of lead to write before the next PCM: only when the queue has dropped low
+/// enough that it needs priming, never just because the queue could not be measured.
+fn lead_samples_to_prime(lead_len: usize, queued_samples: usize, channels: usize) -> usize {
+    if queued_samples < lead_len / 4 {
+        (lead_len - queued_samples)
+            .next_multiple_of(channels)
+            .min(lead_len)
+    } else {
+        0
+    }
+}
+
+/// Samples written to pw-cat that it has not read yet.
+fn pipewire_queued_samples(process: &PipeWireProcess, playout: &PlayoutClock) -> Result<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = playout;
+        let mut queued: c_int = 0;
+        if unsafe {
+            libc::ioctl(
+                std::os::fd::AsRawFd::as_raw_fd(&process.stdin),
+                libc::FIONREAD,
+                &mut queued,
+            )
+        } < 0
+        {
+            return Err(Error::io(Subsystem::PipeWire, io::Error::last_os_error()));
+        }
+        Ok(queued as usize / mem::size_of::<f32>())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = process;
+        Ok(playout.queued_samples(Instant::now()))
+    }
 }
 
 struct PipeWireProcess {
@@ -740,6 +818,7 @@ impl PipeWireSink {
                     / 1000
             ],
             channels: config.channels as usize,
+            playout: PlayoutClock::new(config.sample_rate, config.channels as usize),
         })
     }
 }
@@ -800,26 +879,17 @@ impl AudioSink for PipeWireSink {
                 reason: format!("pw-cat exited with {status}"),
             });
         }
-        let mut queued: c_int = 0;
-        if unsafe {
-            libc::ioctl(
-                std::os::fd::AsRawFd::as_raw_fd(&process.stdin),
-                libc::FIONREAD,
-                &mut queued,
-            )
-        } < 0
-        {
-            return Err(Error::io(Subsystem::PipeWire, io::Error::last_os_error()));
-        }
-        let queued_samples = queued as usize / mem::size_of::<f32>();
-        if queued_samples < self.lead.len() / 4 {
+        let queued_samples = pipewire_queued_samples(process, &self.playout)?;
+        let prime = lead_samples_to_prime(self.lead.len(), queued_samples, self.channels);
+        if prime > 0 {
             write_pipewire_pcm(
                 &mut process.stdin,
-                &self.lead[..(self.lead.len() - queued_samples).next_multiple_of(self.channels)],
+                &self.lead[..prime],
                 &self.silence,
                 &self.muted,
                 cancelled,
             )?;
+            self.playout.record_written(Instant::now(), prime);
         }
         write_pipewire_pcm(
             &mut process.stdin,
@@ -827,7 +897,9 @@ impl AudioSink for PipeWireSink {
             &self.silence,
             &self.muted,
             cancelled,
-        )
+        )?;
+        self.playout.record_written(Instant::now(), pcm.len());
+        Ok(())
     }
 
     fn restart(&mut self) -> Result<bool> {
@@ -843,6 +915,7 @@ impl AudioSink for PipeWireSink {
         }
         self.last_restart = Some(Instant::now());
         self.process = Some(PipeWireProcess::spawn(&mut self.command)?);
+        self.playout.reset();
         Ok(true)
     }
 }
@@ -923,13 +996,21 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-// These tests pin a pipe size with F_SETPIPE_SZ and stub an ALSA suspend with ESTRPIPE, both
-// Linux-only libc items.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use opus::{Application, Channels, Encoder as OpusEncoder};
 
+    // ESTRPIPE is a Linux-only libc constant; alsa-lib's non-Linux compatibility header (and the
+    // production code above) uses ESPIPE for it on FreeBSD.
+    #[cfg(not(target_os = "freebsd"))]
+    const TEST_ESTRPIPE: libc::c_int = libc::ESTRPIPE;
+    #[cfg(target_os = "freebsd")]
+    const TEST_ESTRPIPE: libc::c_int = libc::ESPIPE;
+
+    // The pipe-size helpers shrink the pipe with F_SETPIPE_SZ, which only Linux has, so that a
+    // stalled child backs writes up quickly; the tests built on them are Linux-only too.
+    #[cfg(target_os = "linux")]
     fn pipewire_test_command(script: &str) -> Command {
         let mut command = Command::new("/bin/sh");
         command
@@ -940,6 +1021,7 @@ mod tests {
         command
     }
 
+    #[cfg(target_os = "linux")]
     fn pipewire_test_sink(script: &str) -> PipeWireSink {
         let mut command = pipewire_test_command(script);
         let process = PipeWireProcess::spawn(&mut command).expect("audio child");
@@ -960,6 +1042,7 @@ mod tests {
             silence: vec![0; 46_080],
             lead: Vec::new(),
             channels: 2,
+            playout: PlayoutClock::new(48_000, 2),
         }
     }
 
@@ -993,7 +1076,7 @@ mod tests {
             _: *const c_void,
             _: libc::c_ulong,
         ) -> libc::c_long {
-            -libc::ESTRPIPE as libc::c_long
+            -TEST_ESTRPIPE as libc::c_long
         }
 
         unsafe extern "C" fn recover(_: *mut c_void, _: c_int, _: c_int) -> c_int {
@@ -1025,6 +1108,7 @@ mod tests {
         assert_eq!(RECOVER_CALLS.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_stalled_child_is_reaped_before_replacement_and_on_shutdown() {
         let mut sink = pipewire_test_sink("exec sleep 30");
@@ -1047,6 +1131,7 @@ mod tests {
         assert_child_reaped(new_pid);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_child_exit_is_detected_and_the_same_command_can_restart() {
         let mut sink = pipewire_test_sink("exec cat > /dev/null");
@@ -1063,6 +1148,7 @@ mod tests {
             .expect("recovered output");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_failed_restart_leaves_no_old_child() {
         let mut sink = pipewire_test_sink("exec sleep 30");
@@ -1077,6 +1163,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_persistent_stall_cannot_respawn_continuously() {
         let mut sink = pipewire_test_sink("exec sleep 30");
@@ -1100,6 +1187,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_stalled_child_observes_shutdown_cancellation() {
         let mut sink = pipewire_test_sink("exec sleep 30");
@@ -1504,6 +1592,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pipewire_output_keeps_a_lead_ahead_of_the_reader() {
         let mut sink = pipewire_test_sink("sleep 5");
@@ -1522,6 +1611,55 @@ mod tests {
         sink.write(&[0.25; 4], &|| false)
             .expect("PCM with lead in place");
         assert_eq!(queued(&sink), 24);
+    }
+
+    #[test]
+    fn playout_clock_tracks_what_pw_cat_has_not_played_yet() {
+        let start = Instant::now();
+        // 1000 frames per second, two channels.
+        let mut clock = PlayoutClock::new(1_000, 2);
+        assert_eq!(clock.queued_samples(start), 0);
+        clock.record_written(start, 2_000);
+        assert_eq!(clock.queued_samples(start), 2_000);
+        assert_eq!(clock.queued_samples(start + Duration::from_millis(400)), 1_200);
+        // Writes queue behind what is already playing.
+        clock.record_written(start + Duration::from_millis(400), 2_000);
+        assert_eq!(clock.queued_samples(start + Duration::from_millis(400)), 3_200);
+        // Once drained the queue is empty, and the next write starts from that moment.
+        assert_eq!(clock.queued_samples(start + Duration::from_secs(5)), 0);
+        clock.record_written(start + Duration::from_secs(5), 1_000);
+        assert_eq!(clock.queued_samples(start + Duration::from_secs(5)), 1_000);
+        clock.reset();
+        assert_eq!(clock.queued_samples(start + Duration::from_secs(5)), 0);
+    }
+
+    #[test]
+    fn lead_is_written_only_when_the_queue_needs_priming() {
+        // 40 ms of lead at 48 kHz stereo.
+        let lead = 48_000 * 2 * PIPEWIRE_LEAD_MS / 1000;
+        assert_eq!(lead_samples_to_prime(lead, 0, 2), lead);
+        assert_eq!(lead_samples_to_prime(lead, lead / 8, 2), lead - lead / 8);
+        assert_eq!(lead_samples_to_prime(lead, lead / 4, 2), 0);
+        assert_eq!(lead_samples_to_prime(lead, lead, 2), 0);
+        assert_eq!(lead_samples_to_prime(0, 0, 2), 0);
+
+        // A stream of 10 ms writes on a clock that cannot see the pipe (the FreeBSD case) primes
+        // once, then not again while the queue is held at the lead: a zero estimate on every
+        // write would prepend the lead every time.
+        let start = Instant::now();
+        let mut clock = PlayoutClock::new(48_000, 2);
+        let packet = 48_000 * 2 / 100;
+        let mut primed = 0;
+        for index in 0..20_u32 {
+            let now = start + Duration::from_millis(10) * index;
+            let prime = lead_samples_to_prime(lead, clock.queued_samples(now), 2);
+            if prime > 0 {
+                primed += 1;
+                clock.record_written(now, prime);
+            }
+            clock.record_written(now, packet);
+        }
+        assert_eq!(primed, 1);
     }
 
     #[test]
