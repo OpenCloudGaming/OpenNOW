@@ -4429,7 +4429,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             selectedVariantIndex = 0,
             variants = listOf(GameVariant(id = id, store = "Unknown")),
         )
-        play(game)
+        // Optional one-session video settings from the launcher (see ExternalLaunchSettings).
+        // They pass the same membership checks as saved settings, so they never exceed the plan.
+        val sessionSettings = ExternalLaunchSettings.fromIntent(intent, state.value.settings.stream)?.let { requested ->
+            val snapshot = state.value
+            requested.eligibleForAndroidLaunch(
+                subscriptionInfo = snapshot.subscriptionInfo,
+                fallbackMembershipTier = snapshot.authSession?.user?.membershipTier,
+                androidTvProfile = androidTvProfile,
+            )
+        }
+        play(game, streamSettingsOverride = sessionSettings)
     }
 
     private fun extractExternalLaunchId(intent: Intent): String? {
