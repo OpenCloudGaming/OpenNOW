@@ -48,7 +48,10 @@ opus = "0.3.1"
 # `Texture<'_>` inside the `unsafe_textures` block, where `Texture` has no
 # lifetime, so every revision from there through master fails to build with the
 # feature we rely on. Drop this fork once upstream repairs `unsafe_textures`.
-sdl2 = { git = "https://github.com/zortos293/rust-sdl2.git", rev = "8c812c4a0087eaf664a11a844634200cebe9afb8", default-features = false, features = ["bundled", "raw-window-handle", "static-link", "unsafe_textures"] }
+#
+# `bundled` and `static-link` (Windows, macOS, Linux) or `use-pkgconfig` (FreeBSD) are
+# selected per target by the platform crate, because FreeBSD links the system SDL2.
+sdl2 = { git = "https://github.com/zortos293/rust-sdl2.git", rev = "8c812c4a0087eaf664a11a844634200cebe9afb8", default-features = false, features = ["raw-window-handle", "unsafe_textures"] }
 scuffle-av1 = "0.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
