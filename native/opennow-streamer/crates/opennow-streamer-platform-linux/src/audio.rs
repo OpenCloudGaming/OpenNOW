@@ -888,8 +888,8 @@ impl AudioSink for PipeWireSink {
                 &self.silence,
                 &self.muted,
                 cancelled,
+                &mut self.playout,
             )?;
-            self.playout.record_written(Instant::now(), prime);
         }
         write_pipewire_pcm(
             &mut process.stdin,
@@ -897,8 +897,8 @@ impl AudioSink for PipeWireSink {
             &self.silence,
             &self.muted,
             cancelled,
+            &mut self.playout,
         )?;
-        self.playout.record_written(Instant::now(), pcm.len());
         Ok(())
     }
 
@@ -920,15 +920,20 @@ impl AudioSink for PipeWireSink {
     }
 }
 
+/// Writes `pcm` to pw-cat, recording each sample with `playout` as soon as the pipe accepts it.
+/// The loop can wait for the reader to drain the pipe, so counting the whole buffer once it
+/// returns would include audio that has already been played.
 fn write_pipewire_pcm(
     writer: &mut impl Write,
     pcm: &[f32],
     silence: &[u8],
     muted: &std::sync::atomic::AtomicBool,
     cancelled: &dyn Fn() -> bool,
+    playout: &mut PlayoutClock,
 ) -> Result<()> {
     let bytes = unsafe { slice::from_raw_parts(pcm.as_ptr().cast::<u8>(), mem::size_of_val(pcm)) };
     let mut offset = 0;
+    let mut recorded_samples = 0;
     let mut sample_muted = false;
     let deadline = Instant::now() + AUDIO_WRITE_TIMEOUT;
     while offset < bytes.len() {
@@ -961,7 +966,15 @@ fn write_pipewire_pcm(
                     reason: "pw-cat closed its input".to_owned(),
                 });
             }
-            Ok(written) => offset += written,
+            Ok(written) => {
+                offset += written;
+                // A sample split across writes is counted once its last byte is accepted.
+                let accepted_samples = offset / mem::size_of::<f32>();
+                if accepted_samples > recorded_samples {
+                    playout.record_written(Instant::now(), accepted_samples - recorded_samples);
+                    recorded_samples = accepted_samples;
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(2));
@@ -1549,6 +1562,7 @@ mod tests {
             &[0; 3840],
             &AudioConfig::default().muted,
             &|| start.elapsed() >= std::time::Duration::from_secs(1),
+            &mut PlayoutClock::new(48_000, 2),
         );
         assert!(
             matches!(
@@ -1585,6 +1599,7 @@ mod tests {
             &[0; 3840],
             &AudioConfig::default().muted,
             &|| start.elapsed() >= Duration::from_secs(1),
+            &mut PlayoutClock::new(48_000, 2),
         );
         assert!(
             matches!(result, Err(Error::DeviceLost { .. })),
@@ -1631,6 +1646,69 @@ mod tests {
         assert_eq!(clock.queued_samples(start + Duration::from_secs(5)), 1_000);
         clock.reset();
         assert_eq!(clock.queued_samples(start + Duration::from_secs(5)), 0);
+    }
+
+    /// A pipe that accepts a few bytes per call and takes real time to do it, like a reader that
+    /// drains slower than the writer is waiting.
+    struct DrainingWriter {
+        accept: usize,
+        delay: Duration,
+    }
+
+    impl Write for DrainingWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            std::thread::sleep(self.delay);
+            Ok(buffer.len().min(self.accept))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn playout_counts_samples_as_the_pipe_accepts_them() {
+        // 10 ms of audio (960 stereo samples at 48 kHz) pushed through a pipe that takes 24 samples
+        // every 2 ms: the write takes about 80 ms, so by the time it returns everything but the
+        // last chunk has been played. Counting the whole buffer afterwards would report ~10 ms
+        // (960 samples) still queued, and the lead would then not be primed.
+        let mut clock = PlayoutClock::new(48_000, 2);
+        let mut writer = DrainingWriter {
+            accept: 24 * mem::size_of::<f32>(),
+            delay: Duration::from_millis(2),
+        };
+        write_pipewire_pcm(
+            &mut writer,
+            &[0.0; 960],
+            &[0; 3840],
+            &AudioConfig::default().muted,
+            &|| false,
+            &mut clock,
+        )
+        .unwrap();
+        assert!(clock.queued_samples(Instant::now()) <= 24);
+    }
+
+    #[test]
+    fn playout_counts_a_sample_split_across_writes_once() {
+        // One sample per second, so 4 samples are 4 s of audio no matter how long the test takes.
+        let start = Instant::now();
+        let mut clock = PlayoutClock::new(1, 1);
+        let mut writer = DrainingWriter {
+            accept: 6,
+            delay: Duration::ZERO,
+        };
+        write_pipewire_pcm(
+            &mut writer,
+            &[0.0; 4],
+            &[0; 16],
+            &AudioConfig::default().muted,
+            &|| false,
+            &mut clock,
+        )
+        .unwrap();
+        let queued = clock.ends_at.unwrap() - start;
+        assert!(queued >= Duration::from_millis(3_900) && queued < Duration::from_millis(4_500));
     }
 
     #[test]
@@ -1695,6 +1773,7 @@ mod tests {
             &[0; 16],
             &AudioConfig::default().muted,
             &|| false,
+            &mut PlayoutClock::new(48_000, 2),
         )
         .expect("temporary backpressure");
         assert_eq!(
@@ -1714,12 +1793,26 @@ mod tests {
         config
             .muted
             .store(true, std::sync::atomic::Ordering::Release);
-        write_pipewire_pcm(&mut bytes, &samples, &[0; 16], &config.muted, &|| false)
+        write_pipewire_pcm(
+            &mut bytes,
+            &samples,
+            &[0; 16],
+            &config.muted,
+            &|| false,
+            &mut PlayoutClock::new(48_000, 2),
+        )
             .expect("muted PCM");
         config
             .muted
             .store(false, std::sync::atomic::Ordering::Release);
-        write_pipewire_pcm(&mut bytes, &samples, &[0; 16], &config.muted, &|| false)
+        write_pipewire_pcm(
+            &mut bytes,
+            &samples,
+            &[0; 16],
+            &config.muted,
+            &|| false,
+            &mut PlayoutClock::new(48_000, 2),
+        )
             .expect("audible PCM");
         assert!(bytes[..24].iter().all(|value| *value == 0));
         let expected: Vec<_> = samples.into_iter().flat_map(f32::to_ne_bytes).collect();
@@ -1753,8 +1846,15 @@ mod tests {
             bytes: Vec::new(),
             muted: &muted,
         };
-        write_pipewire_pcm(&mut writer, &[0.375, -0.375], &[0; 8], &muted, &|| false)
-            .expect("partial PCM writes");
+        write_pipewire_pcm(
+            &mut writer,
+            &[0.375, -0.375],
+            &[0; 8],
+            &muted,
+            &|| false,
+            &mut PlayoutClock::new(48_000, 2),
+        )
+        .expect("partial PCM writes");
         let expected: Vec<_> = [0.375_f32, 0.0]
             .into_iter()
             .flat_map(f32::to_ne_bytes)
